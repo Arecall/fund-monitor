@@ -230,21 +230,22 @@ app.get('/api/market/indices', async (req, res) => {
   }
 });
 
-// 获取某只基金估值
+// 获取某只基金/股票估值（统一入口，按 code 格式自动路由数据源）
 app.get('/api/market/fund/:code', async (req, res) => {
   const { code } = req.params;
-  if (!code || !/^\d{6}$/.test(code)) {
-    return res.status(400).json({ error: '基金代码格式不正确' });
+  // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母 / 带 HK/US 前缀
+  if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5}|(HK|hk|rt_hk|US|us|gb_)[\w]{1,6})$/.test(code)) {
+    return res.status(400).json({ error: '代码格式不正确（需为 A 股 6 位、港股 5 位或美股 ticker）' });
   }
 
   try {
     const data = await marketHelper.getFundValuation(code);
     if (!data) {
-      return res.status(404).json({ error: '未找到该基金或获取失败' });
+      return res.status(404).json({ error: '未找到该基金/股票或获取失败' });
     }
     res.json(data);
   } catch (error) {
-    res.status(500).json({ error: '获取基金估算信息失败' });
+    res.status(500).json({ error: '获取估值失败' });
   }
 });
 

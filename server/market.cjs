@@ -37,7 +37,157 @@ function parseJsonp(jsonpStr) {
 }
 
 /**
- * 代理获取基金估算净值
+ * 智能识别 code 类型并路由到对应数据源
+ *   - 6 位纯数字 → A 股基金（fundgz）
+ *   - 5 位数字（00700、09988 等）→ 港股（Sina rt_hk）
+ *   - 1-5 位字母 → 美股 ticker（Sina gb_）
+ *   - 含 "HK"/"hk" 前缀 → 港股
+ *   - 含 "US"/"us" 前缀 → 美股
+ */
+function detectCodeKind(code) {
+  if (!code) return 'unknown';
+  const c = code.trim().toUpperCase();
+  if (/^\d{6}$/.test(c)) return 'fund_a';                 // A 股 6 位
+  if (/^(HK|RT_HK)?\d{4,5}$/.test(c)) return 'fund_hk';     // 港股 5 位
+  if (/^(US|GB)?[A-Z]{1,5}$/.test(c)) return 'fund_us';     // 美股 ticker
+  if (/^[A-Z]{1,5}$/.test(c)) return 'fund_us';             // 默认按美股
+  return 'unknown';
+}
+
+/**
+ * 通过 Sina 行情接口获取港股实时数据
+ *   接口：hq.sinajs.cn/list=rt_hk{code}
+ *   返回：fundcode=code, name=中文名, gsz=现价, dwjz=昨收, gszzl=涨跌幅(%), gztime=行情时间
+ */
+async function fetchHKStockValuation(code) {
+  const symbol = code.toLowerCase().replace(/^rt_hk/, '').replace(/^hk/, '');
+  const url = `http://hq.sinajs.cn/list=rt_hk${symbol}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'http://finance.sina.com.cn' },
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  // var hq_str_rt_hk00700="TENCENT,腾讯控股,465.600,461.600,481.800,465.600,477.800,16.200,3.510,..."
+  const m = text.match(/="([^"]+)"/);
+  if (!m) return null;
+  const parts = m[1].split(',');
+  if (parts.length < 10) return null;
+  // 字段含义参考 Sina 港股接口：name(1)=中文名, open(5), last_close(3), current(6), change(8), change_pct(9), datetime(18)
+  const nameEn = parts[0];
+  const nameZh = parts[1];
+  const prevClose = parseFloat(parts[3]);
+  const current = parseFloat(parts[6]);
+  const change = parseFloat(parts[7]);
+  const changePct = parseFloat(parts[8]);
+  const date = parts[17];    // YYYY/MM/DD
+  const time = parts[18];    // HH:MM:SS
+  if (isNaN(current) || current <= 0) return null;
+  return {
+    fundcode: code.toUpperCase(),
+    name: `${nameZh} (${nameEn})`,
+    jzrq: date ? date.replace(/\//g, '-') : '',
+    dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),
+    gsz: current.toFixed(4),
+    gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
+    gztime: date && time ? `${date.replace(/\//g, '-')} ${time}` : '',
+    market: 'hk'
+  };
+}
+
+/**
+ * 通过 Sina 行情接口获取美股实时数据
+ *   接口：hq.sinajs.cn/list=gb_{ticker}
+ *   返回字段：name(0)=中文, open(5), prev_close(7), current(1), change(4), change_pct(2), datetime(25)
+ */
+async function fetchUSStockValuation(ticker) {
+  const symbol = ticker.toLowerCase().replace(/^gb_/, '').replace(/^us/, '');
+  const url = `http://hq.sinajs.cn/list=gb_${symbol}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'http://finance.sina.com.cn' },
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  // var hq_str_gb_aapl="苹果,333.7400,0.14,..."
+  const m = text.match(/="([^"]+)"/);
+  if (!m) return null;
+  const parts = m[1].split(',');
+  if (parts.length < 26) return null;
+  // Sina 美股字段顺序（已实测）：
+  //   name(0)=中文名, current(1), change_pct(2), datetime(3)="2026-07-20 17:10:01", change(4),
+  //   open(5), high(6), low(7), prev_close(26)
+  const nameZh = parts[0];
+  const current = parseFloat(parts[1]);
+  const changePct = parseFloat(parts[2]);
+  const datetime = parts[3] || '';        // "2026-07-20 17:10:01"（已是 ISO-ish）
+  const prevClose = parseFloat(parts[26]);
+  if (isNaN(current) || current <= 0) return null;
+  // 转换日期格式：parts[3] 已是 "YYYY-MM-DD HH:MM:SS"
+  let gztime = '';
+  let jzrq = '';
+  if (datetime) {
+    const m = datetime.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}:\d{2})/);
+    if (m) {
+      jzrq = `${m[1]}-${m[2]}-${m[3]}`;
+      gztime = `${jzrq} ${m[4]}`;
+    }
+  }
+  return {
+    fundcode: ticker.toUpperCase(),
+    name: nameZh,
+    jzrq,
+    dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),
+    gsz: current.toFixed(4),
+    gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
+    gztime,
+    market: 'us'
+  };
+}
+
+/**
+ * Sina 基金接口（fu_ 前缀）—— fundgz 失败时的兜底
+ *   字段：[0]名称 [1]时间 [2]现价 [3]昨收 [4]参考净值 [5]涨跌额 [6]涨跌幅% [7]日期 [8..] 累计
+ *   适合 A 股基金（含 QDII），但 QDII 估值可能比 A 股晚一天（跟踪美股）
+ */
+async function fetchSinaFundValuation(code) {
+  const url = `http://hq.sinajs.cn/list=fu_${code}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'http://finance.sina.com.cn' },
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  const m = text.match(/="([^"]+)"/);
+  if (!m) return null;
+  const parts = m[1].split(',');
+  if (parts.length < 8) return null;
+  // parts[2] = 估值，parts[3] = 昨收，parts[6] = 涨跌幅，parts[7] = 日期
+  // 优先用 parts[2]（现价），回退到 parts[9]（某些基金用累计净值作现价）
+  let gsz = parseFloat(parts[2]);
+  if (isNaN(gsz) || gsz <= 0) gsz = parseFloat(parts[9] || '');
+  if (isNaN(gsz) || gsz <= 0) return null;
+  return {
+    fundcode: code,
+    name: parts[0],
+    jzrq: parts[7] || '',
+    dwjz: parts[3] || '0',
+    gsz: gsz.toFixed(4),
+    gszzl: parts[6] || '0',
+    gztime: parts[7] && parts[1] ? `${parts[7]} ${parts[1]}` : '',
+    market: 'domestic'
+  };
+}
+
+/**
+ * 代理获取基金/股票估算价格（统一入口）
+ *   - A 股基金：6 位数字
+ *   - 港股：5 位数字（自动加 rt_hk 前缀调 Sina）
+ *   - 美股：1-5 位字母 ticker（自动加 gb_ 前缀调 Sina）
+ *
+ *   A 股基金数据源 fallback 链：
+ *     1. fundgz.1234567.com.cn（最常见）
+ *     2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
  */
 async function getFundValuation(code) {
   const now = Date.now();
@@ -46,44 +196,54 @@ async function getFundValuation(code) {
     return cached.data;
   }
 
-  const url = `http://fundgz.1234567.com.cn/js/${code}.js?rt=${now}`;
-  try {
-    const response = await axios.get(url, {
-      headers: {
-        'Referer': 'http://fund.eastmoney.com/'
-      },
-      timeout: 5000
-    });
+  const kind = detectCodeKind(code);
+  let result = null;
 
-    const text = response.data;
-    if (text && text.includes('jsonpgz')) {
-      const rawData = parseJsonp(text);
-      if (rawData) {
-        const result = {
-          fundcode: rawData.fundcode,
-          name: rawData.name,
-          jzrq: rawData.jzrq,
-          dwjz: rawData.dwjz,
-          gsz: rawData.gsz,
-          gszzl: rawData.gszzl,
-          gztime: rawData.gztime
-        };
-        // 存入缓存
-        cache.fund[code] = {
-          data: result,
-          timestamp: now
-        };
-        return result;
+  try {
+    if (kind === 'fund_hk') {
+      result = await fetchHKStockValuation(code);
+    } else if (kind === 'fund_us') {
+      result = await fetchUSStockValuation(code);
+    } else {
+      // A 股基金：先试 fundgz，失败回退 Sina fu_
+      const url = `http://fundgz.1234567.com.cn/js/${code}.js?rt=${now}`;
+      const response = await axios.get(url, {
+        headers: { 'Referer': 'http://fund.eastmoney.com/' },
+        timeout: 5000,
+        maxRedirects: 5
+      });
+      const text = response.data;
+      if (text && text.includes('jsonpgz')) {
+        const rawData = parseJsonp(text);
+        if (rawData && rawData.gsz && parseFloat(rawData.gsz) > 0) {
+          result = {
+            fundcode: rawData.fundcode,
+            name: rawData.name,
+            jzrq: rawData.jzrq,
+            dwjz: rawData.dwjz,
+            gsz: rawData.gsz,
+            gszzl: rawData.gszzl,
+            gztime: rawData.gztime
+          };
+        }
+      }
+      // fundgz 失败或数据无效 → fallback 到 Sina
+      if (!result) {
+        console.log(`[fund] fundgz miss for ${code}, fallback to Sina fu_`);
+        result = await fetchSinaFundValuation(code);
       }
     }
+
+    if (result) {
+      cache.fund[code] = { data: result, timestamp: now };
+      return result;
+    }
   } catch (error) {
-    console.error(`后端抓取基金 ${code} 失败:`, error.message);
+    console.error(`后端抓取 ${code} (${kind}) 失败:`, error.message);
   }
 
-  // 抓取失败时如果有旧缓存，降级返回旧缓存
-  if (cached) {
-    return cached.data;
-  }
+  // 抓取失败时降级返回旧缓存
+  if (cached) return cached.data;
   return null;
 }
 
@@ -504,5 +664,9 @@ module.exports = {
   getFundHistory,
   getFundBasicInfo,
   getFundHoldings,
-  getMarketIndices
+  getMarketIndices,
+  detectCodeKind,
+  fetchHKStockValuation,
+  fetchUSStockValuation,
+  fetchSinaFundValuation
 };

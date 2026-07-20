@@ -339,8 +339,9 @@ function App() {
   const handleAddFund = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = newCode.trim();
-    if (!/^\d{6}$/.test(code)) {
-      setSearchError('请输入6位纯数字基金代码');
+    // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母
+    if (!/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
+      setSearchError('请输入 A 股 6 位 / 港股 5 位 / 美股 ticker');
       return;
     }
     if (watchlist.includes(code)) {
@@ -823,14 +824,16 @@ function App() {
                 <div className="relative">
                   <input
                     type="text"
-                    maxLength={6}
-                    placeholder="输入6位代码，如110011"
+                    maxLength={10}
+                    placeholder="6位基金/港股5位/美股ticker，如 110011 / 00700 / AAPL"
                     value={newCode}
                     onChange={(e) => {
-                      setNewCode(e.target.value.replace(/\D/g, ''));
+                      // A 股 6 位数字；港股 5 位数字；美股 1-5 位字母
+                      const v = e.target.value.toUpperCase().trim();
+                      setNewCode(v);
                       setSearchError('');
                     }}
-                    className="apple-input pl-9 pr-3 py-2 text-xs w-48 font-mono font-medium placeholder-slate-400"
+                    className="apple-input pl-9 pr-3 py-2 text-xs w-56 font-mono font-medium placeholder-slate-400"
                   />
                   <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                 </div>
