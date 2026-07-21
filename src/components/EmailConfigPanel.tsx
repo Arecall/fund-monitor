@@ -10,9 +10,18 @@ import {
   AlertTriangle,
   Eye,
   EyeOff,
-  Loader2
+  Loader2,
+  Bell
 } from 'lucide-react';
-import { fetchEmailStatus, fetchEmailSecrets, saveEmailConfig, sendTestEmail, type EmailStatus } from '../services/api';
+import {
+  fetchEmailStatus,
+  fetchEmailSecrets,
+  saveEmailConfig,
+  sendTestEmail,
+  fetchAlertSettings,
+  saveAlertSettings,
+  type EmailStatus
+} from '../services/api';
 
 const SPRING = {
   panel: { type: 'spring' as const, bounce: 0.05, duration: 0.4 },
@@ -84,6 +93,8 @@ function ConfigModal({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testEmail, setTestEmail] = useState('');
+  // 提醒全局行为：非交易时段停止通知（默认开）
+  const [stopAfterClose, setStopAfterClose] = useState(true);
   const prefersReducedMotion = useReducedMotion();
 
   // 锁定 body 滚动，防止背景滚动
@@ -99,6 +110,13 @@ function ConfigModal({
       setMode((s.mode as any) || 'dev');
       setMailFrom(s.mailFrom || '');
       setAppName(s.appName || '');
+      // 加载提醒全局设置
+      try {
+        const as = await fetchAlertSettings();
+        setStopAfterClose(as.stopAfterMarketClose !== false);
+      } catch {
+        // ignore — 用默认值
+      }
       // admin 主动拉取已保存的密钥（明文）
       if (currentUser.toLowerCase() === 'admin') {
         try {
@@ -136,6 +154,12 @@ function ConfigModal({
           ...(smtpPass ? { smtp_pass: smtpPass } : {}),
         } : {}),
       });
+      // 同步保存提醒全局设置
+      try {
+        await saveAlertSettings({ stopAfterMarketClose: stopAfterClose });
+      } catch {
+        // 即使 alert setting 保存失败也不阻塞 email config 保存结果
+      }
       onToast?.('配置已保存');
       setResendKey('');
       setSmtpPass('');
@@ -383,6 +407,28 @@ function ConfigModal({
             </>
           )}
 
+          {/* 提醒行为（非交易时段停止通知） */}
+          <div className="pt-2 border-t border-[var(--hairline-border)]">
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-2 flex items-center gap-1">
+              <Bell size={10} /> 提醒行为
+            </div>
+            <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={stopAfterClose}
+                onChange={(e) => isAdmin && setStopAfterClose(e.target.checked)}
+                disabled={!isAdmin}
+                className="mt-0.5 rounded"
+              />
+              <span className="flex-1">
+                <span className="font-semibold text-slate-700 dark:text-slate-200">非交易时段停止通知</span>
+                <span className="block text-[10px] text-slate-400 mt-0.5 leading-relaxed">
+                  开启后，A 股仅在周一-五 9:30-11:30 / 13:00-15:00；港股 9:30-12:00 / 13:00-16:00；美股 9:30-16:00（自动夏冬令时）触发提醒，周末和中午休市时段自动跳过。
+                </span>
+              </span>
+            </label>
+          </div>
+
           {/* Save button */}
           <motion.button
             type="button"
@@ -432,6 +478,7 @@ function ConfigModal({
             <div className="text-[10px] text-slate-400 px-3 py-2 bg-slate-50/60 dark:bg-white/[0.02] rounded-lg border border-[var(--hairline-border)]">
               <div>当前生效模式：<span className="font-semibold text-slate-600 dark:text-slate-300">{status.effectiveMode}</span></div>
               <div>Resend 已配置：{status.resendConfigured ? '✓' : '✗'} · SMTP 已配置：{status.smtpConfigured ? '✓' : '✗'}</div>
+              <div>收盘后停止通知：{stopAfterClose ? '✓ 已启用' : '✗ 已关闭'}</div>
             </div>
           )}
           </div>

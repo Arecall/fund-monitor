@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.0' });
+  res.json({ status: 'ok', version: '1.2.4' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -540,6 +540,60 @@ app.post('/api/alerts', async (req, res) => {
   }
 });
 
+// ==========================================
+// 提醒全局设置（Alert Settings）
+//   — 必须注册在 /api/alerts/:id 之前，否则 settings 被当 id 抢先匹配
+// ==========================================
+// alert_stop_after_close: 'true' | 'false'，默认 'true'
+// 开启时：非交易时段（按市场分别判断）跳过 pollAlerts，不发邮件、不写 history
+
+const ALERT_SETTINGS_KEYS = ['alert_stop_after_close'];
+let ALERT_STOP_AFTER_CLOSE = true;     // 内存缓存；PUT 后立即刷新
+
+async function loadAlertSettings() {
+  try {
+    const rows = await dbHelper.all(
+      `SELECT key, value FROM settings WHERE key IN (${ALERT_SETTINGS_KEYS.map(() => '?').join(',')})`,
+      ALERT_SETTINGS_KEYS
+    );
+    const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    // 未设置或显式 'true' → 开启；只有显式 'false' 才关闭
+    ALERT_STOP_AFTER_CLOSE = (map.alert_stop_after_close || 'true') !== 'false';
+  } catch (e) {
+    console.warn('[alerts] load settings failed:', e.message);
+  }
+}
+
+// 公开查询（任何登录用户都能看，便于前端展示状态）
+app.get('/api/alerts/settings', async (_req, res) => {
+  try {
+    await loadAlertSettings();
+    res.json({ stopAfterMarketClose: ALERT_STOP_AFTER_CLOSE });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 更新（admin only）
+app.put('/api/alerts/settings', requireAdmin, async (req, res) => {
+  const { stopAfterMarketClose } = req.body || {};
+  if (typeof stopAfterMarketClose !== 'boolean') {
+    return res.status(400).json({ error: 'stopAfterMarketClose 必须是 boolean' });
+  }
+  try {
+    await dbHelper.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      ['alert_stop_after_close', stopAfterMarketClose ? 'true' : 'false']
+    );
+    ALERT_STOP_AFTER_CLOSE = stopAfterMarketClose;
+    console.log(`[alerts] stopAfterMarketClose = ${stopAfterMarketClose}`);
+    res.json({ success: true, stopAfterMarketClose });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 更新提醒（启停、修改阈值）
 app.put('/api/alerts/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -689,8 +743,16 @@ async function pollAlerts() {
     );
     if (rows.length === 0) return;
 
+    // 每轮重新加载设置（PUT 后下次 poll 立即生效；开销可忽略）
+    await loadAlertSettings();
+
     for (const alert of rows) {
       try {
+        // 非交易时段跳过：周末 + 中午休市 + 收盘后，不发邮件、不写 history
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code)) {
+          continue;
+        }
+
         const fund = await marketHelper.getFundValuation(alert.fund_code);
         if (!fund) continue;
         const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
@@ -765,6 +827,11 @@ setInterval(pollAlerts, ALERT_POLL_MS);
 // 启动后延迟 5 秒跑一次，让其他模块先就绪
 setTimeout(pollAlerts, 5000);
 console.log(`[alerts] 监控循环已启动，每 ${ALERT_POLL_MS / 1000}s 扫描一次`);
+
+// 启动时加载全局提醒设置（默认值立即生效）
+loadAlertSettings().then(() => {
+  console.log(`[alerts] 收盘后停止通知 = ${ALERT_STOP_AFTER_CLOSE}`);
+});
 
 // ==========================================
 // 启动服务

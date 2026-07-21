@@ -257,6 +257,30 @@ export async function sendTestEmail(email: string): Promise<{ success: boolean; 
 }
 
 /* ───────────────────────────────────────────────────────────────────
+   提醒全局设置（Alert Settings）
+   ─────────────────────────────────────────────────────────────────── */
+
+export interface AlertSettings {
+  stopAfterMarketClose: boolean;
+}
+
+export async function fetchAlertSettings(): Promise<AlertSettings> {
+  try {
+    return await request('/api/alerts/settings');
+  } catch (error) {
+    console.error('获取提醒设置失败:', error);
+    return { stopAfterMarketClose: true };   // 失败时按默认值（保守：停止）
+  }
+}
+
+export async function saveAlertSettings(updates: { stopAfterMarketClose?: boolean }): Promise<{ success: boolean; stopAfterMarketClose: boolean }> {
+  return request('/api/alerts/settings', {
+    method: 'PUT',
+    body: JSON.stringify(updates)
+  });
+}
+
+/* ───────────────────────────────────────────────────────────────────
    邮件配置（Email Config）
    ─────────────────────────────────────────────────────────────────── */
 

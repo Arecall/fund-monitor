@@ -64,6 +64,76 @@ function detectCodeKind(code) {
 }
 
 /**
+ * 判断给定的基金/股票代码当前是否在交易时段内。
+ * 用于非交易时段停止邮件提醒的场景。
+ *
+ * 交易时段（不含节假日 — 交易所休市日历每年变动，按真实时段过滤即可）：
+ *   - A 股 (stock_a / fund_a):  周一-周五 北京 9:30-11:30, 13:00-15:00
+ *   - 港股 (fund_hk):         周一-周五 香港 9:30-12:00, 13:00-16:00
+ *   - 美股 (fund_us):         周一-周五 纽约 9:30-16:00（Intl 自动夏/冬令时）
+ *   - 其它/未知:               默认全天 true（保守，不阻断未知品种）
+ *
+ * @param {string} code  基金/股票代码
+ * @param {Date}   [now] 可选：当前时间（便于测试；默认 new Date()）
+ * @returns {boolean}
+ */
+function isInTradingTime(code, now) {
+  const kind = detectCodeKind(code || '');
+  if (kind === 'unknown') return true;
+
+  let tz, sessions;
+  if (kind === 'stock_a' || kind === 'fund_a') {
+    tz = 'Asia/Shanghai';
+    sessions = [
+      [9 * 60 + 30, 11 * 60 + 30],   // 9:30-11:30  上午
+      [13 * 60,    15 * 60],          // 13:00-15:00 下午
+    ];
+  } else if (kind === 'fund_hk') {
+    tz = 'Asia/Hong_Kong';
+    sessions = [
+      [9 * 60 + 30, 12 * 60],        // 9:30-12:00
+      [13 * 60,    16 * 60],          // 13:00-16:00
+    ];
+  } else if (kind === 'fund_us') {
+    tz = 'America/New_York';
+    sessions = [
+      [9 * 60 + 30, 16 * 60],         // 9:30-16:00
+    ];
+  } else {
+    return true;
+  }
+
+  const date = now || new Date();
+  // 用 Intl 取目标时区的 weekday + hour/minute；hourCycle h23 保证 00-23 而非 "24:00"
+  let weekday, hourStr, minuteStr;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      hourCycle: 'h23',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(date);
+    const m = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    weekday = m.weekday;
+    hourStr = m.hour;
+    minuteStr = m.minute;
+  } catch {
+    return true;   // Intl 不可用时保守放行
+  }
+
+  // 周六周日 → 非交易
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+
+  const hour = parseInt(hourStr, 10);
+  const minute = parseInt(minuteStr, 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return true;
+
+  const nowMin = hour * 60 + minute;
+  return sessions.some(([s, e]) => nowMin >= s && nowMin < e);
+}
+
+/**
  * A 股个股实时行情（Sina hq.sinajs.cn）
  *   - sh6xxxxx / sh68xxx  → 上海主板 / 科创板
  *   - sz00xxxx / sz30xxx  → 深圳主板 / 创业板
@@ -1202,6 +1272,7 @@ module.exports = {
   getFundHoldings,
   getMarketIndices,
   detectCodeKind,
+  isInTradingTime,
   fetchHKStockValuation,
   fetchUSStockValuation,
   fetchSinaFundValuation,
