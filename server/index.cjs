@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const dbHelper = require('./db.cjs');
 const marketHelper = require('./market.cjs');
 const mailer = require('./mailer.cjs');
@@ -10,6 +11,19 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.set('trust proxy', 1);
+
+const DIST_DIR = path.resolve(__dirname, '../dist');
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', version: '1.1.0' });
+});
+app.use(express.static(DIST_DIR));
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+    return res.sendFile(path.join(DIST_DIR, 'index.html'));
+  }
+  next();
+});
 
 // ==========================================
 // 中间件：多用户数据隔离 (Auth Middleware)
@@ -498,6 +512,17 @@ app.put('/api/email/config', requireAdmin, async (req, res) => {
   try {
     const status = await mailer.saveConfig(req.body || {});
     res.json({ success: true, status });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 查看已配置密钥原文（admin only）— 用于在 UI 展示 / 复制。
+// ⚠️ 暴露明文密钥，仅限 admin 在受信环境中调用。
+app.get('/api/email/config/reveal', requireAdmin, async (req, res) => {
+  try {
+    const secrets = await mailer.getRevealedSecrets();
+    res.json(secrets);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

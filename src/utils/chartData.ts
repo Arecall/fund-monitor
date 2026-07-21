@@ -214,6 +214,23 @@ export function buildSeries(
     const win = getIntradayWindow(market, now);
     let { startTs, endTs } = win;
 
+    // 边界处理：
+    //   - 开盘前（now < startTs）：曲线从 now 到 startTs 之间一个 5 分钟窗口（"开盘前"提示）
+    //   - 收盘后（now > endTs）：完整显示今天 session（startTs → endTs）
+    //   - 盘中（startTs ≤ now ≤ endTs）：startTs → now
+    let preMarket = false;
+    if (now < startTs) {
+      // 开盘前：把窗口改为 now ± 30 分钟（一个窄窗口），让曲线可见但不显示全空 session
+      const halfWin = 30 * 60_000;
+      startTs = now - halfWin;
+      endTs = now + halfWin;
+      preMarket = true;
+    } else if (now < endTs) {
+      // 盘中：终点 = now
+      endTs = now;
+    }
+    // else: 已收盘 → endTs 保持 close
+
     // 极端防呆：startTs == endTs 时给 1 分钟宽度
     if (endTs <= startTs) {
       endTs = startTs + 60_000;
@@ -221,7 +238,6 @@ export function buildSeries(
 
     const steps = 240;
     const series = interpolate(previous, current, steps, 0.0006, rand);
-    // X 轴统一用北京时间：data point 不再带 displayTime，让 formatTick 直接用 t
     const points: ChartPoint[] = series.map((v, i) => {
       const t = startTs + (i / (steps - 1)) * (endTs - startTs);
       return { t, v };
@@ -234,9 +250,11 @@ export function buildSeries(
       points,
       source: 'estimated',
       market,
-      note: market === 'us'
-        ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
-        : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）',
+      note: preMarket
+        ? '开盘前（估值尚未更新，曲线仅为示意）'
+        : (market === 'us'
+            ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
+            : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）'),
     };
   }
 

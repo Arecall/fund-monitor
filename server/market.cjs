@@ -146,6 +146,166 @@ async function fetchUSStockValuation(ticker) {
 }
 
 /**
+ * 东方财富 f10/lsjz —— A 股基金（包括 QDII）的官方净值历史
+ *   返回最近 1 条记录，dwjz 即"上一个交易日公布的单位净值"
+ *   QDII 的官方净值在海外市场收盘后第二天上午公布，比实时估算更可靠但滞后
+ *   字段：FSRQ(日期), DWJZ(单位净值), JZZZL(日增长率%), LJJZ(累计净值)
+ */
+async function fetchEastMoneyLSJZ(code) {
+  const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=1&pageSize=1`;
+  const response = await axios.get(url, {
+    headers: { 'Referer': 'http://fundf10.eastmoney.com/' },
+    timeout: 5000
+  });
+  const data = response.data;
+  if (!data || data.ErrCode !== 0 || !data.Data || !data.Data.LSJZList || data.Data.LSJZList.length === 0) {
+    return null;
+  }
+  const row = data.Data.LSJZList[0];
+  const dwjz = parseFloat(row.DWJZ);
+  if (isNaN(dwjz) || dwjz <= 0) return null;
+  const changePct = parseFloat(row.JZZZL || '0');
+  const navDate = row.FSRQ || '';
+  return {
+    fundcode: code,
+    name: row.FSRQ ? `基金 ${code}` : `基金 ${code}`,
+    jzrq: navDate,
+    dwjz: dwjz.toFixed(4),
+    gsz: dwjz.toFixed(4),
+    gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
+    gztime: navDate ? `${navDate} 15:00` : '',
+    market: 'domestic',
+    navOnly: true
+  };
+}
+
+/**
+ * QDII 基金专用：基于 Top 10 持仓的实时加权估算
+ *   1. 抓 pingzhongdata 拿到前 10 重仓股代码（如 NVDA, GOOGL, ...）
+ *   2. 用 Sina US/HK API 拉每只实时涨跌
+ *   3. 等权计算：estimate = lastNav × (1 + mean(top10 changes))
+ *   缺点：等权不准确（实际权重不等），但能跟踪海外市场实时节奏
+ */
+async function fetchHoldingsBasedEstimate(code) {
+  // 1. 抓持仓
+  const pingUrl = `http://fund.eastmoney.com/pingzhongdata/${code}.js`;
+  let pingText;
+  try {
+    const r = await axios.get(pingUrl, {
+      headers: { 'Referer': 'http://fundf10.eastmoney.com/' },
+      timeout: 5000,
+      responseType: 'arraybuffer'
+    });
+    // pingzhongdata 实际是 UTF-8 编码（之前误判为 GBK 导致乱码）
+    // 但响应带 UTF-8 BOM (efbbbf)，先剥掉再用 UTF-8 解码
+    let buf = Buffer.from(r.data);
+    if (buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
+      buf = buf.slice(3);
+    }
+    pingText = iconv.decode(buf, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  // 提取 stockCodes（格式如 ["NVDA105","GOOGL105",...]，最后 1-3 位是市场号：105=US/HK, 106=HK, 0=深, 1=沪）
+  const m = pingText.match(/stockCodes\s*=\s*\[([^\]]+)\]/);
+  if (!m) return null;
+  const codesRaw = m[1].match(/"([^"]+)"/g)?.map(s => s.slice(1, -1)) || [];
+  if (codesRaw.length === 0) return null;
+
+  // 解析：去掉末尾市场号，提取基础代码
+  const stocks = codesRaw.map(raw => {
+    let code, market;
+    if (raw.endsWith('105')) { code = raw.slice(0, -3); market = 'us'; }      // US/HK (Sina 105 = gb_)
+    else if (raw.endsWith('106')) { code = raw.slice(0, -3); market = 'hk'; } // HK (106 = rt_hk)
+    else if (raw.endsWith('1')) { code = raw.slice(0, -1); market = 'sh'; }
+    else if (raw.endsWith('0')) { code = raw.slice(0, -1); market = 'sz'; }
+    else { code = raw; market = 'us'; }
+    return { code, market };
+  });
+
+  // 2. 拉每只实时价（Sina）
+  const symbols = stocks.map(s => s.market === 'us' ? `gb_${s.code.toLowerCase()}` : `rt_hk${s.code}`).join(',');
+  let sinaText;
+  try {
+    const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
+      responseType: 'arraybuffer',
+      headers: { 'Referer': 'http://finance.sina.com.cn' },
+      timeout: 6000
+    });
+    sinaText = iconv.decode(Buffer.from(r.data), 'gbk');
+  } catch {
+    return null;
+  }
+
+  // 3. 提取每只的涨跌幅
+  //   US stock Sina 字段：parts[1]=现价, parts[2]=涨跌幅%(已带正负号), parts[3]=datetime, parts[26]=昨收
+  //   HK stock Sina 字段：parts[1]=中文名, parts[2]=现价, parts[3]=昨收, parts[6]=现价, parts[7]=涨跌额, parts[8]=涨跌幅%
+  //   优先用 parts[2]/parts[8]（直接涨跌幅%），不依赖昨收数值。
+  const changes = [];
+  for (const line of sinaText.split('\n')) {
+    const m2 = line.match(/="([^"]+)"/);
+    if (!m2) continue;
+    const parts = m2[1].split(',');
+    if (parts.length < 5) continue;
+
+    // 判断市场：us 的 parts[2] 是 0.xx 这种小数，hk 的 parts[2] 是中文名
+    // 安全做法：尝试两个字段，取绝对值 < 50 的那个
+    let changePct = NaN;
+    if (!isNaN(parseFloat(parts[2])) && Math.abs(parseFloat(parts[2])) < 50) {
+      changePct = parseFloat(parts[2]);
+    } else if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
+      changePct = parseFloat(parts[8]);
+    } else {
+      // 兜底：parts[1] (现价) - parts[3] (昨收 for HK, datetime for US) / parts[3]
+      const current = parseFloat(parts[1]);
+      const ref = parseFloat(parts[3]);
+      if (!isNaN(current) && !isNaN(ref) && ref > 100 && ref < 100000) {
+        // 排除 datetime 被误解析
+        changePct = ((current - ref) / ref) * 100;
+      }
+    }
+
+    if (!isNaN(changePct) && Math.abs(changePct) < 50) {
+      changes.push(changePct);
+    }
+  }
+  if (changes.length === 0) return null;
+
+  // 4. 等权平均 + 拉官方名称
+  const avgChange = changes.reduce((a, b) => a + b, 0) / changes.length;
+  const nameMatch = pingText.match(/fS_name\s*=\s*"([^"]+)"/);
+  const fundName = nameMatch ? nameMatch[1] : `基金 ${code}`;
+
+  // 5. 取最新官方净值作为基准
+  const nav = await fetchEastMoneyLSJZ(code);
+  if (!nav) return null;
+  const lastNav = parseFloat(nav.dwjz);
+  if (isNaN(lastNav) || lastNav <= 0) return null;
+
+  const estimatedGsz = lastNav * (1 + avgChange / 100);
+  const now = new Date();
+  // 美股时间（NY）：当前 7-21 10:35 北京，美股昨晚已收（夏令 04:00 北京收盘）
+  // 7-21 北京白天：基于昨晚美股收盘后的官方净值 + 今日盘前/盘中变动
+  // 7-21 北京晚上 21:30+：今日美股盘中
+  const gzTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  return {
+    fundcode: code,
+    name: fundName,
+    jzrq: nav.jzrq,                              // 基准净值日期（最近官方）
+    dwjz: nav.dwjz,
+    gsz: estimatedGsz.toFixed(4),
+    gszzl: avgChange.toFixed(2),
+    gztime: gzTime,
+    market: 'domestic',
+    estimate: true,                                // 标记这是基于持仓的估算
+    holdingsCount: changes.length,
+    officialNavDate: nav.jzrq
+  };
+}
+
+/**
  * Sina 基金接口（fu_ 前缀）—— fundgz 失败时的兜底
  *   字段：[0]名称 [1]时间 [2]现价 [3]昨收 [4]参考净值 [5]涨跌额 [6]涨跌幅% [7]日期 [8..] 累计
  *   适合 A 股基金（含 QDII），但 QDII 估值可能比 A 股晚一天（跟踪美股）
@@ -205,7 +365,10 @@ async function getFundValuation(code) {
     } else if (kind === 'fund_us') {
       result = await fetchUSStockValuation(code);
     } else {
-      // A 股基金：先试 fundgz，失败回退 Sina fu_
+      // A 股基金：3 级 fallback
+      //   1. fundgz.1234567.com.cn（最常见，覆盖大部分 A 股基金）
+      //   2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
+      //   3. 东方财富 f10/lsjz（官方净值历史，QDII/老基金最后兜底）
       const url = `http://fundgz.1234567.com.cn/js/${code}.js?rt=${now}`;
       const response = await axios.get(url, {
         headers: { 'Referer': 'http://fund.eastmoney.com/' },
@@ -227,10 +390,32 @@ async function getFundValuation(code) {
           };
         }
       }
-      // fundgz 失败或数据无效 → fallback 到 Sina
+      // 第 2 级 fallback
       if (!result) {
         console.log(`[fund] fundgz miss for ${code}, fallback to Sina fu_`);
         result = await fetchSinaFundValuation(code);
+      }
+      // 数据陈旧检查：Sina fu_ 对 QDII 经常返回 1-2 周前的数据，超过 7 天视为无效
+      if (result && result.gztime) {
+        const dataTime = Date.parse(result.gztime.replace(' ', 'T'));
+        if (Number.isFinite(dataTime) && Date.now() - dataTime > 7 * 24 * 60 * 60 * 1000) {
+          console.log(`[fund] ${code} Sina data stale (${result.gztime}), trying EastMoney f10/lsjz`);
+          result = null;
+        }
+      }
+      // 第 3 级 fallback：东方财富官方净值
+      if (!result) {
+        console.log(`[fund] Sina fu_ miss/stale for ${code}, fallback to EastMoney f10/lsjz`);
+        result = await fetchEastMoneyLSJZ(code);
+      }
+      // 第 4 级 fallback：基于持仓成分股的实时加权估算（QDII 专属，跟踪海外市场实时节奏）
+      if (!result || result.navOnly) {
+        console.log(`[fund] ${code} trying holdings-based estimate`);
+        const estimate = await fetchHoldingsBasedEstimate(code);
+        if (estimate) {
+          // 优先用估算（实时）覆盖官方净值（滞后）
+          result = estimate;
+        }
       }
     }
 

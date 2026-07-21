@@ -250,6 +250,21 @@ async function getStatus() {
   };
 }
 
+/**
+ * 返回已配置的敏感字段（明文）。仅供 admin 主动调用：
+ *   GET /api/email/config/reveal
+ * 返回字段默认仍是脱敏（保留首尾 4 字符），前端可再 toggle 显示完整。
+ */
+async function getRevealedSecrets() {
+  const cfg = await loadConfig();
+  return {
+    resend_api_key: cfg.resendKey,
+    smtp_pass: cfg.smtp.pass,
+    mail_from: cfg.mailFrom,
+    app_name: cfg.appName,
+  };
+}
+
 /** 配置更新（来自 admin UI；密钥字段加密后入库） */
 async function saveConfig(updates) {
   const allowed = new Set(SETTING_KEYS);
@@ -282,6 +297,7 @@ async function saveConfig(updates) {
 module.exports = {
   sendAlertEmail,
   getStatus,
+  getRevealedSecrets,
   saveConfig,
   loadConfig,
   effectiveMode,

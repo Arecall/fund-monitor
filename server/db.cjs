@@ -1,7 +1,12 @@
 const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
 const path = require('path');
 
-const dbPath = path.resolve(__dirname, '../db.sqlite3');
+const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(__dirname, '..');
+fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(dataDir, 'db.sqlite3');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('数据库连接失败:', err.message);

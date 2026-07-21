@@ -12,7 +12,7 @@ import {
   EyeOff,
   Loader2
 } from 'lucide-react';
-import { fetchEmailStatus, saveEmailConfig, sendTestEmail, type EmailStatus } from '../services/api';
+import { fetchEmailStatus, fetchEmailSecrets, saveEmailConfig, sendTestEmail, type EmailStatus } from '../services/api';
 
 const SPRING = {
   panel: { type: 'spring' as const, bounce: 0.05, duration: 0.4 },
@@ -70,6 +70,10 @@ function ConfigModal({
   const [mode, setMode] = useState<'dev' | 'resend' | 'smtp'>('dev');
   const [mailFrom, setMailFrom] = useState('');
   const [appName, setAppName] = useState('');
+  // 已配置密钥（admin 时从后端 reveal 取回）
+  const [savedResendKey, setSavedResendKey] = useState<string>('');
+  const [savedSmtpPass, setSavedSmtpPass] = useState<string>('');
+  // 用户当前正在编辑的输入
   const [resendKey, setResendKey] = useState('');
   const [smtpHost, setSmtpHost] = useState('');
   const [smtpPort, setSmtpPort] = useState('465');
@@ -95,10 +99,20 @@ function ConfigModal({
       setMode((s.mode as any) || 'dev');
       setMailFrom(s.mailFrom || '');
       setAppName(s.appName || '');
+      // admin 主动拉取已保存的密钥（明文）
+      if (currentUser.toLowerCase() === 'admin') {
+        try {
+          const secrets = await fetchEmailSecrets();
+          setSavedResendKey(secrets.resend_api_key || '');
+          setSavedSmtpPass(secrets.smtp_pass || '');
+        } catch {
+          // ignore — 非 admin 会 403
+        }
+      }
     } catch (e) {
       onToast?.('加载邮件配置失败：' + (e as any)?.message);
     }
-  }, [onToast]);
+  }, [onToast, currentUser]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -274,20 +288,26 @@ function ConfigModal({
               <div className="relative">
                 <input
                   type={showSecrets ? 'text' : 'password'}
-                  value={resendKey}
+                  value={resendKey || (showSecrets ? savedResendKey : maskSecret(savedResendKey))}
                   onChange={(e) => setResendKey(e.target.value)}
                   disabled={!isAdmin}
-                  placeholder={status?.resendConfigured ? '已配置（如需更换请输入新值）' : 're_xxxxxxxxxxxx'}
+                  placeholder={status?.resendConfigured ? (savedResendKey ? '已配置（如需更换请输入新值）' : '已配置但无权限查看') : 're_xxxxxxxxxxxx'}
                   className="apple-input w-full pl-3 pr-9 py-2 text-xs font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowSecrets(v => !v)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                  title={showSecrets ? '隐藏密钥' : '显示密钥'}
                 >
                   {showSecrets ? <EyeOff size={12} /> : <Eye size={12} />}
                 </button>
               </div>
+              {savedResendKey && (
+                <div className="text-[10px] text-slate-400 mt-1 font-mono">
+                  已保存：<span className="text-emerald-600 dark:text-emerald-400">{showSecrets ? savedResendKey : maskSecret(savedResendKey)}</span>
+                </div>
+              )}
             </Field>
           )}
 
@@ -329,20 +349,26 @@ function ConfigModal({
                 <div className="relative">
                   <input
                     type={showSecrets ? 'text' : 'password'}
-                    value={smtpPass}
+                    value={smtpPass || (showSecrets ? savedSmtpPass : maskSecret(savedSmtpPass))}
                     onChange={(e) => setSmtpPass(e.target.value)}
                     disabled={!isAdmin}
-                    placeholder={status?.smtpConfigured ? '已配置（如需更换请输入新值）' : '16 位授权码'}
+                    placeholder={status?.smtpConfigured ? (savedSmtpPass ? '已配置（如需更换请输入新值）' : '已配置但无权限查看') : '16 位授权码'}
                     className="apple-input w-full pl-3 pr-9 py-2 text-xs font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowSecrets(v => !v)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                    title={showSecrets ? '隐藏密钥' : '显示密钥'}
                   >
                     {showSecrets ? <EyeOff size={12} /> : <Eye size={12} />}
                   </button>
                 </div>
+                {savedSmtpPass && (
+                  <div className="text-[10px] text-slate-400 mt-1 font-mono">
+                    已保存：<span className="text-emerald-600 dark:text-emerald-400">{showSecrets ? savedSmtpPass : maskSecret(savedSmtpPass)}</span>
+                  </div>
+                )}
               </Field>
               <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
                 <input
@@ -414,6 +440,13 @@ function ConfigModal({
     </motion.div>,
     document.body
   );
+}
+
+/** 脱敏：保留首尾 4 字符，中间用 • 替代。短于 8 直接全遮。 */
+function maskSecret(s: string): string {
+  if (!s) return '';
+  if (s.length <= 8) return '•'.repeat(s.length);
+  return s.slice(0, 4) + '•'.repeat(Math.min(s.length - 8, 20)) + s.slice(-4);
 }
 
 function Field({

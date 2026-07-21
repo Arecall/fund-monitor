@@ -200,7 +200,7 @@ export function FundDetailPanel({
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
         <FundChart
-          key={chartKey}
+          key={`${chartKey}-${(fund as any).dataDate || fund.gztime?.split(' ')[0] || ''}`}
           fundCode={fund.fundcode}
           fundName={fund.name}
           current={current}

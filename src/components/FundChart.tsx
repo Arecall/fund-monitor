@@ -183,6 +183,24 @@ export function FundChart({
             {refreshing ? '刷新中…' : '自动刷新中'}
           </span>
           <span>更新于 {formatTick(Date.now(), range)}</span>
+          {/* 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天" */}
+          {series.points.length > 0 && (() => {
+            const lastTs = series.points[series.points.length - 1].t;
+            const today = new Date();
+            const dataDate = new Date(lastTs);
+            const sameDay = lastTs >= new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+                            && lastTs < new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+            const dataStr = `${dataDate.getFullYear()}-${String(dataDate.getMonth() + 1).padStart(2, '0')}-${String(dataDate.getDate()).padStart(2, '0')}`;
+            return (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                sameDay
+                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
+                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+              }`}>
+                {sameDay ? `今日 ${dataStr}` : `数据 ${dataStr}`}
+              </span>
+            );
+          })()}
           <PressableButton
             onClick={() => onRefresh?.()}
             disabled={refreshing}

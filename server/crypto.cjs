@@ -15,7 +15,10 @@ const path = require('path');
 
 const ALGO = 'aes-256-gcm';
 const KEY_BYTES = 32;
-const KEY_FILE = path.resolve(__dirname, '../.encryption_key');
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(__dirname, '..');
+const KEY_FILE = path.join(DATA_DIR, '.encryption_key');
 
 let cachedKey = null;
 
@@ -33,6 +36,7 @@ function getKey() {
   }
   const fresh = crypto.randomBytes(KEY_BYTES);
   try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(KEY_FILE, fresh.toString('base64'), { mode: 0o600 });
     console.log('[crypto] 生成新加密密钥:', KEY_FILE);
   } catch (e) {

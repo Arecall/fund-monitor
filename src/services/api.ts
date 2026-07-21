@@ -269,6 +269,17 @@ export async function fetchEmailStatus(): Promise<EmailStatus> {
   return request('/api/email/config');
 }
 
+export interface EmailSecrets {
+  resend_api_key: string;
+  smtp_pass: string;
+  mail_from: string;
+  app_name: string;
+}
+
+export async function fetchEmailSecrets(): Promise<EmailSecrets> {
+  return request('/api/email/config/reveal');
+}
+
 export async function saveEmailConfig(updates: Record<string, string>): Promise<{ success: boolean; status: EmailStatus }> {
   return request('/api/email/config', {
     method: 'PUT',
