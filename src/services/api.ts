@@ -73,9 +73,10 @@ export async function fetchMarketIndices(): Promise<MarketIndex[]> {
 /**
  * 获取国内场外基金实时估值
  */
-export async function fetchFundValuation(code: string): Promise<FundValuation | null> {
+export async function fetchFundValuation(code: string, kind?: 'fund' | 'stock'): Promise<FundValuation | null> {
   try {
-    return await request(`/api/market/fund/${code}`);
+    const q = kind ? `?kind=${kind}` : '';
+    return await request(`/api/market/fund/${code}${q}`);
   } catch (error) {
     console.error(`获取基金 ${code} 失败:`, error);
     return null;
@@ -93,10 +94,12 @@ export interface FundHistoryPoint {
 
 export async function fetchFundHistory(
   code: string,
-  days: number = 30
+  days: number = 30,
+  kind?: 'fund' | 'stock'
 ): Promise<FundHistoryPoint[]> {
   try {
-    const data = await request(`/api/market/fund/${code}/history?days=${days}`);
+    const q = kind ? `&kind=${kind}` : "";
+    const data = await request(`/api/market/fund/${code}/history?days=${days}${q}`);
     return data.data || [];
   } catch (error) {
     console.error(`获取基金 ${code} 历史净值失败:`, error);

@@ -49,8 +49,8 @@ function detectCodeKind(code) {
   if (!code) return 'unknown';
   const c = code.trim().toUpperCase();
   if (/^\d{6}$/.test(c)) {
-    // A 股个股代码前缀：60x=沪主板, 68x=科创板, 00x/30x=深主板/创业板, 8x=北交所
-    if (/^(60|68|00|30|8)/.test(c)) return 'stock_a';
+    // A 股个股：仅 60/68/68 严格前缀 → 个股；00/30/8 模糊（基金常见）→ 当基金
+    if (/^(60|68)/.test(c)) return 'stock_a';
     return 'fund_a';                                          // 其他 6 位按基金处理
   }
   if (/^(HK|RT_HK)?\d{4,5}$/.test(c)) return 'fund_hk';     // 港股 5 位
@@ -469,14 +469,15 @@ async function fetchSinaFundValuation(code) {
  *     1. fundgz.1234567.com.cn（最常见）
  *     2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
  */
-async function getFundValuation(code) {
+async function getFundValuation(code, kindOverride) {
   const now = Date.now();
   const cached = cache.fund[code];
   if (cached && (now - cached.timestamp < FUND_CACHE_TTL)) {
     return cached.data;
   }
 
-  const kind = detectCodeKind(code);
+  // 前端可指定 kind（按 tab 强制走某条路径）；否则按 code 格式自动判
+  const kind = kindOverride || detectCodeKind(code);
   let result = null;
 
   try {
@@ -487,10 +488,18 @@ async function getFundValuation(code) {
     } else if (kind === 'fund_us') {
       result = await fetchUSStockValuation(code);
     } else {
-      // A 股基金：3 级 fallback
-      //   1. fundgz.1234567.com.cn（最常见，覆盖大部分 A 股基金）
-      //   2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
-      //   3. 东方财富 f10/lsjz（官方净值历史，QDII/老基金最后兜底）
+      // kind === 'fund_a'：6 位数字（60/68 之外的）
+      // 00/30 开头可能是深市/创业板 A 股个股（如 002050），00 也可能是基金（如 001668）
+      // 解决：先试 Sina A 股个股，失败再走基金路径
+      try {
+        result = await fetchASHareStockValuation(code);
+        if (result) console.log(`[fund] ${code} matched as A-share stock (kind was fund_a, but Sina 返回数据)`);
+      } catch {}
+      if (!result) {
+        // 走 A 股基金路径：3 级 fallback
+        //   1. fundgz.1234567.com.cn（最常见，覆盖大部分 A 股基金）
+        //   2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
+        //   3. 东方财富 f10/lsjz（官方净值历史，QDII/老基金最后兜底）
       const url = `http://fundgz.1234567.com.cn/js/${code}.js?rt=${now}`;
       const response = await axios.get(url, {
         headers: { 'Referer': 'http://fund.eastmoney.com/' },
@@ -539,6 +548,7 @@ async function getFundValuation(code) {
           result = estimate;
         }
       }
+      }  // 关闭 if (!result) { ... } 块
     }
 
     if (result) {
@@ -565,7 +575,7 @@ async function getFundValuation(code) {
  * @param {number} days 取最近 N 天
  * @returns {Array<{date:string, dwjz:number}>} 按日期升序
  */
-async function getFundHistory(code, days = 30) {
+async function getFundHistory(code, days = 30, kindOverride) {
   const now = Date.now();
   const cached = cache.fundHistory[code];
   if (cached && (now - cached.timestamp < FUND_HISTORY_TTL) && cached.days >= days) {
@@ -573,6 +583,15 @@ async function getFundHistory(code, days = 30) {
   }
 
   // 路由：5 位数字（港股）/ 1-5 位字母（美股）/ 6 位数字（A 股）→ 走腾讯 K 线
+  // 路由：kind="'stock' 强制走腾讯 K 线（覆盖所有代码类型）
+  if (kindOverride === 'stock') {
+    const kline = await fetchStockKLineHistory(code, days);
+    const data = kline.map(k => ({ date: k.date, dwjz: k.close })).filter(r => r.dwjz > 0);
+    if (data.length > 0) {
+      cache.fundHistory[code] = { data, timestamp: now, days: data.length };
+      return data.slice(-days);
+    }
+  }
   const isStock = /^[A-Za-z]{1,5}$/.test(code) || /^\d{4,5}$/.test(code);
   const isAShare = /^\d{6}$/.test(code);
   if (isStock || isAShare) {

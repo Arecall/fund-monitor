@@ -44,6 +44,45 @@ function initTables() {
       )
     `);
 
+    // Migrate databases created before v1.1.2. CREATE TABLE IF NOT EXISTS
+    // does not add new columns to an existing table, so add them explicitly.
+    const watchlistColumns = [
+      ['kind', "TEXT NOT NULL DEFAULT 'fund'"],
+      ['market', 'TEXT'],
+      ['sector', 'TEXT'],
+      ['note', 'TEXT'],
+    ];
+    for (const [name, definition] of watchlistColumns) {
+      db.run(`ALTER TABLE watchlist ADD COLUMN ${name} ${definition}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] watchlist migration failed for ${name}:`, err.message);
+        }
+      });
+    }
+    // 同时回填 kind 和 market — 旧数据库里 kind 默认 'fund' 会让 6 位数字误归为基金
+    // 实际分类规则：纯字母 / 4-5 位数字 / 沪市 60xx/68xx → stock；其他 6 位 → fund
+    db.run(`
+      UPDATE watchlist
+      SET kind = CASE
+            WHEN NULLIF(kind, '') IS NULL THEN
+              CASE
+                WHEN fund_code GLOB '[A-Za-z]*' AND length(fund_code) BETWEEN 1 AND 5 THEN 'stock'
+                WHEN length(fund_code) BETWEEN 4 AND 5 AND fund_code GLOB '[0-9]*' THEN 'stock'
+                WHEN length(fund_code) = 6 AND substr(fund_code, 1, 2) IN ('60', '68') THEN 'stock'
+                ELSE 'fund'
+              END
+            ELSE kind
+          END,
+          market = COALESCE(
+            NULLIF(market, ''),
+            CASE
+              WHEN fund_code GLOB '[A-Za-z]*' THEN 'us'
+              WHEN length(fund_code) IN (4, 5) THEN 'hk'
+              ELSE 'domestic'
+            END
+          )
+    `);
+
     // 3. 持仓记录表
     db.run(`
       CREATE TABLE IF NOT EXISTS positions (

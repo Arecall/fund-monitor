@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.1.1' });
+  res.json({ status: 'ok', version: '1.1.2' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -378,13 +378,14 @@ app.get('/api/market/indices', async (req, res) => {
 // 获取某只基金/股票估值（统一入口，按 code 格式自动路由数据源）
 app.get('/api/market/fund/:code', async (req, res) => {
   const { code } = req.params;
+  const kindOverride = req.query.kind;     // 可选: 'fund' | 'stock'，由前端 tab 决定
   // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母 / 带 HK/US 前缀
   if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5}|(HK|hk|rt_hk|US|us|gb_)[\w]{1,6})$/.test(code)) {
     return res.status(400).json({ error: '代码格式不正确（需为 A 股 6 位、港股 5 位或美股 ticker）' });
   }
 
   try {
-    const data = await marketHelper.getFundValuation(code);
+    const data = await marketHelper.getFundValuation(code, kindOverride);
     if (!data) {
       return res.status(404).json({ error: '未找到该基金/股票或获取失败' });
     }
@@ -405,7 +406,7 @@ app.get('/api/market/fund/:code/history', async (req, res) => {
   }
 
   try {
-    const data = await marketHelper.getFundHistory(code, days);
+    const data = await marketHelper.getFundHistory(code, days, kindOverride);
     res.json({ code, days, data });
   } catch (error) {
     res.status(500).json({ error: '获取基金历史净值失败' });

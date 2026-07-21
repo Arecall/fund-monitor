@@ -180,13 +180,15 @@ function App() {
   }, [watchlist, selectedFundCode]);
 
   // Fetch historical NAV when the selected fund changes — covers 1D/1W/1M
-  // ranges with real data from the backend.
+  // ranges with real data from the backend. 按 tab 强制 kind（股票走腾讯 K 线）
   useEffect(() => {
     if (!selectedFundCode) return;
     if (historyMap[selectedFundCode]) return;          // already cached
+    const item = watchlistItems.find(w => w.fund_code === selectedFundCode);
+    const kind = item?.kind;
     let cancelled = false;
     setHistoryLoading(true);
-    fetchFundHistory(selectedFundCode, 35)
+    fetchFundHistory(selectedFundCode, 35, kind)
       .then(data => {
         if (cancelled) return;
         setHistoryMap(prev => ({ ...prev, [selectedFundCode]: data }));
@@ -276,7 +278,8 @@ function App() {
       setMarketIndices(indices);
       const updatedFunds: Record<string, FundValuation> = {};
       await Promise.all(data.codes.map(async (code: string) => {
-        const val = await fetchFundValuation(code);
+        const item = data.items.find((w: WatchlistItem) => w.fund_code === code);
+        const val = await fetchFundValuation(code, item?.kind);
         if (val) updatedFunds[code] = val;
       }));
       setFundsData(updatedFunds);
@@ -294,7 +297,8 @@ function App() {
       if (indices.length > 0) setMarketIndices(indices);
       const updatedFunds = { ...fundsData };
       await Promise.all(watchlist.map(async (code) => {
-        const val = await fetchFundValuation(code);
+        const item = watchlistItems.find((w: WatchlistItem) => w.fund_code === code);
+        const val = await fetchFundValuation(code, item?.kind);
         if (val) updatedFunds[code] = val;
       }));
       setFundsData(updatedFunds);
@@ -362,7 +366,7 @@ function App() {
     setSearchLoading(true);
     setSearchError('');
     try {
-      const fund = await fetchFundValuation(code);
+      const fund = await fetchFundValuation(code, kind);
       if (fund) {
         const res = await addWatchlistItem({
           code,
