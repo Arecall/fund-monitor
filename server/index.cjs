@@ -5,6 +5,7 @@ const dbHelper = require('./db.cjs');
 const marketHelper = require('./market.cjs');
 const mailer = require('./mailer.cjs');
 const { hashPassword, verifyPassword, passwordMeetsPolicy } = require('./auth.cjs');
+const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldings, aggregateBySector } = require('./sectors.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.1.0' });
+  res.json({ status: 'ok', version: '1.1.1' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -132,45 +133,175 @@ app.post('/api/auth/login', async (req, res) => {
 // 2. 自选基金接口 (Watchlist Routes)
 // ==========================================
 
-// 获取用户的自选基金代码列表
+// ==========================================
+// 2. 自选基金/股票接口 (Watchlist Routes)
+// ==========================================
+// 区分 kind: 'fund' (A 股/港股 QDII 基金) | 'stock' (A 股/港股/美股 个股)
+
+// 获取用户的自选（按 kind 过滤）
 app.get('/api/watchlist', async (req, res) => {
   try {
-    const rows = await dbHelper.all('SELECT fund_code FROM watchlist WHERE user_id = ? ORDER BY created_at ASC', [req.userId]);
-    const codes = rows.map(r => r.fund_code);
-    res.json({ codes });
+    const kind = req.query.kind;       // 可选: 'fund' | 'stock'
+    let sql = 'SELECT fund_code, kind, market, sector, note, created_at FROM watchlist WHERE user_id = ?';
+    const params = [req.userId];
+    if (kind) { sql += ' AND kind = ?'; params.push(kind); }
+    sql += ' ORDER BY created_at ASC';
+    const rows = await dbHelper.all(sql, params);
+    res.json({
+      codes: rows.map(r => r.fund_code),
+      items: rows,
+    });
   } catch (error) {
     res.status(500).json({ error: '获取自选列表失败' });
   }
 });
 
-// 添加自选基金
+// 添加自选（支持基金 + 个股）
 app.post('/api/watchlist', async (req, res) => {
-  const { code } = req.body;
-  if (!code || !/^\d{6}$/.test(code)) {
-    return res.status(400).json({ error: '无效的6位基金代码' });
+  const { code, kind, market, sector, note } = req.body || {};
+  if (!code) return res.status(400).json({ error: '代码不能为空' });
+
+  // 格式校验：基金 6 位数字；股票 1-5 位字母 OR 5 位港股数字
+  const isFund = kind === 'fund' || (!kind && /^\d{6}$/.test(code));
+  const isStock = kind === 'stock' || (!kind && /^[A-Za-z]{1,5}$/.test(code)) || (!kind && /^\d{4,5}$/.test(code) && !/^\d{6}$/.test(code));
+
+  if (!isFund && !isStock) {
+    return res.status(400).json({ error: '代码格式不正确（需为 6 位基金 / 1-5 位股票 ticker / 5 位港股）' });
+  }
+
+  // 自动推断 sector
+  let finalSector = sector;
+  if (!finalSector) {
+    if (isStock) finalSector = inferStockSector(code);
+    else finalSector = inferFundSector('');    // name 可能为空，调用方可以 PUT 再更新
+  }
+
+  // 自动推断 market
+  let finalMarket = market;
+  if (!finalMarket) {
+    if (/^\d{6}$/.test(code)) finalMarket = 'domestic';
+    else if (/^\d{4,5}$/.test(code)) finalMarket = 'hk';
+    else finalMarket = 'us';
   }
 
   try {
     await dbHelper.run(
-      'INSERT OR IGNORE INTO watchlist (user_id, fund_code) VALUES (?, ?)',
-      [req.userId, code]
+      'INSERT OR IGNORE INTO watchlist (user_id, fund_code, kind, market, sector, note) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.userId, code, isFund ? 'fund' : 'stock', finalMarket, finalSector, note || null]
     );
-    res.json({ success: true, message: '成功添加至自选' });
+    res.json({
+      success: true,
+      message: isFund ? '成功添加至自选（基金）' : '成功添加至自选（股票）',
+      code, kind: isFund ? 'fund' : 'stock', market: finalMarket, sector: finalSector
+    });
   } catch (error) {
     res.status(500).json({ error: '添加自选失败' });
   }
 });
 
-// 移除自选基金（同时移除持仓）
+// 更新自选条目（用于设置 sector / note 等）
+app.patch('/api/watchlist/:code', async (req, res) => {
+  const { code } = req.params;
+  const { sector, note, market, kind } = req.body || {};
+  const sets = [];
+  const params = [];
+  if (sector !== undefined) { sets.push('sector = ?'); params.push(sector); }
+  if (note !== undefined)   { sets.push('note = ?');   params.push(note); }
+  if (market !== undefined) { sets.push('market = ?'); params.push(market); }
+  if (kind !== undefined)   { sets.push('kind = ?');   params.push(kind); }
+  if (!sets.length) return res.status(400).json({ error: '无有效更新字段' });
+  params.push(code, req.userId);
+  try {
+    const r = await dbHelper.run(
+      `UPDATE watchlist SET ${sets.join(', ')} WHERE fund_code = ? AND user_id = ?`,
+      params
+    );
+    if (r.changes === 0) return res.status(404).json({ error: '未找到该自选' });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: '更新失败' });
+  }
+});
+
+// 移除自选（同时移除持仓）
 app.delete('/api/watchlist/:code', async (req, res) => {
   const { code } = req.params;
-
   try {
     await dbHelper.run('DELETE FROM watchlist WHERE user_id = ? AND fund_code = ?', [req.userId, code]);
     await dbHelper.run('DELETE FROM positions WHERE user_id = ? AND fund_code = ?', [req.userId, code]);
     res.json({ success: true, message: '成功从自选和持仓中移除' });
   } catch (error) {
     res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// ==========================================
+// 2.5 行业板块接口 (Sector Routes)
+// ==========================================
+
+// 列出所有支持的行业 + 颜色
+app.get('/api/sectors', (_req, res) => {
+  res.json({
+    sectors: SECTORS,
+    colors: SECTOR_COLORS,
+  });
+});
+
+// 用户的板块分布（按持仓市值聚合）
+app.get('/api/sectors/breakdown', async (req, res) => {
+  try {
+    // 1. 拉用户的 watchlist（含 sector/market/note）
+    const watchRows = await dbHelper.all(
+      'SELECT fund_code, kind, market, sector, note FROM watchlist WHERE user_id = ?',
+      [req.userId]
+    ).catch(async () => {
+      return await dbHelper.all(
+        'SELECT fund_code FROM watchlist WHERE user_id = ?',
+        [req.userId]
+      ).then(rows => rows.map(r => ({ ...r, kind: 'fund', market: 'domestic', sector: null, note: null })));
+    });
+
+    // 2. 拉持仓
+    const positions = await dbHelper.all(
+      'SELECT fund_code, shares, cost FROM positions WHERE user_id = ?',
+      [req.userId]
+    );
+    const posMap = Object.fromEntries(positions.map(p => [p.fund_code, p]));
+
+    // 3. 对每只拉实时估值（带超时，避免拖慢）
+    const items = [];
+    for (const w of watchRows) {
+      try {
+        const fund = await marketHelper.getFundValuation(w.fund_code);
+        if (!fund) continue;
+        const pos = posMap[w.fund_code];
+        const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
+        const prev = parseFloat(fund.dwjz) || 0;
+        const value = pos ? pos.shares * current : 0;
+        const cost = pos ? pos.shares * pos.cost : 0;
+        const todayProfit = pos && prev > 0 ? pos.shares * (current - prev) : 0;
+        items.push({
+          code: w.fund_code,
+          name: w.name || fund.name || w.fund_code,
+          market: w.market || fund.market || 'domestic',
+          kind: w.kind || 'fund',
+          sector: w.sector || (w.kind === 'stock' ? inferStockSector(w.fund_code) : inferFundSector(fund.name || '')),
+          value, cost, todayProfit,
+          changePct: parseFloat(fund.gszzl) || 0,
+        });
+      } catch {}
+    }
+
+    const classified = classifyHoldings(items);
+    const aggregated = aggregateBySector(classified);
+    res.json({
+      sectors: SECTORS,
+      colors: SECTOR_COLORS,
+      groups: aggregated,
+      totalValue: aggregated.reduce((s, g) => s + g.totalValue, 0),
+    });
+  } catch (error) {
+    res.status(500).json({ error: '获取板块分布失败：' + error.message });
   }
 });
 
@@ -269,8 +400,8 @@ app.get('/api/market/fund/:code/history', async (req, res) => {
   const { code } = req.params;
   const days = Math.max(1, Math.min(parseInt(req.query.days) || 30, 90));
 
-  if (!code || !/^\d{6}$/.test(code)) {
-    return res.status(400).json({ error: '基金代码格式不正确' });
+  if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
+    return res.status(400).json({ error: '代码格式不正确（6 位基金 / 5 位港股 / 1-5 位美股）' });
   }
 
   try {

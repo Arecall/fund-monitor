@@ -28,12 +28,16 @@ function initTables() {
       )
     `);
 
-    // 2. 自选基金列表
+    // 2. 自选基金/股票列表（kind 区分 fund / stock）
     db.run(`
       CREATE TABLE IF NOT EXISTS watchlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         fund_code TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'fund',  -- 'fund' | 'stock'
+        market TEXT,                        -- 'domestic' | 'hk' | 'us' | 'other'
+        sector TEXT,                        -- 行业板块，如 '科技' / '金融' / '医疗'
+        note TEXT,                          -- 用户备注
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         UNIQUE(user_id, fund_code)

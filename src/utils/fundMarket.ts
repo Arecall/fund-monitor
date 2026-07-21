@@ -23,6 +23,10 @@ export function detectFundMarket(name?: string, code?: string): FundMarket {
   if (US_PATTERN.test(text)) return 'us';
   if (HK_PATTERN.test(text)) return 'hk';
   if (OTHER_PATTERN.test(text)) return 'other';
+  // 纯字母 ticker（如 TSLA / AAPL / NVDA）→ 美股
+  if (code && /^[A-Za-z]{1,5}$/.test(code.trim())) return 'us';
+  // 5 位数字 → 港股（00700 / 09988 等）
+  if (code && /^\d{4,5}$/.test(code.trim())) return 'hk';
   return 'domestic';
 }
 

@@ -26,14 +26,22 @@ import {
   fetchFundBasic,
   fetchFundHoldings,
   fetchWatchlist,
-  addToWatchlist,
+  addWatchlistItem,
   removeFromWatchlist,
   fetchPositions,
   savePosition,
-  removePosition
+  removePosition,
+  fetchSectorBreakdown,
+  type FundValuation,
+  type MarketIndex,
+  type UserPosition,
+  type FundHistoryPoint,
+  type FundBasicInfo,
+  type FundHoldingStock,
+  type WatchlistItem,
 } from './services/api';
-import type { FundValuation, MarketIndex, UserPosition, FundHistoryPoint, FundBasicInfo, FundHoldingStock } from './services/api';
 import { FundDetailPanel } from './components/FundDetailPanel';
+import { SectorView } from './components/SectorView';
 import { EmailConfigPanel } from './components/EmailConfigPanel';
 
 /* ───────────────────────────────────────────────────────────────────
@@ -130,9 +138,12 @@ function App() {
 
   /* ---------- Data state ---------- */
   const [watchlist, setWatchlist] = useState<string[]>([]);
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>([]);
   const [fundsData, setFundsData] = useState<Record<string, FundValuation>>({});
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [positions, setPositions] = useState<Record<string, UserPosition>>({});
+  const [selfTab, setSelfTab] = useState<'fund' | 'stock' | 'sector'>('fund');
+  const [sectorData, setSectorData] = useState<Awaited<ReturnType<typeof fetchSectorBreakdown>> | null>(null);
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
@@ -257,8 +268,9 @@ function App() {
   const loadUserData = async () => {
     setLoading(true);
     try {
-      const codes = await fetchWatchlist();
-      setWatchlist(codes);
+      const data = await fetchWatchlist();
+      setWatchlist(data.codes);
+      setWatchlistItems(data.items);
       const posList = await fetchPositions();
       const posMap: Record<string, UserPosition> = {};
       posList.forEach(p => { posMap[p.fund_code] = p; });
@@ -266,7 +278,7 @@ function App() {
       const indices = await fetchMarketIndices();
       setMarketIndices(indices);
       const updatedFunds: Record<string, FundValuation> = {};
-      await Promise.all(codes.map(async (code) => {
+      await Promise.all(data.codes.map(async (code: string) => {
         const val = await fetchFundValuation(code);
         if (val) updatedFunds[code] = val;
       }));
@@ -345,21 +357,32 @@ function App() {
       return;
     }
     if (watchlist.includes(code)) {
-      setSearchError('该基金已在自选列表中');
+      setSearchError('该代码已在自选列表中');
       return;
     }
+    // 根据 selfTab 决定 kind（基金/股票）
+    const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
     setSearchLoading(true);
     setSearchError('');
     try {
       const fund = await fetchFundValuation(code);
       if (fund) {
-        await addToWatchlist(code);
+        const res = await addWatchlistItem({
+          code,
+          kind,
+          market: fund.market as any,
+          sector: kind === 'stock' ? undefined : undefined,    // 板块会在首次拉取时自动推断
+        });
         setWatchlist(prev => [...prev, code]);
+        setWatchlistItems(prev => [...prev, {
+          fund_code: code, kind,
+          market: fund.market as any, sector: (res as any).sector, created_at: new Date().toISOString()
+        }]);
         setFundsData(prev => ({ ...prev, [code]: fund }));
         setNewCode('');
-        showToast(`已订阅基金: ${fund.name}`);
+        showToast(`已订阅${kind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
       } else {
-        setSearchError('未找到该基金，请确认代码是否正确');
+        setSearchError('未找到该代码，请确认是否正确');
       }
     } catch (err: any) {
       setSearchError(err.message || '获取数据失败，请确认代码');
@@ -810,25 +833,46 @@ function App() {
         <div className="lg:col-span-3 flex flex-col gap-6">
           <section className="apple-card overflow-hidden flex flex-col">
 
-            {/* Header / add watchlist */}
-            <div className="p-5 border-b border-[var(--hairline-border)] flex justify-between items-center flex-wrap gap-4 bg-slate-50/30 dark:bg-[#1d1d1f]/40">
-              <h2 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                <span aria-hidden>📋</span>
-                <span>自选基金订阅</span>
-                <span className="px-2 py-0.5 bg-[#0066cc]/10 text-[#0066cc] dark:bg-[#2997ff]/20 dark:text-[#2997ff] rounded-full text-[9px] font-bold tracking-wider">
-                  AUTOPLAY
-                </span>
-              </h2>
-
+            {/* Header / tabs / add watchlist */}
+            <div className="px-5 pt-4 pb-3 border-b border-[var(--hairline-border)] bg-slate-50/30 dark:bg-[#1d1d1f]/40">
+              <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+                <h2 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                  <span aria-hidden>📋</span>
+                  <span>自选</span>
+                  <span className="px-2 py-0.5 bg-[#0066cc]/10 text-[#0066cc] dark:bg-[#2997ff]/20 dark:text-[#2997ff] rounded-full text-[9px] font-bold tracking-wider">
+                    {watchlistItems.filter(w => w.kind === 'fund').length} 基金 · {watchlistItems.filter(w => w.kind === 'stock').length} 股
+                  </span>
+                </h2>
+              </div>
+              {/* Tab 切换 */}
+              <div className="flex items-center gap-1 mb-3 p-0.5 bg-slate-100/60 dark:bg-white/5 rounded-full w-fit">
+                {([
+                  { key: 'fund',   label: '基金' },
+                  { key: 'stock',  label: '股票' },
+                  { key: 'sector', label: '板块' },
+                ] as const).map(tab => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setSelfTab(tab.key)}
+                    className={`relative px-4 py-1.5 text-xs font-semibold rounded-full transition-colors ${
+                      selfTab === tab.key
+                        ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
               <form onSubmit={handleAddFund} className="flex items-center gap-2">
                 <div className="relative">
                   <input
                     type="text"
                     maxLength={10}
-                    placeholder="6位基金/港股5位/美股ticker，如 110011 / 00700 / AAPL"
+                    placeholder={selfTab === 'stock' ? 'AAPL / 00700 / TSLA' : selfTab === 'sector' ? '板块视图' : '6位基金 / 港股5位 / 美股ticker'}
                     value={newCode}
                     onChange={(e) => {
-                      // A 股 6 位数字；港股 5 位数字；美股 1-5 位字母
                       const v = e.target.value.toUpperCase().trim();
                       setNewCode(v);
                       setSearchError('');
@@ -865,23 +909,52 @@ function App() {
               )}
             </AnimatePresence>
 
-            {/* Watchlist table */}
+            {/* Watchlist content based on selfTab */}
+            {selfTab === 'sector' ? (
+              <SectorView
+                data={sectorData}
+                onRefresh={async () => {
+                  const sd = await fetchSectorBreakdown();
+                  setSectorData(sd);
+                }}
+              />
+            ) : (
             <div className="overflow-x-auto flex-1">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold">
-                    <th className="p-4 pl-6">基金名称与代码</th>
-                    <th className="p-4 text-right">昨日单位净值</th>
-                    <th className="p-4 text-right">实时估算净值</th>
-                    <th className="p-4 text-right">实时估算涨跌</th>
+                    <th className="p-4 pl-6">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
+                    {selfTab === 'stock' ? (
+                      <>
+                        <th className="p-4 text-right">昨收</th>
+                        <th className="p-4 text-right">现价</th>
+                        <th className="p-4 text-right">涨跌幅</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="p-4 text-right">昨日单位净值</th>
+                        <th className="p-4 text-right">实时估算净值</th>
+                        <th className="p-4 text-right">实时估算涨跌</th>
+                      </>
+                    )}
                     <th className="p-4 text-right">我的持仓预估</th>
-                    <th className="p-4 text-right">今日估算盈亏</th>
+                    <th className="p-4 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
                     <th className="p-4 text-center pr-6">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                   <AnimatePresence initial={false}>
-                    {watchlist.map((code) => {
+                    {watchlist.filter(code => {
+                      if (selfTab === 'fund') {
+                        const it = watchlistItems.find(w => w.fund_code === code);
+                        return !it || it.kind === 'fund';
+                      }
+                      if (selfTab === 'stock') {
+                        const it = watchlistItems.find(w => w.fund_code === code);
+                        return it?.kind === 'stock';
+                      }
+                      return true;
+                    }).map((code) => {
                       const fund = fundsData[code];
                       const pos = positions[code];
 
@@ -930,8 +1003,16 @@ function App() {
                             </div>
                             <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
                               <span className="tabular-nums">{fund.fundcode}</span>
-                              <span className="text-[9px] bg-slate-100 dark:bg-black text-[#86868b] px-2 py-0.2 rounded-full font-sans font-medium border border-[var(--hairline-border)]">
-                                公募场外
+                              <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
+                                selfTab === 'stock'
+                                  ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                                    : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                                    : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+                                  : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+                              }`}>
+                                {selfTab === 'stock'
+                                  ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+                                  : '公募场外'}
                               </span>
                             </div>
                           </td>
@@ -1018,6 +1099,7 @@ function App() {
                 </tbody>
               </table>
             </div>
+            )}
           </section>
         </div>
       </div>
@@ -1229,14 +1311,18 @@ function App() {
          height sheet.
          ───────────────────────────────────────────────────────────── */}
       <AnimatePresence>
-        {selectedFundCode && fundsData[selectedFundCode] && (
+        {selectedFundCode && fundsData[selectedFundCode] && (() => {
+          const item = watchlistItems.find(w => w.fund_code === selectedFundCode);
+          const isStock = item?.kind === 'stock';
+          return (
           <DetailDrawer
             key="detail-drawer"
             onDismiss={() => setSelectedFundCode(null)}
-            ariaLabel="基金详情"
+            ariaLabel={isStock ? '股票详情' : '基金详情'}
           >
             <FundDetailPanel
               fund={fundsData[selectedFundCode]}
+              kind={item?.kind}
               position={positions[selectedFundCode]}
               history={historyMap[selectedFundCode] || []}
               historyLoading={historyLoading}
@@ -1249,7 +1335,8 @@ function App() {
               onToast={showToast}
             />
           </DetailDrawer>
-        )}
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

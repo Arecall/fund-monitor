@@ -9,6 +9,7 @@ export interface FundValuation {
   gszzl: string;     // 估算当日涨跌幅 (单位为 %，例如 -0.38)
   gztime: string;    // 估算时间
   lastUpdated?: number; // 本地获取时间戳
+  market?: 'domestic' | 'hk' | 'us' | 'other';  // 板块路由用
 }
 
 export interface MarketIndex {
@@ -288,16 +289,78 @@ export async function saveEmailConfig(updates: Record<string, string>): Promise<
 }
 
 /**
- * 获取自选基金代码列表
+ * 自选条目（含 kind/market/sector/note 元数据）
  */
-export async function fetchWatchlist(): Promise<string[]> {
+export interface WatchlistItem {
+  fund_code: string;
+  kind: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  sector?: string;
+  note?: string;
+  created_at?: string;
+}
+
+/**
+ * 获取自选列表（可按 kind 过滤）
+ */
+export async function fetchWatchlist(kind?: 'fund' | 'stock'): Promise<{ codes: string[]; items: WatchlistItem[] }> {
   try {
-    const data = await request('/api/watchlist');
-    return data.codes || [];
+    const data = await request(kind ? `/api/watchlist?kind=${kind}` : '/api/watchlist');
+    return { codes: data.codes || [], items: data.items || [] };
   } catch (error) {
     console.error('获取自选列表失败:', error);
-    return [];
+    return { codes: [], items: [] };
   }
+}
+
+/**
+ * 添加自选（支持基金 + 个股）
+ */
+export async function addWatchlistItem(params: {
+  code: string;
+  kind?: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  sector?: string;
+  note?: string;
+}) {
+  return request('/api/watchlist', { method: 'POST', body: JSON.stringify(params) });
+}
+
+export async function updateWatchlistItem(code: string, params: { sector?: string; note?: string; market?: string; kind?: 'fund' | 'stock' }) {
+  return request(`/api/watchlist/${code}`, { method: 'PATCH', body: JSON.stringify(params) });
+}
+
+/* 板块 API */
+export interface SectorGroup {
+  sector: string;
+  items: Array<{
+    code: string;
+    name: string;
+    market: string;
+    kind: string;
+    value: number;
+    cost: number;
+    todayProfit: number;
+    changePct: number;
+  }>;
+  totalValue: number;
+  totalCost: number;
+  totalTodayProfit: number;
+  totalProfit: number;
+  weight: number;
+}
+
+export async function fetchSectorBreakdown(): Promise<{
+  sectors: string[];
+  colors: Record<string, string>;
+  groups: SectorGroup[];
+  totalValue: number;
+}> {
+  return request('/api/sectors/breakdown');
+}
+
+export async function fetchSectors(): Promise<{ sectors: string[]; colors: Record<string, string> }> {
+  return request('/api/sectors');
 }
 
 /**

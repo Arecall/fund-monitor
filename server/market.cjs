@@ -38,7 +38,8 @@ function parseJsonp(jsonpStr) {
 
 /**
  * 智能识别 code 类型并路由到对应数据源
- *   - 6 位纯数字 → A 股基金（fundgz）
+ *   - 6 位 + 60/68/00/30/8 开头 → A 股个股（Sina sh/sz/bj）
+ *   - 6 位其他 → A 股基金（fundgz）
  *   - 5 位数字（00700、09988 等）→ 港股（Sina rt_hk）
  *   - 1-5 位字母 → 美股 ticker（Sina gb_）
  *   - 含 "HK"/"hk" 前缀 → 港股
@@ -47,11 +48,80 @@ function parseJsonp(jsonpStr) {
 function detectCodeKind(code) {
   if (!code) return 'unknown';
   const c = code.trim().toUpperCase();
-  if (/^\d{6}$/.test(c)) return 'fund_a';                 // A 股 6 位
+  if (/^\d{6}$/.test(c)) {
+    // A 股个股代码前缀：60x=沪主板, 68x=科创板, 00x/30x=深主板/创业板, 8x=北交所
+    if (/^(60|68|00|30|8)/.test(c)) return 'stock_a';
+    return 'fund_a';                                          // 其他 6 位按基金处理
+  }
   if (/^(HK|RT_HK)?\d{4,5}$/.test(c)) return 'fund_hk';     // 港股 5 位
   if (/^(US|GB)?[A-Z]{1,5}$/.test(c)) return 'fund_us';     // 美股 ticker
   if (/^[A-Z]{1,5}$/.test(c)) return 'fund_us';             // 默认按美股
   return 'unknown';
+}
+
+/**
+ * A 股个股实时行情（Sina hq.sinajs.cn）
+ *   - sh6xxxxx / sh68xxx  → 上海主板 / 科创板
+ *   - sz00xxxx / sz30xxx  → 深圳主板 / 创业板
+ *   - bj8xxxxx             → 北交所
+ *   字段：name(0,GBK) | open(1) | prev_close(2) | current(3) | high(4) | low(5) |
+ *         bid1(6) | ask1(7) | volume(8) | turnover(9) | ... | date(30) | time(31)
+ */
+async function fetchASHareStockValuation(code) {
+  const c = code.toUpperCase();
+  let symbol = c;
+  if (/^\d{6}$/.test(c)) {
+    if (c.startsWith('60') || c.startsWith('68')) symbol = 'sh' + c;
+    else if (c.startsWith('00') || c.startsWith('30')) symbol = 'sz' + c;
+    else if (c.startsWith('8')) symbol = 'bj' + c;
+    else return null;
+  } else {
+    return null;
+  }
+  const url = `http://hq.sinajs.cn/list=${symbol.toLowerCase()}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'http://finance.sina.com.cn' },
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  const m = text.match(/="([^"]+)"/);
+  if (!m) return null;
+  const parts = m[1].split(',');
+  if (parts.length < 32) return null;
+  const name = parts[0];
+  if (!name) return null;
+  const open = parseFloat(parts[1]);
+  const prevClose = parseFloat(parts[2]);
+  const current = parseFloat(parts[3]);
+  if (isNaN(current) || current <= 0) return null;
+  const high = parseFloat(parts[4]);
+  const low = parseFloat(parts[5]);
+  const volume = parseFloat(parts[8]);          // 手
+  const turnover = parseFloat(parts[9]);       // 元
+  const date = parts[30];
+  const time = parts[31];
+  const change = isNaN(prevClose) ? 0 : current - prevClose;
+  const changePct = isNaN(prevClose) || prevClose <= 0 ? 0 : (change / prevClose) * 100;
+  // 昨收/今开/最新（数据规整为统一字段）
+  return {
+    fundcode: c,
+    name,
+    jzrq: date || '',                          // 日期字段复用为交易日期
+    dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),  // 昨收
+    gsz: current.toFixed(4),                   // 现价
+    gszzl: changePct.toFixed(2),               // 涨跌幅%
+    gztime: date && time ? `${date} ${time}` : (date || ''),
+    market: c.startsWith('BJ') || symbol.startsWith('bj') ? 'other' : 'domestic',
+    stockSpecific: {
+      open: isNaN(open) ? null : open,
+      high: isNaN(high) ? null : high,
+      low: isNaN(low) ? null : low,
+      volume: isNaN(volume) ? null : volume,
+      turnover: isNaN(turnover) ? null : turnover,
+      change: isNaN(change) ? 0 : change,
+    }
+  };
 }
 
 /**
@@ -177,6 +247,56 @@ async function fetchEastMoneyLSJZ(code) {
     market: 'domestic',
     navOnly: true
   };
+}
+
+/**
+ * 腾讯 K 线历史数据（A 股 / 港股 / 美股 通用）
+ *   返回标准化格式：[{ date, open, high, low, close, volume }]
+ *   A 股：web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,30,qfq
+ *   美股：... /usfqkline/get?param=us.TSLA,day,,,30,qfq
+ *   港股：... /hkfqkline/get?param=hk00700,day,,,30,qfq
+ */
+async function fetchStockKLineHistory(code, days = 30) {
+  const c = code.trim();
+  let symbol, url;
+  if (/^\d{6}$/.test(c)) {
+    if (c.startsWith('60') || c.startsWith('68')) { symbol = 'sh' + c; }
+    else if (c.startsWith('00') || c.startsWith('30')) { symbol = 'sz' + c; }
+    else return [];
+    url = 'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
+  } else if (/^[A-Za-z]{1,5}$/.test(c)) {
+    symbol = 'us.' + c.toUpperCase();
+    url = 'http://web.ifzq.gtimg.cn/appstock/app/usfqkline/get';
+  } else if (/^\d{4,5}$/.test(c)) {
+    symbol = 'hk' + c.padStart(5, '0');
+    url = 'http://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get';
+  } else {
+    return [];
+  }
+
+  const fullUrl = `${url}?param=${symbol},day,,,${days},qfq`;
+  try {
+    const r = await axios.get(fullUrl, { timeout: 8000 });
+    const d = r.data;
+    if (!d || d.code !== 0 || !d.data) return [];
+    const key = Object.keys(d.data).find(k => k !== 'qt') || Object.keys(d.data)[0];
+    if (!key || key === 'qt') return [];
+    const arr = d.data[key]?.day || d.data[key]?.qfqday || [];
+    return arr.map((k) => {
+      const [date, open, close, high, low, volume] = k;
+      return {
+        date,
+        open: parseFloat(open) || 0,
+        high: parseFloat(high) || 0,
+        low: parseFloat(low) || 0,
+        close: parseFloat(close) || 0,
+        volume: parseFloat(volume) || 0,
+      };
+    });
+  } catch (e) {
+    console.error(`[kline] ${code} 失败:`, e.message);
+    return [];
+  }
 }
 
 /**
@@ -360,7 +480,9 @@ async function getFundValuation(code) {
   let result = null;
 
   try {
-    if (kind === 'fund_hk') {
+    if (kind === 'stock_a') {
+      result = await fetchASHareStockValuation(code);
+    } else if (kind === 'fund_hk') {
       result = await fetchHKStockValuation(code);
     } else if (kind === 'fund_us') {
       result = await fetchUSStockValuation(code);
@@ -444,12 +566,34 @@ async function getFundValuation(code) {
  * @returns {Array<{date:string, dwjz:number}>} 按日期升序
  */
 async function getFundHistory(code, days = 30) {
-  if (!/^\d{6}$/.test(code)) return [];
   const now = Date.now();
   const cached = cache.fundHistory[code];
   if (cached && (now - cached.timestamp < FUND_HISTORY_TTL) && cached.days >= days) {
     return cached.data.slice(-days);
   }
+
+  // 路由：5 位数字（港股）/ 1-5 位字母（美股）/ 6 位数字（A 股）→ 走腾讯 K 线
+  const isStock = /^[A-Za-z]{1,5}$/.test(code) || /^\d{4,5}$/.test(code);
+  const isAShare = /^\d{6}$/.test(code);
+  if (isStock || isAShare) {
+    const kline = await fetchStockKLineHistory(code, days);
+    const data = kline
+      .map(k => ({ date: k.date, dwjz: k.close }))
+      .filter(r => r.dwjz > 0);
+    if (data.length > 0) {
+      cache.fundHistory[code] = { data, timestamp: now, days: data.length };
+      return data.slice(-days);
+    }
+    // A 股 K 线失败 → fallback 到 f10/lsjz（基金净值）
+    if (isAShare) {
+      // 继续下面的 f10/lsjz 逻辑
+    } else {
+      return [];
+    }
+  }
+
+  // 6 位数字 → A 股基金（f10/lsjz），仅在 K 线失败时
+  if (!/^\d{6}$/.test(code)) return [];
 
   // 拉取足够多的记录以覆盖 days 区间
   const pageSize = Math.max(30, Math.min(days + 5, 90));
@@ -853,5 +997,6 @@ module.exports = {
   detectCodeKind,
   fetchHKStockValuation,
   fetchUSStockValuation,
-  fetchSinaFundValuation
+  fetchSinaFundValuation,
+  fetchASHareStockValuation,
 };

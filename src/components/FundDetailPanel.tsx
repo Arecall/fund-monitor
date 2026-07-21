@@ -35,12 +35,14 @@ interface FundDetailPanelProps {
   historyLoading?: boolean;
   basic?: FundBasicInfo | null | undefined;
   holdings?: FundHoldingStock[];
+  kind?: 'fund' | 'stock';
   onEditPosition?: () => void;
   onToast?: (msg: string) => void;
 }
 
 /**
- * Right-side detail panel shown when a fund is selected.
+ * Right-side detail panel shown when a fund/stock is selected.
+ * For stocks, the fund intro / holdings / fund-specific bits are hidden.
  * On mobile it collapses into a full-height sheet.
  */
 export function FundDetailPanel({
@@ -50,6 +52,7 @@ export function FundDetailPanel({
   historyLoading = false,
   basic = null,
   holdings = [],
+  kind = 'fund',
   onEditPosition,
   onToast
 }: FundDetailPanelProps) {
@@ -94,9 +97,20 @@ export function FundDetailPanel({
             {fund.name}
           </h3>
           <span className="font-mono text-[11px] text-slate-500 tabular-nums">{fund.fundcode}</span>
-          <span className="text-[10px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full font-bold border border-blue-100/60 dark:border-blue-900/30">
-            混合型-中高风险
-          </span>
+          {/* 基金显示风险等级；股票显示市场归属 */}
+          {kind === 'fund' ? (
+            <span className="text-[10px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full font-bold border border-blue-100/60 dark:border-blue-900/30">
+              混合型-中高风险
+            </span>
+          ) : (
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+              fund.market === 'us'  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/30'
+            : fund.market === 'hk'  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/30'
+            :                            'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/30'
+            }`}>
+              {fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股'}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <PressableButton
@@ -213,11 +227,13 @@ export function FundDetailPanel({
         />
       </section>
 
-      {/* ── Footer two-column: intro + holdings summary ──────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FundIntroCard basic={basic} />
-        <HoldingsSummaryCard basic={basic} holdings={holdings} />
-      </div>
+      {/* ── Footer two-column: intro + holdings summary (仅基金) ── */}
+      {kind === 'fund' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FundIntroCard basic={basic} />
+          <HoldingsSummaryCard basic={basic} holdings={holdings} />
+        </div>
+      )}
 
       {/* ── Alert panel (price notifications) ─────────────────── */}
       <AlertPanel

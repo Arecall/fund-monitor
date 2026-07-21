@@ -95,7 +95,7 @@ function dateToTs(date: string): number {
   return new Date(parts[0], parts[1] - 1, parts[2]).getTime();
 }
 
-/** Simplify US DST: March–October = summer time (NY = UTC-4), else UTC-5 */
+/** 简化的 US DST：3-10 月 = 夏令时（NY = UTC-4），否则冬令时（UTC-5） */
 function isUSDST(d: Date): boolean {
   const m = d.getMonth() + 1;
   return m >= 3 && m <= 10;
@@ -238,6 +238,7 @@ export function buildSeries(
 
     const steps = 240;
     const series = interpolate(previous, current, steps, 0.0006, rand);
+    // X 轴统一用北京时间（北京时间本地时间）
     const points: ChartPoint[] = series.map((v, i) => {
       const t = startTs + (i / (steps - 1)) * (endTs - startTs);
       return { t, v };
@@ -266,7 +267,7 @@ export function buildSeries(
   return { points, source: 'estimated', market, note: '数据不足，仅展示两点' };
 }
 
-/** X-axis tick label — 统一用北京时间 HH:MM */
+/** X 轴刻度标签：统一用北京时间 HH:MM */
 export function formatTick(t: number, range: RangeKey): string {
   if (range === 'intraday') {
     const d = new Date(t);
@@ -275,7 +276,7 @@ export function formatTick(t: number, range: RangeKey): string {
   return `${new Date(t).getMonth() + 1}/${new Date(t).getDate()}`;
 }
 
-/** Tooltip — intraday 显示 HH:MM（北京时间），其他显示 YYYY-MM-DD */
+/** Tooltip：统一用北京时间 */
 export function formatTooltip(t: number, range: RangeKey): string {
   const d = new Date(t);
   if (range === 'intraday') {
