@@ -783,7 +783,11 @@ async function pollAlerts() {
           }
         }
 
-        // 发送 + 落库
+        // 发送 + 落库 — 防御性：再次确认非交易时间，防止未来的回归
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code)) {
+          console.log(`[alerts] safety-skip #${alert.id} (defensive double-check) at BJT=${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}`);
+          continue;
+        }
         const sendResult = await mailer.sendAlertEmail({
           to: alert.email,
           fundCode: alert.fund_code,
