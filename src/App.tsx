@@ -31,7 +31,6 @@ import {
   fetchPositions,
   savePosition,
   removePosition,
-  fetchSectorBreakdown,
   type FundValuation,
   type MarketIndex,
   type UserPosition,
@@ -41,7 +40,6 @@ import {
   type WatchlistItem,
 } from './services/api';
 import { FundDetailPanel } from './components/FundDetailPanel';
-import { SectorView } from './components/SectorView';
 import { EmailConfigPanel } from './components/EmailConfigPanel';
 
 /* ───────────────────────────────────────────────────────────────────
@@ -142,8 +140,7 @@ function App() {
   const [fundsData, setFundsData] = useState<Record<string, FundValuation>>({});
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [positions, setPositions] = useState<Record<string, UserPosition>>({});
-  const [selfTab, setSelfTab] = useState<'fund' | 'stock' | 'sector'>('fund');
-  const [sectorData, setSectorData] = useState<Awaited<ReturnType<typeof fetchSectorBreakdown>> | null>(null);
+  const [selfTab, setSelfTab] = useState<'fund' | 'stock'>('fund');
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
@@ -849,7 +846,6 @@ function App() {
                 {([
                   { key: 'fund',   label: '基金' },
                   { key: 'stock',  label: '股票' },
-                  { key: 'sector', label: '板块' },
                 ] as const).map(tab => (
                   <button
                     key={tab.key}
@@ -870,7 +866,7 @@ function App() {
                   <input
                     type="text"
                     maxLength={10}
-                    placeholder={selfTab === 'stock' ? 'AAPL / 00700 / TSLA' : selfTab === 'sector' ? '板块视图' : '6位基金 / 港股5位 / 美股ticker'}
+                    placeholder={selfTab === 'stock' ? 'AAPL / 00700 / TSLA' : '6位基金 / 港股5位 / 美股ticker'}
                     value={newCode}
                     onChange={(e) => {
                       const v = e.target.value.toUpperCase().trim();
@@ -909,16 +905,7 @@ function App() {
               )}
             </AnimatePresence>
 
-            {/* Watchlist content based on selfTab */}
-            {selfTab === 'sector' ? (
-              <SectorView
-                data={sectorData}
-                onRefresh={async () => {
-                  const sd = await fetchSectorBreakdown();
-                  setSectorData(sd);
-                }}
-              />
-            ) : (
+            {/* Watchlist content */}
             <div className="overflow-x-auto flex-1">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
@@ -1099,7 +1086,6 @@ function App() {
                 </tbody>
               </table>
             </div>
-            )}
           </section>
         </div>
       </div>
