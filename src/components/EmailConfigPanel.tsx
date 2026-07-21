@@ -38,6 +38,9 @@ export function EmailConfigPanel({ isAdmin, currentUser, onToast }: EmailConfigP
   const [open, setOpen] = useState(false);
   const prefersReducedMotion = useReducedMotion();
 
+  // 非 admin 完全隐藏入口（admin 才可点击）
+  if (!isAdmin) return null;
+
   return (
     <>
       <motion.button
