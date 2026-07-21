@@ -485,7 +485,17 @@ async function getFundValuation(code, kindOverride) {
   let result = null;
 
   try {
-    if (kind === 'stock_a') {
+    // kindOverride='stock' 是前端的"股票 tab"标识，需要再按 code 格式细分到具体 fetcher
+    if (kindOverride === 'stock') {
+      const subKind = detectCodeKind(code);
+      if (subKind === 'stock_a' || subKind === 'fund_a') {
+        result = await fetchASHareStockValuation(code);
+      } else if (subKind === 'fund_hk') {
+        result = await fetchHKStockValuation(code);
+      } else if (subKind === 'fund_us') {
+        result = await fetchUSStockValuation(code);
+      }
+    } else if (kind === 'stock_a') {
       result = await fetchASHareStockValuation(code);
     } else if (kind === 'fund_hk') {
       result = await fetchHKStockValuation(code);
