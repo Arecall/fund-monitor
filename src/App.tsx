@@ -156,6 +156,7 @@ function App() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchBusy, setSearchBusy] = useState(false);
   const searchTimerRef = useRef<number | null>(null);
+  const composingRef = useRef(false);  // IME 拼音输入进行中
   const addBoxRef = useRef<HTMLDivElement>(null);
 
   /* ---------- Edit-position modal state ---------- */
@@ -362,6 +363,7 @@ function App() {
 
   /**
    * 名称搜索下拉的输入变化：250ms 防抖后请求后端搜索；仅当输入含非 ASCII 字符才触发
+   * IME 拼音输入进行中不发请求，等 compositionEnd 后再发
    */
   const handleAddInputChange = (value: string) => {
     setNewCode(value);
@@ -374,20 +376,29 @@ function App() {
     }
 
     // 纯代码形态（仅含 A-Z / 0-9）→ 不发搜索请求
-    const isCodeLike = /^[A-Z0-9]+$/.test(value);
+    // 用 lowercase 比对，因为 toUpperCase 对中文是 no-op、且会改变 aapl→AAPL 这种纯字母输入
+    const isCodeLike = /^[a-z0-9]+$/i.test(value);
     if (isCodeLike || value.length < 1) {
       setSearchResults([]);
       setDropdownOpen(false);
       return;
     }
 
+    // IME 输入中先不搜（compositionend 才会真正选定汉字）
+    if (composingRef.current) return;
+
     searchTimerRef.current = window.setTimeout(async () => {
+      // 再检查一次：debounce 期间用户可能又开始拼音输入了
+      if (composingRef.current) return;
       setSearchBusy(true);
       try {
         const results = await searchByName(value, selfTab);
-        setSearchResults(results);
-        setHighlightIdx(0);
-        setDropdownOpen(results.length > 0);
+        // 请求返回时用户可能已经清空/切换，要核对一次当前输入
+        if (!composingRef.current && value.length > 0) {
+          setSearchResults(results);
+          setHighlightIdx(0);
+          setDropdownOpen(results.length > 0);
+        }
       } catch {
         setSearchResults([]);
         setDropdownOpen(false);
@@ -1016,11 +1027,18 @@ function App() {
                     maxLength={20}
                     placeholder={selfTab === 'stock' ? '代码 或 名称 (如 00700 / 腾讯)' : '代码 或 名称 (如 161039 / 三花)'}
                     value={newCode}
-                    onChange={(e) => handleAddInputChange(e.target.value.toUpperCase())}
+                    onChange={(e) => handleAddInputChange(e.target.value)}
+                    onCompositionStart={() => { composingRef.current = true; }}
+                    onCompositionEnd={(e) => {
+                      composingRef.current = false;
+                      // 拼音组合结束，触发搜索（用 IME 提交后的最终值）
+                      handleAddInputChange((e.target as HTMLInputElement).value);
+                    }}
                     onKeyDown={handleAddInputKeyDown}
                     onFocus={() => { if (searchResults.length > 0) setDropdownOpen(true); }}
                     autoComplete="off"
-                    className="apple-input pl-9 pr-3 py-2 text-xs w-64 font-mono font-medium placeholder-slate-400"
+                    spellCheck={false}
+                    className="apple-input pl-9 pr-3 py-2 text-xs w-64 font-medium placeholder-slate-400"
                   />
                   <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                   {searchBusy && (
