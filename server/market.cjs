@@ -968,7 +968,19 @@ async function getMarketIndices() {
           const name = parts[0];
           const price = parseFloat(parts[1]);
           const change = parseFloat(parts[2]);
-          const changePercent = parseFloat(parts[3]);
+          // Sina 不同市场数据格式不同：
+          //   - s_sh/s_sz: parts[3] 是涨跌幅(%)
+          //   - s_hk:      parts[3] 是涨跌幅(%)
+          //   - gb_ (美股): parts[3] 是时间戳 "YYYY-MM-DD HH:MM:SS"，
+          //     parseFloat 会拿到年份；parts[4] 也不是涨跌幅（是别的字段，比如 open/last close 之类）
+          // 最可靠：changePercent = change / (price - change) * 100，从 change + price 反推
+          let changePercent;
+          if (code.startsWith('gb_')) {
+            const prevClose = price - change;
+            changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+          } else {
+            changePercent = parseFloat(parts[3]);
+          }
 
           let status = 'closed';
           if (code.startsWith('s_sh') || code.startsWith('s_sz')) {
