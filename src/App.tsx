@@ -31,6 +31,8 @@ import {
   fetchPositions,
   savePosition,
   removePosition,
+  searchByName,
+  type SearchResult,
   type FundValuation,
   type MarketIndex,
   type UserPosition,
@@ -147,6 +149,14 @@ function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  /* ---------- Name search autocomplete ---------- */
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [highlightIdx, setHighlightIdx] = useState(0);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const searchTimerRef = useRef<number | null>(null);
+  const addBoxRef = useRef<HTMLDivElement>(null);
 
   /* ---------- Edit-position modal state ---------- */
   const [editingCode, setEditingCode] = useState<string | null>(null);
@@ -349,12 +359,147 @@ function App() {
   };
 
   /* ---------- Watchlist CRUD ---------- */
+
+  /**
+   * 名称搜索下拉的输入变化：250ms 防抖后请求后端搜索；仅当输入含非 ASCII 字符才触发
+   */
+  const handleAddInputChange = (value: string) => {
+    setNewCode(value);
+    setSearchError('');
+
+    // 取消上一个待发请求
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+
+    // 纯代码形态（仅含 A-Z / 0-9）→ 不发搜索请求
+    const isCodeLike = /^[A-Z0-9]+$/.test(value);
+    if (isCodeLike || value.length < 1) {
+      setSearchResults([]);
+      setDropdownOpen(false);
+      return;
+    }
+
+    searchTimerRef.current = window.setTimeout(async () => {
+      setSearchBusy(true);
+      try {
+        const results = await searchByName(value, selfTab);
+        setSearchResults(results);
+        setHighlightIdx(0);
+        setDropdownOpen(results.length > 0);
+      } catch {
+        setSearchResults([]);
+        setDropdownOpen(false);
+      } finally {
+        setSearchBusy(false);
+      }
+    }, 250);
+  };
+
+  /**
+   * 直接通过名称搜索结果添加：跳过 regex 校验、走带 kind 的拉取
+   */
+  const addFromSearchResult = async (result: SearchResult) => {
+    if (watchlist.includes(result.code)) {
+      setSearchError('该代码已在自选列表中');
+      setDropdownOpen(false);
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError('');
+    setDropdownOpen(false);
+    try {
+      const fund = await fetchFundValuation(result.code, result.kind);
+      if (fund) {
+        const res = await addWatchlistItem({
+          code: result.code,
+          kind: result.kind,
+          market: fund.market as any,
+        });
+        setWatchlist(prev => [...prev, result.code]);
+        setWatchlistItems(prev => [...prev, {
+          fund_code: result.code,
+          kind: result.kind,
+          market: fund.market as any,
+          sector: (res as any).sector,
+          created_at: new Date().toISOString()
+        }]);
+        setFundsData(prev => ({ ...prev, [result.code]: fund }));
+        setNewCode('');
+        setSearchResults([]);
+        showToast(`已订阅${result.kind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
+      } else {
+        setSearchError('未找到该代码，请确认是否正确');
+      }
+    } catch (err: any) {
+      setSearchError(err.message || '获取数据失败，请确认代码');
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  /**
+   * 添加框键盘：↑/↓ 移动、Enter 选中、Esc 关闭
+   */
+  const handleAddInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!dropdownOpen || searchResults.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIdx(i => Math.min(i + 1, searchResults.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIdx(i => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const picked = searchResults[highlightIdx];
+      if (picked) addFromSearchResult(picked);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setDropdownOpen(false);
+    }
+  };
+
+  /**
+   * 切换 selfTab 时清空搜索状态
+   */
+  useEffect(() => {
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchResults([]);
+    setDropdownOpen(false);
+    setNewCode('');
+    setSearchError('');
+  }, [selfTab]);
+
+  /**
+   * 点击外部关闭下拉
+   */
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!addBoxRef.current) return;
+      if (!addBoxRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [dropdownOpen]);
+
   const handleAddFund = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 如果下拉开着，回车应该已经选中 → 这里拦一道
+    if (dropdownOpen && searchResults[highlightIdx]) {
+      addFromSearchResult(searchResults[highlightIdx]);
+      return;
+    }
     const code = newCode.trim();
     // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母
     if (!/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
-      setSearchError('请输入 A 股 6 位 / 港股 5 位 / 美股 ticker');
+      setSearchError('请输入 A 股 6 位 / 港股 5 位 / 美股 ticker，或输入中文名搜索');
       return;
     }
     if (watchlist.includes(code)) {
@@ -372,7 +517,6 @@ function App() {
           code,
           kind,
           market: fund.market as any,
-          sector: kind === 'stock' ? undefined : undefined,    // 板块会在首次拉取时自动推断
         });
         setWatchlist(prev => [...prev, code]);
         setWatchlistItems(prev => [...prev, {
@@ -866,20 +1010,53 @@ function App() {
                 ))}
               </div>
               <form onSubmit={handleAddFund} className="flex items-center gap-2">
-                <div className="relative">
+                <div ref={addBoxRef} className="relative">
                   <input
                     type="text"
-                    maxLength={10}
-                    placeholder={selfTab === 'stock' ? 'AAPL / 00700 / TSLA' : '6位基金 / 港股5位 / 美股ticker'}
+                    maxLength={20}
+                    placeholder={selfTab === 'stock' ? '代码 或 名称 (如 00700 / 腾讯)' : '代码 或 名称 (如 161039 / 三花)'}
                     value={newCode}
-                    onChange={(e) => {
-                      const v = e.target.value.toUpperCase().trim();
-                      setNewCode(v);
-                      setSearchError('');
-                    }}
-                    className="apple-input pl-9 pr-3 py-2 text-xs w-56 font-mono font-medium placeholder-slate-400"
+                    onChange={(e) => handleAddInputChange(e.target.value.toUpperCase())}
+                    onKeyDown={handleAddInputKeyDown}
+                    onFocus={() => { if (searchResults.length > 0) setDropdownOpen(true); }}
+                    autoComplete="off"
+                    className="apple-input pl-9 pr-3 py-2 text-xs w-64 font-mono font-medium placeholder-slate-400"
                   />
                   <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  {searchBusy && (
+                    <Loader2 size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />
+                  )}
+                  <AnimatePresence>
+                    {dropdownOpen && searchResults.length > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                        transition={SPRING.snap}
+                        className="absolute top-full left-0 right-0 mt-1 z-50 apple-card overflow-hidden shadow-lg max-h-72 overflow-y-auto"
+                      >
+                        {searchResults.map((r, i) => (
+                          <button
+                            key={`${r.market}:${r.code}`}
+                            type="button"
+                            onMouseEnter={() => setHighlightIdx(i)}
+                            onClick={() => addFromSearchResult(r)}
+                            className={`w-full px-3 py-2 text-xs flex items-center gap-3 text-left transition-colors ${
+                              i === highlightIdx
+                                ? 'bg-[#0066cc]/10 dark:bg-[#2997ff]/15 text-slate-900 dark:text-slate-50'
+                                : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="flex-1 truncate font-medium">{r.name}</span>
+                            <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">{r.code}</span>
+                            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
+                              {r.market === 'domestic' ? 'A股' : r.market === 'hk' ? '港股' : r.market === 'us' ? '美股' : '其他'}
+                            </span>
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
                 <PressableButton
                   type="submit"

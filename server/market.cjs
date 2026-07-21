@@ -12,12 +12,16 @@ const cache = {
   marketTimestamp: 0
 };
 
+// 名称搜索单独存（结构: { 'fund:<q>': { data: [...], timestamp } }）
+const searchCache = {};
+
 // 缓存过期时间
 const FUND_CACHE_TTL = 30 * 1000;         // 基金估值缓存 30秒
 const FUND_HISTORY_TTL = 60 * 60 * 1000;  // 基金历史净值缓存 1小时
 const FUND_BASIC_TTL = 60 * 60 * 1000;    // 基金基本/资产配置缓存 1小时
 const FUND_HOLDINGS_TTL = 60 * 60 * 1000; // 基金持仓缓存 1小时
 const MARKET_CACHE_TTL = 10 * 1000;       // 大盘指数缓存 10秒
+const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
 
 /**
  * 转换 JSONP 为 JSON 对象
@@ -1007,6 +1011,168 @@ async function getMarketIndices() {
   }
 }
 
+/**
+ * 把上游搜索结果规范化为统一的 SearchResult 数组
+ * @param {Array} items - 各上游的原始结果
+ * @returns {Array<{code, name, market, kind}>}
+ */
+function normalizeSearchResults(items) {
+  const dedup = new Map();
+  for (const it of items) {
+    if (!it || !it.code || !it.name) continue;
+    // 过滤掉明显无效的 code：太短、含奇怪字符、纯数字但长度不对
+    const code = String(it.code).trim().toUpperCase();
+    if (!/^(\d{4,6}|[A-Z]{1,5})$/.test(code)) continue;
+    const name = String(it.name).replace(/<[^>]+>/g, '').trim();
+    if (!name) continue;
+    const key = `${it.market}:${code}`;
+    if (dedup.has(key)) continue;
+    dedup.set(key, {
+      code,
+      name: name.slice(0, 60),
+      market: it.market,
+      kind: it.kind,
+    });
+  }
+  return Array.from(dedup.values()).slice(0, 10);
+}
+
+/**
+ * 东财基金搜索: fundsuggest.eastmoney.com
+ *   GET /FundSearch/api/FundSearchAPI.ashx?m=1&key=<q>
+ *   返回 { Datas: [{ CODE, NAME, CATEGORYDESC, FundType }] }
+ */
+async function searchFundsEastMoney(q) {
+  const url = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(q)}`;
+  const { data } = await axios.get(url, { timeout: 5000 });
+  const list = (data && data.Datas) || [];
+  return list.map((it) => {
+    const code = String(it.CODE || '').trim();
+    if (!/^\d{6}$/.test(code)) return null;
+    return {
+      code,
+      name: String(it.NAME || '').trim(),
+      market: 'domestic',
+      kind: 'fund',
+    };
+  }).filter(Boolean);
+}
+
+/**
+ * 东财股票搜索: searchapi.eastmoney.com/api/suggest/get
+ *   type=14 A股 / 20 港股 / 22 美股 — 但接口会混排其它市场，所以用 JYS 字段精确归类
+ *   返回 { QuotationCodeTable: { Data: [{ Code, Name, JYS, ... }] } }
+ */
+async function searchStocksEastMoney(q, type) {
+  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=${type}&count=10`;
+  const { data } = await axios.get(url, { timeout: 5000 });
+  const list = (data && data.QuotationCodeTable && data.QuotationCodeTable.Data) || [];
+  return list.map((it) => {
+    const code = String(it.Code || '').trim().toUpperCase();
+    if (!code) return null;
+    const jys = String(it.JYS || '').toUpperCase();
+    let market;
+    if (jys === 'SH' || jys === 'SZ') market = 'domestic';
+    else if (jys === 'HK') market = 'hk';
+    else if (jys === 'US' || jys === 'NASDAQ' || jys === 'NYSE' || jys === 'AMEX') market = 'us';
+    else {
+      // 兜底：根据 code 格式推断
+      if (/^\d{6}$/.test(code) && (code.startsWith('60') || code.startsWith('68') || code.startsWith('00') || code.startsWith('30'))) market = 'domestic';
+      else if (/^\d{4,5}$/.test(code)) market = 'hk';
+      else if (/^[A-Z]{1,5}$/.test(code)) market = 'us';
+      else market = 'other';
+    }
+    return {
+      code,
+      name: String(it.Name || '').trim(),
+      market,
+      kind: 'stock',
+    };
+  }).filter(Boolean);
+}
+
+/**
+ * 新浪 suggest3 接口（混合基金 + 股票）
+ *   GET /suggest/type=11,12,13,14,15&key=<q>
+ *   返回 JS 字符串: var suggest_type_...="code1,name1,exchange1,...;code2,name2,...";
+ *   11/13/14 = 沪深基金; 12 = 港股; 15 = 美股(带前缀 gb_)
+ */
+async function searchSinaSuggest(q) {
+  const url = `http://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=${encodeURIComponent(q)}`;
+  try {
+    const { data } = await axios.get(url, {
+      timeout: 5000,
+      responseType: 'arraybuffer',
+      headers: { Referer: 'https://finance.sina.com.cn' },
+    });
+    const text = iconv.decode(data, 'gbk');
+    // 形如: var suggest_value="...;...;";
+    const m = text.match(/"([^"]+)"/);
+    if (!m) return [];
+    const rows = m[1].split(';').filter(Boolean);
+    return rows.map((row) => {
+      const cols = row.split(',');
+      if (cols.length < 4) return null;
+      const code = String(cols[1] || cols[0] || '').trim().toUpperCase();
+      const name = String(cols[3] || cols[2] || '').trim();
+      const exchange = String(cols[2] || '').toLowerCase();
+      if (!code || !name) return null;
+      let market = 'domestic';
+      if (exchange === 'hk' || /^\d{4,5}$/.test(code)) market = 'hk';
+      else if (exchange.startsWith('gb') || /^[A-Z]{1,5}$/.test(code)) market = 'us';
+      // 新浪返回的 kind 通过 type 参数决定；这里取默认 'fund'，由调用方按 kind 过滤
+      return { code, name, market, kind: 'fund' };
+    }).filter(Boolean);
+  } catch (e) {
+    console.error('[searchSinaSuggest] 失败:', e.message);
+    return [];
+  }
+}
+
+/**
+ * 公开接口：根据名字搜索代码
+ * @param {string} query - 用户输入的关键字
+ * @param {'fund'|'stock'} kind - 当前 tab 类型
+ */
+async function searchByName(query, kind = 'fund') {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const key = `search:${kind}:${q.toLowerCase()}`;
+  const cached = searchCache[key];
+  if (cached && Date.now() - cached.ts < SEARCH_CACHE_TTL) {
+    return cached.value;
+  }
+
+  const tasks = [];
+  if (kind === 'fund') {
+    tasks.push(searchFundsEastMoney(q));
+  } else {
+    tasks.push(
+      searchStocksEastMoney(q, '14'),
+      searchStocksEastMoney(q, '20'),
+      searchStocksEastMoney(q, '22')
+    );
+  }
+  // 双源：新浪也跑一次（kind 过滤后保留匹配项）
+  tasks.push(searchSinaSuggest(q));
+
+  const settled = await Promise.allSettled(tasks);
+  const all = [];
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    if (r.status !== 'fulfilled') continue;
+    const isSina = i === tasks.length - 1;
+    for (const item of r.value) {
+      if (isSina && item.kind !== kind) continue; // 新浪的 kind 默认为 fund，需过滤
+      all.push(item);
+    }
+  }
+
+  const final = normalizeSearchResults(all);
+  searchCache[key] = { ts: Date.now(), value: final };
+  return final;
+}
+
 module.exports = {
   getFundValuation,
   getFundHistory,
@@ -1018,4 +1184,5 @@ module.exports = {
   fetchUSStockValuation,
   fetchSinaFundValuation,
   fetchASHareStockValuation,
+  searchByName,
 };

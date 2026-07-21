@@ -333,6 +333,32 @@ export async function updateWatchlistItem(code: string, params: { sector?: strin
   return request(`/api/watchlist/${code}`, { method: 'PATCH', body: JSON.stringify(params) });
 }
 
+/**
+ * 名称搜索：按关键字搜基金/股票，返回候选 (code, name, market, kind)
+ * 用于前端添加自选时的实时下拉
+ */
+export interface SearchResult {
+  code: string;
+  name: string;
+  market: 'domestic' | 'hk' | 'us' | 'other';
+  kind: 'fund' | 'stock';
+}
+
+export async function searchByName(
+  query: string,
+  kind: 'fund' | 'stock' = 'fund'
+): Promise<SearchResult[]> {
+  const q = (query || '').trim();
+  if (!q) return [];
+  try {
+    const data = await request(`/api/market/search?q=${encodeURIComponent(q)}&kind=${kind}`);
+    return data.results || [];
+  } catch (error) {
+    console.error(`名称搜索失败 [${q}]:`, error);
+    return [];
+  }
+}
+
 /* 板块 API */
 export interface SectorGroup {
   sector: string;

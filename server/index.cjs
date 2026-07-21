@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.1.2' });
+  res.json({ status: 'ok', version: '1.2.0' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -372,6 +372,20 @@ app.get('/api/market/indices', async (req, res) => {
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: '获取指数失败' });
+  }
+});
+
+// 名称搜索（用于前端添加自选时的实时下拉）
+app.get('/api/market/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const kind = req.query.kind === 'stock' ? 'stock' : 'fund';
+  if (!q) return res.json({ results: [] });
+  try {
+    const results = await marketHelper.searchByName(q, kind);
+    res.json({ results });
+  } catch (error) {
+    console.error('[search]', error.message);
+    res.json({ results: [] });
   }
 });
 
