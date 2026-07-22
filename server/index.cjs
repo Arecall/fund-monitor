@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.6' });
+  res.json({ status: 'ok', version: '1.2.7' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -813,11 +813,15 @@ async function pollAlerts() {
           ]
         );
         await dbHelper.run(
-          `UPDATE alerts SET last_triggered_at = ?, last_triggered_change_pct = ? WHERE id = ?`,
-          [nowIso, changePct, alert.id]
+          `UPDATE alerts SET
+             last_triggered_at = ?,
+             last_triggered_change_pct = ?,
+             reference_price = ?
+           WHERE id = ?`,
+          [nowIso, changePct, current, alert.id]
         );
 
-        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}%`);
+        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref→${current.toFixed(4)} for next ladder)`);
       } catch (innerErr) {
         console.error(`[alerts] error on #${alert.id}:`, innerErr.message);
       }

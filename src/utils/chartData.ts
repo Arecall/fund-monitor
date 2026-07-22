@@ -38,6 +38,14 @@ export interface ChartSeries {
   note?: string;
   /** Market this series represents (for X-axis label formatting) */
   market?: FundMarket;
+  /**
+   * True when today's session has not opened yet. During pre-market
+   * the series is a flat baseline at `previous` (no interpolation),
+   * because today's gsz is not yet distinguishable from yesterday's dwjz.
+   * Callers may use this flag to suppress animations, badges, or claims
+   * that "today's data is present."
+   */
+  preMarket?: boolean;
 }
 
 /** Tiny deterministic PRNG so fallback walks look stable per fund */
@@ -212,19 +220,20 @@ export function buildSeries(
   // ─── intraday: 按市场时段的插值曲线（X 轴统一北京时间）────
   if (range === 'intraday') {
     const win = getIntradayWindow(market, now);
-    let { startTs, endTs } = win;
+    const { startTs: rawStartTs, endTs: rawEndTs } = win;
+    let startTs = rawStartTs;
+    let endTs = rawEndTs;
 
     // 边界处理：
-    //   - 开盘前（now < startTs）：曲线从 now 到 startTs 之间一个 5 分钟窗口（"开盘前"提示）
-    //   - 收盘后（now > endTs）：完整显示今天 session（startTs → endTs）
-    //   - 盘中（startTs ≤ now ≤ endTs）：startTs → now
-    let preMarket = false;
-    if (now < startTs) {
-      // 开盘前：把窗口改为 now ± 30 分钟（一个窄窗口），让曲线可见但不显示全空 session
-      const halfWin = 30 * 60_000;
-      startTs = now - halfWin;
-      endTs = now + halfWin;
-      preMarket = true;
+    //   - 开盘前（now < startTs）：今日 session 尚未开始。当前 gsz ≈ 昨日
+    //     dwjz，不做随机插值（避免被误读为"昨日走势"），而是用整个今日
+    //     session 窗口绘制一条平台线，右侧 tick = current。
+    //   - 盘中（startTs ≤ now ≤ endTs）：startTs → now + interpolate
+    //   - 已收盘（now ≥ endTs）：完整 session + interpolate
+    const preMarket = now < startTs;
+    if (preMarket) {
+      // 完整今日 session 窗口（保留 X 轴标签 09:30–15:00 等）
+      endTs = rawEndTs;
     } else if (now < endTs) {
       // 盘中：终点 = now
       endTs = now;
@@ -236,23 +245,34 @@ export function buildSeries(
       endTs = startTs + 60_000;
     }
 
-    const steps = 240;
-    const series = interpolate(previous, current, steps, 0.0006, rand);
-    // X 轴统一用北京时间（北京时间本地时间）
-    const points: ChartPoint[] = series.map((v, i) => {
-      const t = startTs + (i / (steps - 1)) * (endTs - startTs);
-      return { t, v };
-    });
-    if (points.length > 0) {
-      points[0] = { t: startTs, v: previous, real: true };
-      points[points.length - 1] = { t: endTs, v: current, real: true };
+    let points: ChartPoint[];
+    if (preMarket) {
+      // 平台线 — 两点首尾由 SVG 连成直线
+      points = [
+        { t: startTs, v: previous, real: true },
+        { t: endTs,   v: current,  real: false },
+      ];
+    } else {
+      const steps = 240;
+      const series = interpolate(previous, current, steps, 0.0006, rand);
+      // X 轴统一用北京时间（北京时间本地时间）
+      points = series.map((v, i) => ({
+        t: startTs + (i / (steps - 1)) * (endTs - startTs),
+        v,
+      }));
+      if (points.length > 0) {
+        points[0] = { t: startTs, v: previous, real: true };
+        points[points.length - 1] = { t: endTs, v: current, real: true };
+      }
     }
+
     return {
       points,
       source: 'estimated',
       market,
+      preMarket,
       note: preMarket
-        ? '开盘前（估值尚未更新，曲线仅为示意）'
+        ? `今日尚未开盘 — 平台线为昨日收盘 ¥${previous.toFixed(4)} 基准，右侧 tick 为当前估值；等待 ${formatHHMM(rawEndTs)} 开盘`
         : (market === 'us'
             ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
             : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）'),

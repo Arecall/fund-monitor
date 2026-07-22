@@ -173,7 +173,7 @@ function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, cur
   <table style="width:100%;margin-top:16px;border-collapse:collapse;font-size:13px;">
     <tr><td style="color:#86868b;padding:6px 0;">最新净值</td><td style="text-align:right;font-family:monospace;font-weight:600;color:#1d1d1f;padding:6px 0;">${currentPrice.toFixed(4)}</td></tr>
     <tr><td style="color:#86868b;padding:6px 0;">基准净值</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${referencePrice.toFixed(4)}</td></tr>
-    <tr><td style="color:#86868b;padding:6px 0;">触发时间</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${new Date().toLocaleString('zh-CN', { hour12: false })}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">触发时间</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</td></tr>
   </table>
   <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f0f0f0;font-size:11px;color:#86868b;">
     本邮件由 ${appName} 自动发送。如不再需要提醒，请登录系统关闭对应规则。

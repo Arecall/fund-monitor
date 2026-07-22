@@ -435,28 +435,43 @@ async function fetchHoldingsBasedEstimate(code) {
   // 3. 提取每只的涨跌幅
   //   US stock Sina 字段：parts[1]=现价, parts[2]=涨跌幅%(已带正负号), parts[3]=datetime, parts[26]=昨收
   //   HK stock Sina 字段：parts[1]=中文名, parts[2]=现价, parts[3]=昨收, parts[6]=现价, parts[7]=涨跌额, parts[8]=涨跌幅%
-  //   优先用 parts[2]/parts[8]（直接涨跌幅%），不依赖昨收数值。
+  //   ⚠️ 历史 bug：启发式 `Math.abs(parts[2]) < 50` 会把港股「价格」(如港铁 32.84) 误读为 +
+  //   32.84% 涨跌幅。修复：先看 Sina 行前缀（gb_ / rt_hk / 无前缀），按市场选正确字段；
+  //   旧/不匹配数据才回退到 parts[2] 启发式。
   const changes = [];
   for (const line of sinaText.split('\n')) {
-    const m2 = line.match(/="([^"]+)"/);
+    const m2 = line.match(/(?:var\s+)?hq_str_([a-z0-9_]+)="([^"]*)"/);
     if (!m2) continue;
-    const parts = m2[1].split(',');
+    const symbol = m2[1];              // e.g. 'gb_sndk' / 'rt_hk00066' / 'sh600519'
+    const data = m2[2];
+    if (!data) continue;               // Sina 对未识别的代码返回空串
+    const parts = data.split(',');
     if (parts.length < 5) continue;
 
-    // 判断市场：us 的 parts[2] 是 0.xx 这种小数，hk 的 parts[2] 是中文名
-    // 安全做法：尝试两个字段，取绝对值 < 50 的那个
     let changePct = NaN;
-    if (!isNaN(parseFloat(parts[2])) && Math.abs(parseFloat(parts[2])) < 50) {
-      changePct = parseFloat(parts[2]);
-    } else if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
-      changePct = parseFloat(parts[8]);
+    const isUS = symbol.startsWith('gb_') || symbol.startsWith('usr_');
+    const isHK = symbol.startsWith('rt_hk') || symbol.startsWith('hk');
+
+    if (isHK) {
+      // HK：用 parts[8]=涨跌幅%。parts[2]=现价（不能信）
+      if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
+        changePct = parseFloat(parts[8]);
+      } else if (parts.length > 7) {
+        // 兜底：parts[6](现价) vs parts[5](昨收)
+        const c = parseFloat(parts[6]);
+        const y = parseFloat(parts[5]);
+        if (!isNaN(c) && !isNaN(y) && y > 0) changePct = ((c - y) / y) * 100;
+      }
+    } else if (isUS) {
+      // US：用 parts[2]=涨跌幅%（已含正负号）
+      const v = parseFloat(parts[2]);
+      if (!isNaN(v)) changePct = v;
     } else {
-      // 兜底：parts[1] (现价) - parts[3] (昨收 for HK, datetime for US) / parts[3]
-      const current = parseFloat(parts[1]);
-      const ref = parseFloat(parts[3]);
-      if (!isNaN(current) && !isNaN(ref) && ref > 100 && ref < 100000) {
-        // 排除 datetime 被误解析
-        changePct = ((current - ref) / ref) * 100;
+      // A 股 / 其他（旧 fu_ 格式）— 老启发式
+      if (!isNaN(parseFloat(parts[2])) && Math.abs(parseFloat(parts[2])) < 50) {
+        changePct = parseFloat(parts[2]);
+      } else if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
+        changePct = parseFloat(parts[8]);
       }
     }
 
@@ -467,7 +482,13 @@ async function fetchHoldingsBasedEstimate(code) {
   if (changes.length === 0) return null;
 
   // 4. 等权平均 + 拉官方名称
-  const avgChange = changes.reduce((a, b) => a + b, 0) / changes.length;
+  // 异常剔除：单只 change% 偏离 median 超过 15 个百分点（例如港铁 -0.85% / 真实
+  // +12% 美股区间里有只 +50% 的极端值会污染均值）。这是防御性 — 应在字段读取层
+  // 已经做了市场区分，这里再做一次统计兜底。
+  const sorted = [...changes].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const filtered = changes.filter(v => Math.abs(v - median) <= 15 || sorted.length < 4);
+  const avgChange = filtered.reduce((a, b) => a + b, 0) / filtered.length;
   const nameMatch = pingText.match(/fS_name\s*=\s*"([^"]+)"/);
   const fundName = nameMatch ? nameMatch[1] : `基金 ${code}`;
 

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
-import { RefreshCw, TrendingUp, TrendingDown, Minus, Database, Info } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Minus, Database, Info, Clock } from 'lucide-react';
 import {
   buildSeries,
   formatTick,
@@ -171,6 +171,15 @@ export function FundChart({
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
           分时走势
           <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
+          {range === 'intraday' && series.preMarket && (
+            <span
+              title={series.note}
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50"
+            >
+              <Clock size={9} />
+              盘前 · 等待开盘
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 text-[11px] text-slate-500">
           <span className="flex items-center gap-1.5">
@@ -183,8 +192,9 @@ export function FundChart({
             {refreshing ? '刷新中…' : '自动刷新中'}
           </span>
           <span>更新于 {formatTick(Date.now(), range)}</span>
-          {/* 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天" */}
-          {series.points.length > 0 && (() => {
+          {/* 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
+              盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。 */}
+          {series.points.length > 0 && !series.preMarket && (() => {
             const lastTs = series.points[series.points.length - 1].t;
             const today = new Date();
             const dataDate = new Date(lastTs);
@@ -386,8 +396,10 @@ export function FundChart({
             );
           })}
 
-          {/* Today's live tick — emphasized ring on the rightmost point */}
-          {points.length > 0 && (() => {
+          {/* Today's live tick — emphasized ring on the rightmost point.
+              盘前时跳过脉冲动画：gsz 与昨日 dwjz 相等，脉冲暗示"实时跳动"是误导。
+              静态中心点由曲线已能看见，所以这里直接不渲染。 */}
+          {points.length > 0 && !series.preMarket && (() => {
             const last = points[points.length - 1];
             if (last.real) return null;
             const lx = x(points.length - 1);
