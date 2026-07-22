@@ -19,8 +19,13 @@ const RANGES: { key: RangeKey; label: string }[] = [
   { key: '1M',       label: '1月' },
 ];
 
-const SPRING_TAB = { type: 'spring' as const, bounce: 0.05, duration: 0.36 };
-const SPRING_DRAW = { type: 'spring' as const, bounce: 0, duration: 0.55 };
+// Apple design fluid interface springs — critically damped by default (bounce 0).
+// Reserve slight overshoot only for momentum-driven interactions (hover flick).
+const SPRING_TAB  = { type: 'spring' as const, bounce: 0,    duration: 0.36 };  // default UI spring (no overshoot)
+const SPRING_FLIP = { type: 'spring' as const, bounce: 0.12, duration: 0.32 };  // layoutId pill — small bounce on commit
+const SPRING_DRAW = { type: 'spring' as const, bounce: 0,    duration: 0.55 };  // line path draw
+const SPRING_FILL = { type: 'spring' as const, bounce: 0,    duration: 0.6  };  // area mask-reveal (slightly slower than line)
+const SPRING_HOVER= { type: 'spring' as const, bounce: 0.15, duration: 0.22 };  // hover dot — slight overshoot OK (momentum)
 
 interface FundChartProps {
   fundCode: string;
@@ -258,7 +263,7 @@ export function FundChart({
               {active && (
                 <motion.span
                   layoutId="fund-chart-tab"
-                  transition={SPRING_TAB}
+                  transition={SPRING_FLIP}
                   className="absolute inset-0 rounded-full"
                   style={{ background: 'var(--primary-accent)' }}
                 />
@@ -346,14 +351,32 @@ export function FundChart({
             strokeDasharray="4 4"
           />
 
-          {/* Area fill — animates on range change */}
+          {/* Area fill — mask-reveal from top (Apple Stocks "water-fills-in" effect).
+              clipPath rect's `y` springs from padding.top down to padding.top + innerH,
+              so the gradient appears to "fall in" behind the freshly-drawn line.
+              key on range so switching range re-reveals. */}
+          <defs>
+            <clipPath id="fundChartAreaReveal">
+              <motion.rect
+                key={`area-reveal-${range}`}
+                x={padding.left}
+                y={padding.top}
+                width={innerW}
+                height={innerH}
+                initial={prefersReducedMotion ? false : { y: padding.top }}
+                animate={{ y: padding.top + innerH }}
+                transition={SPRING_FILL}
+              />
+            </clipPath>
+          </defs>
           <motion.path
             key={`area-${range}`}
             d={areaPath}
             fill={`url(#${colorId})`}
+            clipPath="url(#fundChartAreaReveal)"
             initial={prefersReducedMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ duration: 0.4 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
           />
 
           {/* Line — animates on range change */}
@@ -429,7 +452,7 @@ export function FundChart({
             );
           })()}
 
-          {/* Hover crosshair */}
+          {/* Hover crosshair — spring entrance (interruptible, velocity-aware) */}
           <AnimatePresence>
             {hoverPoint && (
               <motion.g
@@ -437,7 +460,7 @@ export function FundChart({
                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
+                transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
               >
                 <line
                   x1={hoverX}
@@ -454,9 +477,10 @@ export function FundChart({
                   fill="white"
                   stroke={colorVar}
                   strokeWidth="2"
-                  initial={prefersReducedMotion ? false : { scale: 0 }}
+                  initial={prefersReducedMotion ? false : { scale: 0.6 }}
                   animate={{ scale: 1 }}
-                  transition={SPRING_TAB}
+                  transition={SPRING_HOVER}
+                  style={{ transformOrigin: `${hoverX}px ${hoverY}px` }}
                 />
                 <motion.circle
                   cx={hoverX}
@@ -469,7 +493,7 @@ export function FundChart({
           </AnimatePresence>
         </svg>
 
-        {/* Tooltip — positioned at hover point, flips at edges */}
+        {/* Tooltip — spring entrance, anchored to source (hover point) */}
         <AnimatePresence>
           {hoverPoint && (
             <motion.div
@@ -477,7 +501,7 @@ export function FundChart({
               initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.96 }}
-              transition={SPRING_TAB}
+              transition={{ type: 'spring' as const, bounce: 0, duration: 0.24 }}
               className="pointer-events-none absolute z-10 px-3 py-2 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[140px]"
               style={{
                 left: `${Math.min(Math.max(0, hoverX - 70), width - 150)}px`,

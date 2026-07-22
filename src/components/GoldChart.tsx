@@ -343,17 +343,39 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             />
           )}
 
-          {/* Area */}
+          {/* Area — mask-reveal: clipPath 从顶端向下 spring 展开，模拟 Apple Stocks "水波纹" 入场 */}
+          <defs>
+            <clipPath id="gGoldAreaReveal">
+              <motion.rect
+                key={`reveal-${range}-${points.length}`}
+                x={padding.left}
+                y={padding.top}
+                width={innerW}
+                height={innerH}
+                initial={prefersReducedMotion ? false : { y: padding.top }}
+                animate={{ y: padding.top + innerH }}
+                transition={{
+                  type: 'spring' as const,
+                  bounce: 0,
+                  duration: 0.6,
+                  delay: 0.15,        // 等线条先走一段
+                }}
+              />
+            </clipPath>
+          </defs>
+
           <motion.path
             d={areaPath}
             fill={`url(#${dirUp ? 'gGoldUp' : dirDown ? 'gGoldDown' : 'gGoldFlat'})`}
+            clipPath="url(#gGoldAreaReveal)"
             initial={prefersReducedMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ duration: 0.4 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.5, delay: 0.15 }}
           />
 
-          {/* Line */}
+          {/* Line — spring pathLength，interruptible（spring 默认从当前 presentation 值继续） */}
           <motion.path
+            key={`line-${range}-${points.length}`}
             d={linePath}
             fill="none"
             stroke={trendColor}
@@ -362,12 +384,22 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             strokeLinejoin="round"
             initial={prefersReducedMotion ? false : { pathLength: 0, opacity: 0 }}
             animate={{ pathLength: 1, opacity: 1 }}
-            transition={{ type: 'spring' as const, bounce: 0, duration: 0.55 }}
+            transition={{
+              type: 'spring' as const,
+              bounce: 0,            // critically damped — Apple default
+              duration: 0.55,       // response ~ 0.55s（描线稍慢，配合 fill delay 0.15s）
+            }}
           />
 
-          {/* Hover crosshair */}
+          {/* Hover crosshair — spring 进入（不是瞬变），符合 Apple "tools respond in the moment" */}
           {hoverPoint && (
-            <g pointerEvents="none">
+            <motion.g
+              key={`hover-${hoverIdx}`}
+              pointerEvents="none"
+              initial={prefersReducedMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
+            >
               <line
                 x1={hoverX}
                 x2={hoverX}
@@ -377,34 +409,69 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 strokeOpacity="0.25"
                 strokeDasharray="3 3"
               />
-              <circle cx={hoverX} cy={hoverY} r="5" fill="white" stroke={hoverColor} strokeWidth="2" />
+              <motion.circle
+                cx={hoverX}
+                cy={hoverY}
+                r="5"
+                fill="white"
+                stroke={hoverColor}
+                strokeWidth="2"
+                initial={prefersReducedMotion ? false : { scale: 0.6 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring' as const, bounce: 0.15, duration: 0.22 }}
+                style={{ transformOrigin: `${hoverX}px ${hoverY}px` }}
+              />
               <circle cx={hoverX} cy={hoverY} r="2.5" fill={hoverColor} />
-            </g>
+            </motion.g>
           )}
 
-          {/* End dot — hover 时让它"虚化"以便突出 hover 点 */}
+          {/* End dot — 在 line 描完后才"降落"，spring bounce 0（不 overshoot，Apple 默认） */}
           {points.length > 0 && (
             <motion.g
+              key={`dot-${points.length}-${last}`}
               initial={prefersReducedMotion ? false : { scale: 0 }}
-              animate={{ scale: 1, opacity: hoverPoint != null && hoverIdx !== points.length - 1 ? 0.3 : 1 }}
-              transition={{ type: 'spring' as const, bounce: 0.1, duration: 0.36 }}
+              animate={{
+                scale: 1,
+                opacity: hoverPoint != null && hoverIdx !== points.length - 1 ? 0.3 : 1,
+              }}
+              transition={{
+                type: 'spring' as const,
+                bounce: 0,            // critically damped — 不是弹簧 overshoot
+                duration: 0.32,
+                delay: 0.6,           // 描线结束后 50ms
+              }}
               style={{ transformOrigin: `${xPos(points.length - 1)}px ${yPos(last)}px` }}
               pointerEvents="none"
             >
+              {/* 外圈轻微"呼吸" — 用 spring loop 模拟实时跳动 */}
+              {!prefersReducedMotion && hoverIdx !== points.length - 1 && (
+                <motion.circle
+                  cx={xPos(points.length - 1)}
+                  cy={yPos(last)}
+                  r="4"
+                  fill={trendColor}
+                  animate={{ r: [4, 6.5, 4], opacity: [0.4, 0, 0.4] }}
+                  transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+                />
+              )}
               <circle cx={xPos(points.length - 1)} cy={yPos(last)} r="4" fill={trendColor} />
               <circle cx={xPos(points.length - 1)} cy={yPos(last)} r="2" fill="white" />
             </motion.g>
           )}
         </svg>
 
-        {/* Tooltip */}
+        {/* Tooltip — spring 入场（y: +4→0, opacity 0→1）跟随十字线 */}
         {hoverPoint && (
-          <div
+          <motion.div
+            key={`tip-${hoverIdx}`}
             className="pointer-events-none absolute z-10 px-2.5 py-1.5 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[120px]"
             style={{
               left: `calc(${hoverXPct}% - 60px)`,
               top: `calc(${(hoverY / height) * 100}% + 6px)`,
             }}
+            initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.22 }}
           >
             <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1">
               {formatTooltipTime(hoverPoint.t, range)}
@@ -427,7 +494,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
               </span>
             </div>
-          </div>
+          </motion.div>
         )}
       </div>
 
