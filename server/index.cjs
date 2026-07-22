@@ -8,7 +8,7 @@ const { hashPassword, verifyPassword, passwordMeetsPolicy } = require('./auth.cj
 const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldings, aggregateBySector } = require('./sectors.cjs');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.10' });
+  res.json({ status: 'ok', version: '1.2.11' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {

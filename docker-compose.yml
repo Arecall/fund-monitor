@@ -2,12 +2,12 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.2.10
+    image: fund-monitor:1.2.11
     container_name: fund-monitor
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 3001
       DATA_DIR: /app/data
     volumes:
       - fund-monitor-data:/app/data

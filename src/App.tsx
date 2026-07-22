@@ -143,8 +143,21 @@ function App() {
   const [fundsData, setFundsData] = useState<Record<string, FundValuation>>({});
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [positions, setPositions] = useState<Record<string, UserPosition>>({});
-  const [selfTab, setSelfTab] = useState<'fund' | 'stock'>('fund');
-  const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>('portfolio');
+  const [selfTab, setSelfTab] = useState<'fund' | 'stock'>(() => {
+    try {
+      const saved = localStorage.getItem('fund_self_tab');
+      if (saved === 'fund' || saved === 'stock') return saved;
+    } catch {}
+    return 'fund';
+  });
+  const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>(() => {
+    // 刷新停留在哪个 tab — 从 localStorage 恢复
+    try {
+      const saved = localStorage.getItem('fund_main_tab');
+      if (saved === 'portfolio' || saved === 'gold') return saved;
+    } catch {}
+    return 'portfolio';
+  });
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
@@ -836,7 +849,10 @@ function App() {
               return (
                 <button
                   key={t.key}
-                  onClick={() => setMainTab(t.key)}
+                  onClick={() => {
+                    setMainTab(t.key);
+                    try { localStorage.setItem('fund_main_tab', t.key); } catch {}
+                  }}
                   className={`relative px-3.5 py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1 ${
                     active ? 'text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                   }`}
@@ -1048,7 +1064,10 @@ function App() {
                   <button
                     key={tab.key}
                     type="button"
-                    onClick={() => setSelfTab(tab.key)}
+                    onClick={() => {
+                      setSelfTab(tab.key);
+                      try { localStorage.setItem('fund_self_tab', tab.key); } catch {}
+                    }}
                     className={`relative px-4 py-1.5 text-xs font-semibold rounded-full transition-colors ${
                       selfTab === tab.key
                         ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'

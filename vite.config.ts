@@ -5,10 +5,10 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3001, // 前端改为 3001 端口，避开后端 3000 端口
+    port: 3001, // 前端 dev server
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3001', // 后端 API（与生产部署对齐）
         changeOrigin: true
       }
     }
