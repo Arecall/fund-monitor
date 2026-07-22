@@ -67,7 +67,17 @@ function hashCode(s: string) {
   return h;
 }
 
-/** Smooth interpolation between two endpoints with low-volatility mid-jitter. */
+/**
+ * Mean-reverting random walk around the linear trend. The walk drifts toward
+ * the linear interpolation each step (so it stays anchored on the trend) plus
+ * a small jitter. This keeps both directions of fluctuation visible:
+ *   - UP trend: line goes from prev → current but you still see mid-day dips below prev
+ *   - DOWN trend: line goes from prev → current but you still see mid-day rises above prev
+ *
+ * (Previously the old multiplicative-walk + bias logic produced negative scales
+ *  when the random walk happened to go opposite the desired span — flipping the
+ *  walk and erasing the "below prev / above prev" data.)
+ */
 function interpolate(
   startValue: number,
   endValue: number,
@@ -76,24 +86,21 @@ function interpolate(
   rand: () => number
 ): number[] {
   const series: number[] = new Array(steps);
+  const span = endValue - startValue;
+  const jitterScale = startValue * volatility * 8; // 抖幅 ≈ ±0.5% of baseline per step
+  const revertRate = 0.18;                         // 多少比例拉向线性趋势（每步）
+
   series[0] = startValue;
-
   for (let i = 1; i < steps; i++) {
-    const shock = (rand() - 0.5) * 2 * volatility;
-    series[i] = series[i - 1] * (1 + shock);
+    const linearHere = startValue + span * (i / (steps - 1));
+    const shock = (rand() - 0.5) * 2 * jitterScale;
+    const drift = (linearHere - series[i - 1]) * revertRate;
+    series[i] = series[i - 1] + drift + shock;
   }
 
-  // Bias so series[steps-1] === endValue
-  const span = endValue - series[0];
-  const natural = series[steps - 1] - series[0];
-  if (natural === 0) {
-    for (let i = 1; i < steps; i++) series[i] = series[0] + (span * i) / (steps - 1);
-    return series;
-  }
-  const scale = span / natural;
-  for (let i = 0; i < steps; i++) {
-    series[i] = series[0] + (series[i] - series[0]) * scale;
-  }
+  // 强制端点对齐到精确 startValue / endValue
+  series[0] = startValue;
+  series[steps - 1] = endValue;
   return series;
 }
 

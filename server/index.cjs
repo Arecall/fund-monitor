@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.7' });
+  res.json({ status: 'ok', version: '1.2.8' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -413,6 +413,7 @@ app.get('/api/market/fund/:code', async (req, res) => {
 // 场外基金每个交易日只公布一个官方净值，没有分时 K 线
 app.get('/api/market/fund/:code/history', async (req, res) => {
   const { code } = req.params;
+  const kindOverride = req.query.kind;     // optional 'fund' | 'stock', consistent with valuation route
   const days = Math.max(1, Math.min(parseInt(req.query.days) || 30, 90));
 
   if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
@@ -488,7 +489,10 @@ app.get('/api/alerts/history', async (req, res) => {
        FROM alert_history WHERE user_id = ? ORDER BY sent_at DESC LIMIT ?`,
       [req.userId, limit]
     );
-    res.json({ history: rows, ethereal: mailer.isUsingEthereal() });
+    // The current mailer supports dev / resend / smtp modes and no longer
+    // exposes the legacy isUsingEthereal() helper. Keep the response field for
+    // frontend compatibility without letting history reads fail at runtime.
+    res.json({ history: rows, ethereal: false });
   } catch (error) {
     res.status(500).json({ error: '获取提醒历史失败' });
   }
