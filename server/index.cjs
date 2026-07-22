@@ -375,6 +375,86 @@ app.get('/api/market/indices', async (req, res) => {
   }
 });
 
+// 获取金价（国际 COMEX / 国内 SGE Au99.99 / 伦敦 XAU spot）— 公开接口无 auth
+app.get('/api/market/gold', async (_req, res) => {
+  try {
+    const data = await marketHelper.getGoldPrices();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: '获取金价失败：' + (error.message || '未知错误') });
+  }
+});
+
+// 获取金价历史快照 — 服务端累积，新用户立即看到分时 / 周 / 月走势图
+// range: intraday (24h) | 1W (7d) | 1M (30d)  — 都限定在表内 31 天上限内
+app.get('/api/market/gold/:key/history', async (req, res) => {
+  const key = String(req.params.key || '');
+  const validKeys = ['international', 'domestic', 'london'];
+  if (!validKeys.includes(key)) {
+    return res.status(400).json({ error: 'key 必须是 ' + validKeys.join(' / ') });
+  }
+  const range = String(req.query.range || 'intraday');
+  const now = Date.now();
+  const cutoff =
+    range === '1W' ? now - 7  * 24 * 60 * 60 * 1000 :
+    range === '1M' ? now - 30 * 24 * 60 * 60 * 1000 :
+                     now - 24 * 60 * 60 * 1000;   // intraday 默认 24h
+
+  try {
+    const rows = await dbHelper.all(
+      `SELECT t, v FROM gold_history WHERE key = ? AND t >= ? ORDER BY t ASC`,
+      [key, cutoff]
+    );
+    res.json({
+      key,
+      range,
+      points: rows.map(r => ({ t: r.t, v: r.v })),
+      count: rows.length,
+    });
+  } catch (e) {
+    res.status(500).json({ error: '查询金价历史失败：' + e.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────
+   金价累积循环：每 60s 拉一次，三个 key 各写一条到 gold_history。
+   顺便清理 31 天前数据。
+   ───────────────────────────────────────────────────────────────── */
+const GOLD_POLL_MS = 60 * 1000;
+const GOLD_RETENTION_MS = 31 * 24 * 60 * 60 * 1000;
+const GOLD_KEYS = ['international', 'domestic', 'london'];
+
+async function pollGoldAndPersist() {
+  try {
+    const data = await marketHelper.getGoldPrices();
+    if (!data) return;
+    const ts = Date.now();
+    const inserts = [];
+    for (const key of GOLD_KEYS) {
+      const g = data[key];
+      if (!g || g.price == null) continue;
+      inserts.push(dbHelper.run(
+        `INSERT INTO gold_history (key, t, v) VALUES (?, ?, ?)`,
+        [key, ts, g.price]
+      ));
+    }
+    if (inserts.length > 0) await Promise.all(inserts);
+
+    // 清理 31 天前数据（每轮顺手做，0 阻断）
+    const cutoff = ts - GOLD_RETENTION_MS;
+    await dbHelper.run(
+      `DELETE FROM gold_history WHERE t < ?`,
+      [cutoff]
+    );
+  } catch (e) {
+    console.error('[gold-poll]', e.message);
+  }
+}
+
+setInterval(pollGoldAndPersist, GOLD_POLL_MS);
+setTimeout(pollGoldAndPersist, 5000);          // 启动延迟 5s
+console.log(`[gold] 累积循环已启动，每 ${GOLD_POLL_MS / 1000}s 写库，保留 ${GOLD_RETENTION_MS / 86400000} 天`);
+
 // 名称搜索（用于前端添加自选时的实时下拉）
 app.get('/api/market/search', async (req, res) => {
   const q = String(req.query.q || '').trim();

@@ -1,5 +1,29 @@
 // 基金与大盘指数 API 封装服务
 
+export interface GoldPrice {
+  price: number | null;
+  prevClose: number | null;
+  change: number | null;
+  changePct: number | null;
+  high: number | null;
+  low: number | null;
+  currency: string;
+  unit: string;
+  name: string;
+  source: string;
+  symbol: string;
+  time?: string;
+  date?: string;
+}
+
+export interface GoldPricesResponse {
+  international: GoldPrice | null;
+  domestic: GoldPrice | null;
+  london: GoldPrice | null;
+  updatedAt: string;
+  error: string | null;
+}
+
 export interface FundValuation {
   fundcode: string;  // 基金代码
   name: string;      // 基金名称
@@ -67,6 +91,42 @@ export async function fetchMarketIndices(): Promise<MarketIndex[]> {
   } catch (error) {
     console.error('获取大盘数据失败:', error);
     return [];
+  }
+}
+
+/**
+ * 获取金价（国际 COMEX / 国内 SGE Au99.99 / 伦敦 XAU spot）
+ */
+export async function fetchGoldPrices(): Promise<GoldPricesResponse | null> {
+  try {
+    return await request('/api/market/gold');
+  } catch (error) {
+    console.error('获取金价失败:', error);
+    return null;
+  }
+}
+
+/**
+ * 服务端累积的金价历史快照（最近 ~31 天，新用户立即可见）
+ * range: 'intraday' (24h) | '1W' (7d) | '1M' (30d)
+ * key: 'international' | 'domestic' | 'london'
+ */
+export interface GoldHistoryResponse {
+  key: string;
+  range: string;
+  points: { t: number; v: number }[];
+  count: number;
+}
+
+export async function fetchGoldHistory(
+  key: 'international' | 'domestic' | 'london',
+  range: 'intraday' | '1W' | '1M' = 'intraday'
+): Promise<GoldHistoryResponse | null> {
+  try {
+    return await request(`/api/market/gold/${key}/history?range=${range}`);
+  } catch (error) {
+    console.error(`获取 ${key} ${range} 历史失败:`, error);
+    return null;
   }
 }
 

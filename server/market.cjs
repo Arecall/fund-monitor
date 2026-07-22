@@ -9,7 +9,8 @@ const cache = {
   fundBasic: {},
   fundHoldings: {},
   market: null,
-  marketTimestamp: 0
+  marketTimestamp: 0,
+  gold: null,
 };
 
 // 名称搜索单独存（结构: { 'fund:<q>': { data: [...], timestamp } }）
@@ -22,6 +23,7 @@ const FUND_BASIC_TTL = 60 * 60 * 1000;    // 基金基本/资产配置缓存 1�
 const FUND_HOLDINGS_TTL = 60 * 60 * 1000; // 基金持仓缓存 1小时
 const MARKET_CACHE_TTL = 10 * 1000;       // 大盘指数缓存 10秒
 const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
+const GOLD_CACHE_TTL = 30 * 1000;         // 金价缓存 30秒
 
 /**
  * 转换 JSONP 为 JSON 对象
@@ -1286,6 +1288,125 @@ async function searchByName(query, kind = 'fund') {
   return final;
 }
 
+/* ─────── 金价接口（国际 COMEX / 国内 SGE Au99.99 / 伦敦 XAU spot） ─────── */
+
+// 解析一行 Sina hq_str 返回的 parts 数组
+function parseSinaLine(text, re) {
+  const m = text.match(re);
+  if (!m || !m[1]) return null;
+  const parts = m[1].split(',');
+  return parts.length > 1 ? parts : null;
+}
+
+/**
+ * 一次拉国际 (COMEX Gold 连续合约)、国内 (上海黄金交易所 Au99.99 实物)、
+ * 伦敦 (XAU 远期现货) 三组实时报价，统一返回。
+ * 字段：
+ *   international: COMEX GC, USD/oz, 'hf_GC'        — 纽约黄金连续合约
+ *   domestic:       SGE Au99.99, RMB/g, 'SGE_AU9999' — 上海黄金交易所实物
+ *   london:         XAU spot, USD/oz, 'hf_XAU'       — 伦敦金远期现货 (LBMA 风格)
+ * 每个返回 { price, prevClose, change, changePct, high, low, currency, unit, name, source, time }，
+ * 任一符号失败仍返回其他可拿到的字段（局部为 null）。
+ */
+async function getGoldPrices() {
+  if (cache.gold && Date.now() - cache.gold.timestamp < GOLD_CACHE_TTL) {
+    return cache.gold.data;
+  }
+
+  const fallback = () => cache.gold ? cache.gold.data : {
+    international: null, domestic: null, london: null,
+    updatedAt: new Date().toISOString(), error: null,
+  };
+
+  try {
+    const url = `http://hq.sinajs.cn/list=hf_GC,SGE_AU9999,hf_XAU`;
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: { 'Referer': 'http://finance.sina.com.cn' },
+      timeout: 6000
+    });
+    const text = iconv.decode(Buffer.from(response.data), 'gbk');
+
+    // 国际：hf_GC COMEX 黄金连续合约
+    // parts[0]=现价 [4]=最高 [5]=最低 [6]=时间 [7]=昨收 [12]=日期 [13]=中文名
+    const intlParts = parseSinaLine(text, /hq_str_hf_GC="([^"]*)"/);
+    const international = intlParts && intlParts[0] ? {
+      price:        parseFloat(intlParts[0]) || null,
+      prevClose:    parseFloat(intlParts[7]) || null,
+      high:         parseFloat(intlParts[4]) || null,
+      low:          parseFloat(intlParts[5]) || null,
+      time:         intlParts[6] || '',
+      date:         intlParts[12] || '',
+      currency:     'USD',
+      unit:         'oz',
+      name:         'COMEX 黄金（纽约）',
+      source:       'Sina/COMEX',
+      symbol:       'hf_GC',
+    } : null;
+
+    // 国内：SGE_AU9999 上海黄金交易所 Au99.99
+    // parts[7]=高 [8]=低 [9]=现价 [10]=昨收 [16]=日期时间 [17]=涨跌幅%
+    const domParts = parseSinaLine(text, /hq_str_SGE_AU9999="([^"]*)"/);
+    const domestic = domParts && domParts[9] ? {
+      price:        parseFloat(domParts[9]) || null,
+      prevClose:    parseFloat(domParts[10]) || null,
+      high:         parseFloat(domParts[7]) || null,
+      low:          parseFloat(domParts[8]) || null,
+      time:         domParts[16] ? domParts[16].split(' ')[1] || '' : '',
+      date:         domParts[16] ? domParts[16].split(' ')[0] || '' : '',
+      serverChangePct: parseFloat(domParts[17]) || null,
+      currency:     'CNY',
+      unit:         'g',
+      name:         '上海黄金 Au99.99',
+      source:       'Sina/SGE',
+      symbol:       'SGE_AU9999',
+    } : null;
+
+    // 伦敦：hf_XAU 伦敦金远期现货
+    // parts[0]=现价 [1]=昨收 [4]=高 [5]=低 [6]=时间 [12]=日期 [13]=中文名
+    const ldParts = parseSinaLine(text, /hq_str_hf_XAU="([^"]*)"/);
+    const london = ldParts && ldParts[0] ? {
+      price:        parseFloat(ldParts[0]) || null,
+      prevClose:    parseFloat(ldParts[1]) || null,
+      high:         parseFloat(ldParts[4]) || null,
+      low:          parseFloat(ldParts[5]) || null,
+      time:         ldParts[6] || '',
+      date:         ldParts[12] || '',
+      currency:     'USD',
+      unit:         'oz',
+      name:         '伦敦金 (LBMA Spot)',
+      source:       'Sina/LBMA',
+      symbol:       'hf_XAU',
+    } : null;
+
+    // 算 change / changePct（统一 client-side 拿到数据）
+    for (const q of [international, domestic, london]) {
+      if (!q) continue;
+      if (q.price != null && q.prevClose != null && q.prevClose > 0) {
+        q.change = q.price - q.prevClose;
+        q.changePct = (q.change / q.prevClose) * 100;
+      } else {
+        q.change = null;
+        q.changePct = null;
+      }
+    }
+
+    const data = {
+      international,
+      domestic,
+      london,
+      updatedAt: new Date().toISOString(),
+      error: null,
+    };
+
+    cache.gold = { timestamp: Date.now(), data };
+    return data;
+  } catch (e) {
+    console.error('[gold] fetch failed:', e.message);
+    return { ...fallback(), error: e.message };
+  }
+}
+
 module.exports = {
   getFundValuation,
   getFundHistory,
@@ -1299,4 +1420,5 @@ module.exports = {
   fetchSinaFundValuation,
   fetchASHareStockValuation,
   searchByName,
+  getGoldPrices,
 };

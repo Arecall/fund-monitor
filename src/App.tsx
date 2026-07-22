@@ -43,6 +43,7 @@ import {
 } from './services/api';
 import { FundDetailPanel } from './components/FundDetailPanel';
 import { EmailConfigPanel } from './components/EmailConfigPanel';
+import { GoldTab } from './components/GoldTab';
 
 /* ───────────────────────────────────────────────────────────────────
    Apple Motion tokens — derived from WWDC Designing Fluid Interfaces
@@ -143,6 +144,7 @@ function App() {
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [positions, setPositions] = useState<Record<string, UserPosition>>({});
   const [selfTab, setSelfTab] = useState<'fund' | 'stock'>('fund');
+  const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>('portfolio');
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
@@ -818,11 +820,43 @@ function App() {
 
       {/* Top navigation — Frosted Glass material */}
       <nav className="apple-navbar sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-6">
           <h1 className="text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-2">
             <span aria-hidden>📊</span>
             <span>全球基金监控终端</span>
           </h1>
+
+          {/* 主 tab: 自选 (portfolio) / 金价 (gold) */}
+          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5">
+            {([
+              { key: 'portfolio', label: '自选', icon: '📋' },
+              { key: 'gold',       label: '金价', icon: '💰' },
+            ] as const).map(t => {
+              const active = mainTab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setMainTab(t.key)}
+                  className={`relative px-3.5 py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1 ${
+                    active ? 'text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="main-tab-pill"
+                      transition={{ type: 'spring' as const, bounce: 0.05, duration: 0.36 }}
+                      className="absolute inset-0 rounded-full"
+                      style={{ background: 'var(--primary-accent)' }}
+                    />
+                  )}
+                  <span className="relative z-10 flex items-center gap-1">
+                    <span aria-hidden>{t.icon}</span>
+                    {t.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -911,7 +945,12 @@ function App() {
         )}
       </div>
 
-      {/* Main grid */}
+      {/* Main grid — 金价 tab 占满整页时只渲染金价 */}
+      {mainTab === 'gold' ? (
+        <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6">
+          <GoldTab />
+        </div>
+      ) : (
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
 
         {/* Left column: portfolio summary + settings */}
@@ -1288,6 +1327,7 @@ function App() {
           </section>
         </div>
       </div>
+      )}
 
       {/* ─────────────────────────────────────────────────────────────────
          Edit Position Modal — Apple Materialize (scrim + sheet spring in)

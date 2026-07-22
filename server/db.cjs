@@ -147,6 +147,18 @@ function initTables() {
       )
     `);
 
+    // 金价历史快照（服务端累积）— 一分钟一条，三个 key 各存一份。
+    // 自动清理 31 天前数据：金价日内分时粒度 1 分钟足够，月增 ~5 MB。
+    db.run(`
+      CREATE TABLE IF NOT EXISTS gold_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        t INTEGER NOT NULL,
+        v REAL NOT NULL
+      )
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_gold_history_key_t ON gold_history (key, t)`);
+
     console.log('数据库表结构初始化/验证完成');
   });
 }
