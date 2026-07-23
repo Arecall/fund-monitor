@@ -1345,12 +1345,13 @@ async function getGoldPrices() {
     } : null;
 
     // 国内：SGE_AU9999 上海黄金交易所 Au99.99
-    // parts[7]=高 [8]=低 [9]=现价 [10]=昨收 [16]=日期时间 [17]=涨跌幅%
+    // parts[3]=卖价/开盘 [6]=今日最高 [7]=52w高 [8]=今日最低
+    // parts[9]=昨收 [10]=均价 [11]=现价 [16]=日期时间 [17]=涨跌幅%
     const domParts = parseSinaLine(text, /hq_str_SGE_AU9999="([^"]*)"/);
-    const domestic = domParts && domParts[9] ? {
-      price:        parseFloat(domParts[9]) || null,
-      prevClose:    parseFloat(domParts[10]) || null,
-      high:         parseFloat(domParts[7]) || null,
+    const domestic = domParts && domParts[11] ? {
+      price:        parseFloat(domParts[11]) || null,
+      prevClose:    parseFloat(domParts[9]) || null,
+      high:         parseFloat(domParts[6]) || null,
       low:          parseFloat(domParts[8]) || null,
       time:         domParts[16] ? domParts[16].split(' ')[1] || '' : '',
       date:         domParts[16] ? domParts[16].split(' ')[0] || '' : '',

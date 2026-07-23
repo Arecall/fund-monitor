@@ -75,13 +75,11 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     const vals = points.map(p => p.v);
     const lo = Math.min(...vals);
     const hi = Math.max(...vals);
-    // 用相对中位数的 margin（保证数据居中，且点稀时不至于 margin=0）
-    const mid = (hi + lo) / 2;
     const span = hi - lo;
-    // 20% margin（原来是 15%）：保证 Y 轴刻度 step 不超过 margin，
-    // 这样 topTick = floor(maxV/step)*step 一定在 data peak 之上，避免
-    // "折线峰与最顶刻度同一像素行" 的视觉撞车。
-    const margin = Math.max(span * 0.20, mid * 0.001, 0.01);
+    // 20% margin 之外加最小绝对值——避免国内金价这种 span 只有 0.5 CNY、价格
+    // 单位两位小数的小数据集被空 margin 压扁。去掉 mid*0.001 是因为对低价位资产
+    // （gold ~899 CNY/g、AFEX 棉花等）0.1% × 几百 = 0.5-0.9 CNY 巨大，会盖过数据本身。
+    const margin = Math.max(span * 0.20, 0.05);
     return {
       minV: lo - margin,
       maxV: hi + margin,
@@ -226,16 +224,24 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     return parts.join(' ');
   }, [points, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
 
-  // Y 轴刻度：四等分再取"nice" 整数（5 的倍数，最小 1），并严格夹在 [minV, maxV] 内，
-  // 否则最顶/最底的网格线 + 标签会画到 padding.top 之外（"坐标轴落出图表"）。
+  // Y 轴刻度：四等分再取"nice" step（5 的倍数优先；窄区间退到 0.5），并严格夹在 [minV, maxV] 内。
+  // 0.5 步长服务于国内金价这种 span 只有 0.5 CNY 的小数据集——整数 step 会让唯一一条
+  // 9xx.00 刻度线落在数据正中，看不出波动。
   const yTicks = useMemo(() => {
     const rawStep = range_v / 4;
-    const step = Math.max(1, Math.round(rawStep / 5) * 5);
+    let step: number;
+    if (rawStep < 1) {
+      step = Math.max(0.5, Math.round(rawStep * 2) / 2);  // round 到 0.5
+    } else if (rawStep < 5) {
+      step = Math.max(1, Math.round(rawStep * 2) / 2);    // 0.5 整数化
+    } else {
+      step = Math.max(1, Math.round(rawStep / 5) * 5);    // 大区间照旧 5 的倍数
+    }
     const startTick = Math.ceil(minV / step) * step;
     const endTick = Math.floor(maxV / step) * step;
     const ticks: number[] = [];
-    for (let v = startTick; v <= endTick; v += step) {
-      ticks.push(v);
+    for (let v = startTick; v <= endTick + 1e-9; v += step) {
+      ticks.push(parseFloat(v.toFixed(4)));
     }
     if (ticks.length < 3) {
       // 数据太集中（step 比 range_v 还大）：退回 minV / 中点 / maxV，至少 3 条参考线
