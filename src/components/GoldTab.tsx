@@ -563,6 +563,7 @@ export function GoldTab() {
         ) : (
           <GoldChart
             points={historyPoints}
+            range={range}
             prevClose={focusedData?.prevClose ?? null}
             currency={focusedData?.currency ?? ''}
             unit={focusedData?.unit ?? ''}
