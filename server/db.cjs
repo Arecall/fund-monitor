@@ -107,13 +107,38 @@ function initTables() {
         email TEXT NOT NULL,
         up_threshold REAL,                    -- 上涨 N% 触发，null 表示不监控上涨
         down_threshold REAL,                  -- 下跌 N% 触发，null 表示不监控下跌
-        reference_price REAL,                -- 基准净值（创建时的 gsz）
+        reference_price REAL,                -- 基准净值（创建时的 dwjz，UI 展示用，触发判断已迁移到水位线）
+        high_water_price REAL,                -- 上涨水位线：从该值起涨 up_threshold 才再触发；null = 未初始化
+        low_water_price REAL,                 -- 下跌水位线：从该值起跌 down_threshold 才再触发；null = 未初始化
         is_active INTEGER NOT NULL DEFAULT 1, -- 1 启用 0 暂停
         last_triggered_at TEXT,               -- 上次触发时间，ISO
         last_triggered_change_pct REAL,       -- 触发时的涨跌幅（用于邮件/历史展示）
+        last_triggered_direction TEXT,        -- 上次触发方向 'up' / 'down'（辅助诊断）
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
+    `);
+
+    // Alerts schema migration: 给老数据库添加水位线 + last_triggered_direction
+    const alertColumns = [
+      ['high_water_price', 'REAL'],
+      ['low_water_price', 'REAL'],
+      ['last_triggered_direction', 'TEXT'],
+    ];
+    for (const [name, definition] of alertColumns) {
+      db.run(`ALTER TABLE alerts ADD COLUMN ${name} ${definition}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] alerts migration failed for ${name}:`, err.message);
+        }
+      });
+    }
+    // 回填水位线：老用户没有水位线，但有 reference_price 锁定，把水位线初始化为参考价
+    // 这样从升级那一刻起，老提醒的判断逻辑与新逻辑等价（不重置基准）。
+    db.run(`
+      UPDATE alerts
+      SET high_water_price = COALESCE(high_water_price, reference_price),
+          low_water_price  = COALESCE(low_water_price,  reference_price)
+      WHERE high_water_price IS NULL OR low_water_price IS NULL
     `);
 
     // 5. 提醒发送历史（审计 + UI 展示）

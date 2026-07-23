@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.13' });
+  res.json({ status: 'ok', version: '1.2.14' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -600,21 +600,47 @@ app.post('/api/alerts', async (req, res) => {
   }
 
   try {
-    // 用当前估值作为基准
+    // 用昨日单位净值(dwjz)作为涨跌基准，而不是当日实时估算(gsz)。
+    // 原因：QDII/老基金日间 gsz 是基于持仓成分股的"实时估算"，与次日才公布的
+    // 官方净值之间会有 1-2% 的回归差。以 gsz 为基准会把这次"回归"误判为
+    // "下跌触发"。dwjz 是用户对"涨/跌"心理预期的基准（相对昨日收盘）。
     const fund = await marketHelper.getFundValuation(fund_code);
-    const ref = fund ? parseFloat(fund.gsz) || parseFloat(fund.dwjz) : null;
+
+    // 防御：如果数据源只返回了昨日净值（navOnly=true）而没有今日估算，
+    // 直接以 dwjz 为基准会导致日后 gsz 第一次刷新时看起来像"涨跌"。
+    // 这种基金建议稍后再试，或用户主动接受"以 dwjz 为基准"才能创建。
+    if (fund && fund.navOnly) {
+      return res.status(503).json({
+        error: '当前数据源仅能获取昨日官方净值（QDII/老基金常见），无法建立准确涨跌基准。请稍后到行情页面刷新一次后再创建提醒，或改用持仓成分股相对稳定的基金。'
+      });
+    }
+
+    const dwjzParsed = fund ? parseFloat(fund.dwjz) : NaN;
+    const gszParsed = fund ? parseFloat(fund.gsz) : NaN;
+    // 优先 dwjz（昨日净值），回退到 gsz（极少数情况 dwjz 为 0）
+    const ref = Number.isFinite(dwjzParsed) && dwjzParsed > 0
+      ? dwjzParsed
+      : (Number.isFinite(gszParsed) && gszParsed > 0 ? gszParsed : null);
+
+    // 水位线初始值 = ref（昨收），这样从创建那一刻起，
+    // 高位触发要求 current ≥ ref * (1 + up/100)，
+    // 低位触发要求 current ≤ ref * (1 - down/100)。
+    const highWater = ref;
+    const lowWater  = ref;
 
     const result = await dbHelper.run(
       `INSERT INTO alerts
-         (user_id, fund_code, fund_name, email, up_threshold, down_threshold, reference_price, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-      [req.userId, fund_code, fund_name || fund?.name || fund_code, email, up, down, ref]
+         (user_id, fund_code, fund_name, email, up_threshold, down_threshold,
+          reference_price, high_water_price, low_water_price, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [req.userId, fund_code, fund_name || fund?.name || fund_code, email, up, down,
+       ref, highWater, lowWater]
     );
     res.json({
       success: true,
       id: result.lastID,
       message: ref
-        ? `已创建提醒，基准净值 ${ref.toFixed(4)}`
+        ? `已创建提醒，基准净值 ${ref.toFixed(4)}（基于昨日单位净值，水位线模式）`
         : '已创建提醒（暂未获取到基准净值，触发判断会在首次刷新时建立）',
       reference_price: ref
     });
@@ -839,20 +865,56 @@ async function pollAlerts() {
 
         const fund = await marketHelper.getFundValuation(alert.fund_code);
         if (!fund) continue;
-        const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-        if (current <= 0) continue;
-        const ref = alert.reference_price || parseFloat(fund.dwjz);
-        if (ref <= 0) continue;
-        const changePct = ((current - ref) / ref) * 100;
 
-        // 冷启动：第一次拿到参考价时，写回 DB
-        if (!alert.reference_price) {
-          await dbHelper.run('UPDATE alerts SET reference_price = ? WHERE id = ?', [ref, alert.id]);
+        // ⚠️ 防御：数据源只回退到昨日净值（navOnly=true）时没有"今日实时价"，
+        // 此时计算出来的 changePct 没有意义，跳过本轮不触发。
+        // 等下次 fundgz/Sina 等实时源恢复后再继续。
+        if (fund.navOnly) {
+          // 不更新 reference_price（保留已锁定的基准），只记录一条诊断日志
+          console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — data source navOnly-only (gsz==dwjz), wait for realtime source`);
+          continue;
         }
 
+        const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+        if (current <= 0) continue;
+
+        // ============================================================
+        // 水位线 (water-level) 模式
+        // ------------------------------------------------------------
+        // 旧实现每次触发后把 reference_price 重置为当前价 → 横盘震荡反复触发。
+        // 新实现：分别维护 high_water（上涨基准）和 low_water（下跌基准）。
+        //   - 涨阈值：current ≥ high_water * (1 + up_threshold/100)
+        //   - 跌阈值：current ≤ low_water  * (1 - down_threshold/100)
+        // 触发后：
+        //   - up   → high_water = current（只抬高不拉低）
+        //   - down → low_water  = current（只压低不抬高）
+        // 这样横盘震荡只触发一次（首次突破水位线后，水位线随之移动），
+        // 必须再涨/跌 N% 才会再次触发。
+        // ============================================================
+        let highWater = alert.high_water_price;
+        let lowWater  = alert.low_water_price;
+
+        // 冷启动：水位线未初始化（NULL）→ 用当前 dwjz 作起点
+        // 升级用户的回填逻辑已在 db.cjs 迁移中处理（用 reference_price 兜底）
+        if (highWater == null || lowWater == null) {
+          const initWater = parseFloat(fund.dwjz) > 0 ? parseFloat(fund.dwjz) : current;
+          highWater = highWater == null ? initWater : highWater;
+          lowWater  = lowWater  == null ? initWater : lowWater;
+          await dbHelper.run(
+            'UPDATE alerts SET high_water_price = COALESCE(high_water_price, ?), low_water_price = COALESCE(low_water_price, ?) WHERE id = ?',
+            [highWater, lowWater, alert.id]
+          );
+        }
+        if (highWater <= 0 || lowWater <= 0) continue;
+
+        // 计算本轮"涨幅"和"跌幅"（相对各自水位线）
+        const upMovePct   = ((current - highWater) / highWater) * 100;
+        const downMovePct = ((current - lowWater)  / lowWater)  * 100;
+
         let triggered = null;        // 'up' | 'down'
-        if (alert.up_threshold != null && changePct >= alert.up_threshold) triggered = 'up';
-        if (alert.down_threshold != null && changePct <= -alert.down_threshold) triggered = 'down';
+        let changePct = 0;
+        if (alert.up_threshold != null   && upMovePct   >= alert.up_threshold)   { triggered = 'up';   changePct = upMovePct; }
+        if (alert.down_threshold != null && downMovePct <= -alert.down_threshold) { triggered = 'down'; changePct = downMovePct; }
 
         if (!triggered) {
           MEMO_PRICE.set(alert.fund_code, current);
@@ -872,6 +934,10 @@ async function pollAlerts() {
           console.log(`[alerts] safety-skip #${alert.id} (defensive double-check) at BJT=${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}`);
           continue;
         }
+
+        // 计算本轮邮件里展示用的"参考价"（用户在邮件里看到的是相对哪个值的涨跌）
+        const displayRef = triggered === 'up' ? highWater : lowWater;
+
         const sendResult = await mailer.sendAlertEmail({
           to: alert.email,
           fundCode: alert.fund_code,
@@ -879,7 +945,7 @@ async function pollAlerts() {
           direction: triggered,
           changePct,
           currentPrice: current,
-          referencePrice: ref
+          referencePrice: displayRef
         }).catch(e => ({ error: e.message, messageId: null, previewUrl: null }));
 
         const nowIso = new Date().toISOString();
@@ -892,20 +958,26 @@ async function pollAlerts() {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             alert.id, alert.user_id, alert.fund_code, alert.fund_name, alert.email,
-            triggered, changePct, current, ref,
+            triggered, changePct, current, displayRef,
             sendResult?.messageId || null, sentOk, sendResult?.error || null
           ]
         );
+
+        // 触发后只移动对应方向的水位线（另一方向保持不变）
+        const newHighWater = triggered === 'up'   ? current : highWater;
+        const newLowWater  = triggered === 'down' ? current : lowWater;
         await dbHelper.run(
           `UPDATE alerts SET
              last_triggered_at = ?,
              last_triggered_change_pct = ?,
-             reference_price = ?
+             last_triggered_direction = ?,
+             high_water_price = ?,
+             low_water_price  = ?
            WHERE id = ?`,
-          [nowIso, changePct, current, alert.id]
+          [nowIso, changePct, triggered, newHighWater, newLowWater, alert.id]
         );
 
-        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref→${current.toFixed(4)} for next ladder)`);
+        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref_basis=water ${displayRef.toFixed(4)} → cur=${current.toFixed(4)}, new high_water=${newHighWater.toFixed(4)} low_water=${newLowWater.toFixed(4)})`);
       } catch (innerErr) {
         console.error(`[alerts] error on #${alert.id}:`, innerErr.message);
       }

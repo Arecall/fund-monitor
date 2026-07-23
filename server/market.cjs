@@ -317,6 +317,9 @@ async function fetchEastMoneyLSJZ(code) {
     name: row.FSRQ ? `基金 ${code}` : `基金 ${code}`,
     jzrq: navDate,
     dwjz: dwjz.toFixed(4),
+    // ⚠️ 此路径没有"实时现价"——只有上一交易日官方净值。
+    // gsz 字段名保留以兼容旧调用方，但语义上等于 dwjz。
+    // 调用方必须检查 `navOnly === true` 并据此跳过基于 gsz 的涨跌判断。
     gsz: dwjz.toFixed(4),
     gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
     gztime: navDate ? `${navDate} 15:00` : '',
