@@ -1377,14 +1377,20 @@ async function getGoldPrices() {
     // parts[3]=卖价/开盘 [6]=今日最高 [7]=52w高 [8]=今日最低
     // parts[9]=昨收 [10]=均价 [11]=现价 [16]=日期时间 [17]=涨跌幅%
     const domParts = parseSinaLine(text, /hq_str_SGE_AU9999="([^"]*)"/);
-    const domestic = domParts && domParts[11] ? {
-      price:        parseFloat(domParts[11]) || null,
-      prevClose:    parseFloat(domParts[9]) || null,
-      high:         parseFloat(domParts[6]) || null,
-      low:          parseFloat(domParts[8]) || null,
+    let domPrice = domParts && domParts[11] ? parseFloat(domParts[11]) : NaN;
+    const domPrevClose = domParts && domParts[9] ? parseFloat(domParts[9]) : NaN;
+    // 休市或盘后为空时，自动回退到昨收或 parts[3]
+    if ((isNaN(domPrice) || domPrice <= 0) && domParts) {
+      domPrice = !isNaN(domPrevClose) && domPrevClose > 0 ? domPrevClose : (parseFloat(domParts[3]) || NaN);
+    }
+    const domestic = domParts && !isNaN(domPrice) && domPrice > 0 ? {
+      price:        domPrice,
+      prevClose:    !isNaN(domPrevClose) && domPrevClose > 0 ? domPrevClose : null,
+      high:         domParts[6] ? parseFloat(domParts[6]) || null : null,
+      low:          domParts[8] ? parseFloat(domParts[8]) || null : null,
       time:         domParts[16] ? domParts[16].split(' ')[1] || '' : '',
       date:         domParts[16] ? domParts[16].split(' ')[0] || '' : '',
-      serverChangePct: parseFloat(domParts[17]) || null,
+      serverChangePct: domParts[17] ? parseFloat(domParts[17]) || null : null,
       currency:     'CNY',
       unit:         'g',
       name:         '上海黄金 Au99.99',
