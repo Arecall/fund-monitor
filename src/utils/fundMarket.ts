@@ -39,3 +39,77 @@ export function marketLabel(market: FundMarket): string {
     default: return 'A股';
   }
 }
+
+/**
+ * 判断指定市场当前是否处于交易/开盘时间内（北京时间）
+ * 用于前端判断全局休市状态，休市时停止自动轮询打扰后端
+ */
+export function isMarketOpen(market: FundMarket, date = new Date()): boolean {
+  // 用 Intl 取各目标时区的 weekday 与 hour/minute
+  let tz = 'Asia/Shanghai';
+  let sessions = [
+    [9 * 60 + 30, 11 * 60 + 30],
+    [13 * 60, 15 * 60]
+  ];
+
+  if (market === 'hk') {
+    tz = 'Asia/Hong_Kong';
+    sessions = [
+      [9 * 60 + 30, 12 * 60],
+      [13 * 60, 16 * 60]
+    ];
+  } else if (market === 'us') {
+    tz = 'America/New_York';
+    sessions = [
+      [9 * 60 + 30, 16 * 60]
+    ];
+  } else if (market === 'other') {
+    // 黄金 / 其它海外：除了周末外，全天大部分时间开盘
+    return isWeekday(date, 'Asia/Shanghai');
+  }
+
+  return isTradingSession(date, tz, sessions);
+}
+
+function isWeekday(date: Date, tz: string): boolean {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).formatToParts(date);
+    const day = parts.find(p => p.type === 'weekday')?.value;
+    return day !== 'Sat' && day !== 'Sun';
+  } catch {
+    return true;
+  }
+}
+
+function isTradingSession(date: Date, tz: string, sessions: number[][]): boolean {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      hourCycle: 'h23',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).formatToParts(date);
+    const m = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    if (m.weekday === 'Sat' || m.weekday === 'Sun') return false;
+    const hour = parseInt(m.hour, 10);
+    const minute = parseInt(m.minute, 10);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return true;
+    const nowMin = hour * 60 + minute;
+    return sessions.some(([s, e]) => nowMin >= s && nowMin < e);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 判断给定的自选列表中，是否有任意一个市场处于开盘/交易时间内
+ * 如果全部休市（如周末或全休市夜间），返回 false 告知前端暂停自动轮询
+ */
+export function isAnyMarketOpen(markets: FundMarket[], date = new Date()): boolean {
+  if (markets.length === 0) {
+    // 默认关注 A 股和美股
+    return isMarketOpen('domestic', date) || isMarketOpen('us', date);
+  }
+  return markets.some(m => isMarketOpen(m, date));
+}

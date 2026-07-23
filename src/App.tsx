@@ -41,6 +41,7 @@ import {
   type FundHoldingStock,
   type WatchlistItem,
 } from './services/api';
+import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
 import { FundDetailPanel } from './components/FundDetailPanel';
 import { EmailConfigPanel } from './components/EmailConfigPanel';
 import { GoldTab } from './components/GoldTab';
@@ -271,17 +272,33 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
-  /* ---------- Polling (background-friendly) ---------- */
+  /* ---------- Polling (background-friendly + 休市自动暂停) ---------- */
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (autoRefreshInterval > 0 && currentUser) {
       timerRef.current = setInterval(() => {
-        if (document.visibilityState === 'visible') refreshPricesOnly();
+        if (document.visibilityState !== 'visible') return;
+
+        // 全局休市校验：提取用户自选列表中关注的所有市场
+        const activeMarkets: FundMarket[] = watchlistItems.map(item => {
+          if (item.market === 'us' || item.market === 'hk' || item.market === 'domestic' || item.market === 'other') {
+            return item.market;
+          }
+          const val = fundsData[item.fund_code];
+          return detectFundMarket(val?.name, item.fund_code);
+        });
+
+        // 若用户关注的所有市场目前均处于休市闭市状态（如周末或深夜全盘休市），跳过轮询刷新
+        if (!isAnyMarketOpen(activeMarkets)) {
+          return;
+        }
+
+        refreshPricesOnly();
       }, autoRefreshInterval * 1000);
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchlist, autoRefreshInterval, currentUser]);
+  }, [watchlist, watchlistItems, fundsData, autoRefreshInterval, currentUser]);
 
   /* ---------- Toast ---------- */
   const showToast = useCallback((msg: string) => {

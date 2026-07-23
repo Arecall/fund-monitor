@@ -332,8 +332,11 @@ async function fetchEastMoneyLSJZ(code) {
   if (isNaN(dwjz) || dwjz <= 0) return null;
   const changePct = parseFloat(row.JZZZL || '0');
   const navDate = row.FSRQ || '';
+  // lsjz 只返回净值，不能据此判断 QDII 市场；补查 pingzhongdata 的基金名称。
+  // 这是实时源失效时的兜底路径，额外请求只在该低频分支发生。
+  const basic = await getFundBasicInfo(code);
+  const name = basic?.name || `基金 ${code}`;
   let market = 'domestic';
-  const name = row.FSRQ ? `基金 ${code}` : `基金 ${code}`;
   if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
   else if (/港股|恒生|中华/i.test(name)) market = 'hk';
 
