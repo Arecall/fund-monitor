@@ -10,6 +10,7 @@ import {
   type ChartPoint,
   type DataSource
 } from '../utils/chartData';
+import { detectFundMarket, isMarketOpen } from '../utils/fundMarket';
 import type { FundHistoryPoint } from '../services/api';
 
 const RANGES: { key: RangeKey; label: string }[] = [
@@ -169,6 +170,11 @@ export function FundChart({
     if (!refreshing) return;
   }, [refreshing]);
 
+  // 判断当下时刻该资产所在市场是否开盘
+  const fundMarket = useMemo(() => detectFundMarket(fundName, fundCode), [fundName, fundCode]);
+  const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
+  const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
@@ -189,14 +195,23 @@ export function FundChart({
         <div className="flex items-center gap-3 text-[11px] text-slate-500">
           <span className="flex items-center gap-1.5">
             <motion.span
-              className="inline-block w-1.5 h-1.5 rounded-full"
-              style={{ background: refreshing ? 'var(--color-up)' : 'var(--color-up)' }}
-              animate={prefersReducedMotion || !refreshing ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+              className={`inline-block w-1.5 h-1.5 rounded-full ${
+                refreshing
+                  ? 'bg-blue-500'
+                  : isCurrentlyOpen
+                  ? 'bg-emerald-500'
+                  : 'bg-slate-400 dark:bg-slate-500'
+              }`}
+              animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
               transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
             />
-            {refreshing ? '刷新中…' : '自动刷新中'}
+            {refreshing
+              ? '刷新中…'
+              : isCurrentlyOpen
+              ? '自动刷新中'
+              : '已休市 · 暂停刷新'}
           </span>
-          <span>更新于 {formatTick(Date.now(), range)}</span>
+          <span>更新于 {formatTick(lastPointTime, range)}</span>
           {/* 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
               盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。 */}
           {series.points.length > 0 && !series.preMarket && (() => {
