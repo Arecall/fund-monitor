@@ -332,9 +332,14 @@ async function fetchEastMoneyLSJZ(code) {
   if (isNaN(dwjz) || dwjz <= 0) return null;
   const changePct = parseFloat(row.JZZZL || '0');
   const navDate = row.FSRQ || '';
+  let market = 'domestic';
+  const name = row.FSRQ ? `基金 ${code}` : `基金 ${code}`;
+  if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
+  else if (/港股|恒生|中华/i.test(name)) market = 'hk';
+
   return {
     fundcode: code,
-    name: row.FSRQ ? `基金 ${code}` : `基金 ${code}`,
+    name,
     jzrq: navDate,
     dwjz: dwjz.toFixed(4),
     // ⚠️ 此路径没有"实时现价"——只有上一交易日官方净值。
@@ -343,7 +348,7 @@ async function fetchEastMoneyLSJZ(code) {
     gsz: dwjz.toFixed(4),
     gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
     gztime: navDate ? `${navDate} 15:00` : '',
-    market: 'domestic',
+    market,
     navOnly: true
   };
 }
@@ -649,14 +654,20 @@ async function getFundValuation(code, kindOverride) {
       if (text && text.includes('jsonpgz')) {
         const rawData = parseJsonp(text);
         if (rawData && rawData.gsz && parseFloat(rawData.gsz) > 0) {
+          const name = rawData.name || '';
+          let market = 'domestic';
+          if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
+          else if (/港股|恒生|中华/i.test(name)) market = 'hk';
+
           result = {
             fundcode: rawData.fundcode,
-            name: rawData.name,
+            name,
             jzrq: rawData.jzrq,
             dwjz: rawData.dwjz,
             gsz: rawData.gsz,
             gszzl: rawData.gszzl,
-            gztime: rawData.gztime
+            gztime: rawData.gztime,
+            market
           };
         }
       }
