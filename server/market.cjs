@@ -267,12 +267,16 @@ async function fetchUSStockValuation(ticker) {
   if (parts.length < 26) return null;
   // Sina 美股字段顺序（已实测）：
   //   name(0)=中文名, current(1), change_pct(2), datetime(3)="2026-07-20 17:10:01", change(4),
-  //   open(5), high(6), low(7), prev_close(26)
+  //   open(5), high(6), low(7), prev_close 可以通过 (current - change) 精确反推
   const nameZh = parts[0];
   const current = parseFloat(parts[1]);
   const changePct = parseFloat(parts[2]);
   const datetime = parts[3] || '';        // "2026-07-20 17:10:01"（已是 ISO-ish）
-  const prevClose = parseFloat(parts[26]);
+  const change = parseFloat(parts[4]);
+  let prevClose = parts.length > 26 ? parseFloat(parts[26]) : NaN;
+  if ((isNaN(prevClose) || prevClose <= 0) && !isNaN(current) && !isNaN(change)) {
+    prevClose = current - change;
+  }
   if (isNaN(current) || current <= 0) return null;
   // 转换日期格式：parts[3] 已是 "YYYY-MM-DD HH:MM:SS"
   let gztime = '';
@@ -515,6 +519,11 @@ async function fetchHoldingsBasedEstimate(code) {
   // 7-21 北京晚上 21:30+：今日美股盘中
   const gzTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+  // 推断主体市场：若前 10 重仓股中有美股/港股，设置对应 market 属性
+  const hasUs = stocks.some(s => s.market === 'us');
+  const hasHk = stocks.some(s => s.market === 'hk');
+  const detectedMarket = hasUs ? 'us' : (hasHk ? 'hk' : 'domestic');
+
   return {
     fundcode: code,
     name: fundName,
@@ -523,7 +532,7 @@ async function fetchHoldingsBasedEstimate(code) {
     gsz: estimatedGsz.toFixed(4),
     gszzl: avgChange.toFixed(2),
     gztime: gzTime,
-    market: 'domestic',
+    market: detectedMarket,
     estimate: true,                                // 标记这是基于持仓的估算
     holdingsCount: changes.length,
     officialNavDate: nav.jzrq
