@@ -278,7 +278,7 @@ async function fetchUSStockValuation(ticker) {
     prevClose = current - change;
   }
   if (isNaN(current) || current <= 0) return null;
-  // 转换日期格式：parts[3] 已是 "YYYY-MM-DD HH:MM:SS"
+  // 转换日期格式：parts[3] 已是 "YYYY-MM-DD HH:MM:SS" 或美式格式
   let gztime = '';
   let jzrq = '';
   if (datetime) {
@@ -286,6 +286,17 @@ async function fetchUSStockValuation(ticker) {
     if (m) {
       jzrq = `${m[1]}-${m[2]}-${m[3]}`;
       gztime = `${jzrq} ${m[4]}`;
+    } else {
+      // 降级使用当前美股日期与时间
+      const nowNy = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hourCycle: 'h23',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      }).formatToParts(new Date());
+      const p = Object.fromEntries(nowNy.map(x => [x.type, x.value]));
+      jzrq = `${p.year}-${p.month}-${p.day}`;
+      gztime = `${jzrq} ${p.hour}:${p.minute}`;
     }
   }
   return {
@@ -561,15 +572,19 @@ async function fetchSinaFundValuation(code) {
   let gsz = parseFloat(parts[2]);
   if (isNaN(gsz) || gsz <= 0) gsz = parseFloat(parts[9] || '');
   if (isNaN(gsz) || gsz <= 0) return null;
+  const name = parts[0] || '';
+  const isUsQDII = /纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name);
+  const isHkQDII = /港股|恒生|中华/i.test(name);
+  const market = isUsQDII ? 'us' : (isHkQDII ? 'hk' : 'domestic');
   return {
     fundcode: code,
-    name: parts[0],
+    name,
     jzrq: parts[7] || '',
     dwjz: parts[3] || '0',
     gsz: gsz.toFixed(4),
     gszzl: parts[6] || '0',
     gztime: parts[7] && parts[1] ? `${parts[7]} ${parts[1]}` : '',
-    market: 'domestic'
+    market
   };
 }
 
