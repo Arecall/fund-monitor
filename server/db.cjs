@@ -114,16 +114,18 @@ function initTables() {
         last_triggered_at TEXT,               -- 上次触发时间，ISO
         last_triggered_change_pct REAL,       -- 触发时的涨跌幅（用于邮件/历史展示）
         last_triggered_direction TEXT,        -- 上次触发方向 'up' / 'down'（辅助诊断）
+        last_nav_date TEXT,                   -- 最新官方净值日期 (jzrq)，用于跨日重置水位线
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
 
-    // Alerts schema migration: 给老数据库添加水位线 + last_triggered_direction
+    // Alerts schema migration: 给老数据库添加水位线 + last_triggered_direction + last_nav_date
     const alertColumns = [
       ['high_water_price', 'REAL'],
       ['low_water_price', 'REAL'],
       ['last_triggered_direction', 'TEXT'],
+      ['last_nav_date', 'TEXT'],
     ];
     for (const [name, definition] of alertColumns) {
       db.run(`ALTER TABLE alerts ADD COLUMN ${name} ${definition}`, (err) => {

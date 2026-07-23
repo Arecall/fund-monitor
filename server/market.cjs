@@ -72,15 +72,20 @@ function detectCodeKind(code) {
  * 交易时段（不含节假日 — 交易所休市日历每年变动，按真实时段过滤即可）：
  *   - A 股 (stock_a / fund_a):  周一-周五 北京 9:30-11:30, 13:00-15:00
  *   - 港股 (fund_hk):         周一-周五 香港 9:30-12:00, 13:00-16:00
- *   - 美股 (fund_us):         周一-周五 纽约 9:30-16:00（Intl 自动夏/冬令时）
+ *   - 美股 (fund_us / QDII):  周一-周五 纽约 9:30-16:00（Intl 自动夏/冬令时）
  *   - 其它/未知:               默认全天 true（保守，不阻断未知品种）
  *
  * @param {string} code  基金/股票代码
  * @param {Date}   [now] 可选：当前时间（便于测试；默认 new Date()）
+ * @param {string} [market] 可选：显式传入 market ('domestic'|'hk'|'us'|'other')
  * @returns {boolean}
  */
-function isInTradingTime(code, now) {
-  const kind = detectCodeKind(code || '');
+function isInTradingTime(code, now, market) {
+  let kind = detectCodeKind(code || '');
+  if (market === 'us') kind = 'fund_us';
+  else if (market === 'hk') kind = 'fund_hk';
+  else if (market === 'domestic') kind = 'fund_a';
+
   if (kind === 'unknown') return true;
 
   let tz, sessions;

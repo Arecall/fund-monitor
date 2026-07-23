@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.14' });
+  res.json({ status: 'ok', version: '1.2.15' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -581,8 +581,8 @@ app.get('/api/alerts/history', async (req, res) => {
 // 创建提醒
 app.post('/api/alerts', async (req, res) => {
   const { fund_code, fund_name, email, up_threshold, down_threshold } = req.body || {};
-  if (!fund_code || !/^\d{6}$/.test(fund_code)) {
-    return res.status(400).json({ error: '基金代码格式不正确' });
+  if (!fund_code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5}|(HK|hk|US|us|gb_|\w+)[\w]{1,6})$/.test(fund_code)) {
+    return res.status(400).json({ error: '代码格式不正确' });
   }
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: '邮箱格式不正确' });
@@ -628,13 +628,15 @@ app.post('/api/alerts', async (req, res) => {
     const highWater = ref;
     const lowWater  = ref;
 
+    const navDate = fund ? (fund.jzrq || '') : '';
+
     const result = await dbHelper.run(
       `INSERT INTO alerts
          (user_id, fund_code, fund_name, email, up_threshold, down_threshold,
-          reference_price, high_water_price, low_water_price, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          reference_price, high_water_price, low_water_price, last_nav_date, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [req.userId, fund_code, fund_name || fund?.name || fund_code, email, up, down,
-       ref, highWater, lowWater]
+       ref, highWater, lowWater, navDate]
     );
     res.json({
       success: true,
@@ -858,19 +860,17 @@ async function pollAlerts() {
 
     for (const alert of rows) {
       try {
-        // 非交易时段跳过：周末 + 中午休市 + 收盘后，不发邮件、不写 history
-        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code)) {
-          continue;
-        }
-
         const fund = await marketHelper.getFundValuation(alert.fund_code);
         if (!fund) continue;
 
+        // 非交易时段跳过：结合品种/基金市场属性判断（A股/港股/美股/QDII）
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, undefined, fund.market)) {
+          continue;
+        }
+
         // ⚠️ 防御：数据源只回退到昨日净值（navOnly=true）时没有"今日实时价"，
         // 此时计算出来的 changePct 没有意义，跳过本轮不触发。
-        // 等下次 fundgz/Sina 等实时源恢复后再继续。
         if (fund.navOnly) {
-          // 不更新 reference_price（保留已锁定的基准），只记录一条诊断日志
           console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — data source navOnly-only (gsz==dwjz), wait for realtime source`);
           continue;
         }
@@ -879,30 +879,35 @@ async function pollAlerts() {
         if (current <= 0) continue;
 
         // ============================================================
-        // 水位线 (water-level) 模式
+        // 跨日水位线自动重置逻辑
         // ------------------------------------------------------------
-        // 旧实现每次触发后把 reference_price 重置为当前价 → 横盘震荡反复触发。
-        // 新实现：分别维护 high_water（上涨基准）和 low_water（下跌基准）。
-        //   - 涨阈值：current ≥ high_water * (1 + up_threshold/100)
-        //   - 跌阈值：current ≤ low_water  * (1 - down_threshold/100)
-        // 触发后：
-        //   - up   → high_water = current（只抬高不拉低）
-        //   - down → low_water  = current（只压低不抬高）
-        // 这样横盘震荡只触发一次（首次突破水位线后，水位线随之移动），
-        // 必须再涨/跌 N% 才会再次触发。
+        // 当进入新交易日，最新官方净值日期 (fund.jzrq) 变动，或者上一步
+        // 拿到了新的 dwjz (昨收价)，将高低水位线均重置为当天的基准 dwjz。
         // ============================================================
         let highWater = alert.high_water_price;
         let lowWater  = alert.low_water_price;
+        const currentDwjz = parseFloat(fund.dwjz);
+        const navDate = fund.jzrq || '';
+
+        // 跨日重置判断：如果记录了上次净值日期且与最新日期不符，重置水位线为新 dwjz
+        if (navDate && alert.last_nav_date && navDate !== alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
+          console.log(`[alerts] 跨日重置提醒 #${alert.id} ${alert.fund_code}: ${alert.last_nav_date} -> ${navDate}, 新昨收=${currentDwjz}`);
+          highWater = currentDwjz;
+          lowWater = currentDwjz;
+          await dbHelper.run(
+            'UPDATE alerts SET high_water_price = ?, low_water_price = ?, reference_price = ?, last_nav_date = ? WHERE id = ?',
+            [highWater, lowWater, currentDwjz, navDate, alert.id]
+          );
+        }
 
         // 冷启动：水位线未初始化（NULL）→ 用当前 dwjz 作起点
-        // 升级用户的回填逻辑已在 db.cjs 迁移中处理（用 reference_price 兜底）
         if (highWater == null || lowWater == null) {
-          const initWater = parseFloat(fund.dwjz) > 0 ? parseFloat(fund.dwjz) : current;
+          const initWater = Number.isFinite(currentDwjz) && currentDwjz > 0 ? currentDwjz : current;
           highWater = highWater == null ? initWater : highWater;
           lowWater  = lowWater  == null ? initWater : lowWater;
           await dbHelper.run(
-            'UPDATE alerts SET high_water_price = COALESCE(high_water_price, ?), low_water_price = COALESCE(low_water_price, ?) WHERE id = ?',
-            [highWater, lowWater, alert.id]
+            'UPDATE alerts SET high_water_price = COALESCE(high_water_price, ?), low_water_price = COALESCE(low_water_price, ?), last_nav_date = COALESCE(last_nav_date, ?) WHERE id = ?',
+            [highWater, lowWater, navDate, alert.id]
           );
         }
         if (highWater <= 0 || lowWater <= 0) continue;
@@ -963,7 +968,7 @@ async function pollAlerts() {
           ]
         );
 
-        // 触发后只移动对应方向的水位线（另一方向保持不变）
+        // 触发后更新对应方向的水位线及最新官方净值日期 (last_nav_date)
         const newHighWater = triggered === 'up'   ? current : highWater;
         const newLowWater  = triggered === 'down' ? current : lowWater;
         await dbHelper.run(
@@ -972,9 +977,10 @@ async function pollAlerts() {
              last_triggered_change_pct = ?,
              last_triggered_direction = ?,
              high_water_price = ?,
-             low_water_price  = ?
+             low_water_price  = ?,
+             last_nav_date    = COALESCE(NULLIF(?, ''), last_nav_date)
            WHERE id = ?`,
-          [nowIso, changePct, triggered, newHighWater, newLowWater, alert.id]
+          [nowIso, changePct, triggered, newHighWater, newLowWater, navDate, alert.id]
         );
 
         console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref_basis=water ${displayRef.toFixed(4)} → cur=${current.toFixed(4)}, new high_water=${newHighWater.toFixed(4)} low_water=${newLowWater.toFixed(4)})`);
