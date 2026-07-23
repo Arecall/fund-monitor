@@ -731,9 +731,14 @@ async function getFundHistory(code, days = 30, kindOverride) {
     return cached.data.slice(-days);
   }
 
-  // 路由：5 位数字（港股）/ 1-5 位字母（美股）/ 6 位数字（A 股）→ 走腾讯 K 线
-  // 路由：kind="'stock' 强制走腾讯 K 线（覆盖所有代码类型）
-  if (kindOverride === 'stock') {
+  // 路由 1：kindOverride='stock' 显式指定为股票 → 调 K 线接口
+  // 路由 2：美股字母 ticker / 4-5 位港股代码 / A 股个股严格代码(60/68/8开头) → 调 K 线接口
+  const c = code.trim().toUpperCase();
+  const isUSStock = /^[A-Za-z]{1,5}$/.test(c);
+  const isHKStock = /^\d{4,5}$/.test(c);
+  const isAShareStock = /^\d{6}$/.test(c) && /^(60|68|8)/.test(c);
+
+  if (kindOverride === 'stock' || isUSStock || isHKStock || isAShareStock) {
     const kline = await fetchStockKLineHistory(code, days);
     const data = kline.map(k => ({ date: k.date, dwjz: k.close })).filter(r => r.dwjz > 0);
     if (data.length > 0) {
@@ -741,26 +746,8 @@ async function getFundHistory(code, days = 30, kindOverride) {
       return data.slice(-days);
     }
   }
-  const isStock = /^[A-Za-z]{1,5}$/.test(code) || /^\d{4,5}$/.test(code);
-  const isAShare = /^\d{6}$/.test(code);
-  if (isStock || isAShare) {
-    const kline = await fetchStockKLineHistory(code, days);
-    const data = kline
-      .map(k => ({ date: k.date, dwjz: k.close }))
-      .filter(r => r.dwjz > 0);
-    if (data.length > 0) {
-      cache.fundHistory[code] = { data, timestamp: now, days: data.length };
-      return data.slice(-days);
-    }
-    // A 股 K 线失败 → fallback 到 f10/lsjz（基金净值）
-    if (isAShare) {
-      // 继续下面的 f10/lsjz 逻辑
-    } else {
-      return [];
-    }
-  }
 
-  // 6 位数字 → A 股基金（f10/lsjz），仅在 K 线失败时
+  // 6 位数字且未匹配到 A 股个股 → 确定为场外公募基金，直接调 f10/lsjz 拿真实日单位净值
   if (!/^\d{6}$/.test(code)) return [];
 
   // 拉取足够多的记录以覆盖 days 区间
