@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.15' });
+  res.json({ status: 'ok', version: '1.2.16' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -889,8 +889,17 @@ async function pollAlerts() {
         const currentDwjz = parseFloat(fund.dwjz);
         const navDate = fund.jzrq || '';
 
+        // 从 1.2.14 升级的提醒已有水位线但没有 last_nav_date。首次拿到有效净值日期时，
+        // 先以当前官方净值建立明确的日基准，避免旧水位线一直无法进入跨日重置逻辑。
+        if (navDate && !alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
+          highWater = currentDwjz;
+          lowWater = currentDwjz;
+          await dbHelper.run(
+            'UPDATE alerts SET high_water_price = ?, low_water_price = ?, reference_price = ?, last_nav_date = ? WHERE id = ?',
+            [highWater, lowWater, currentDwjz, navDate, alert.id]
+          );
         // 跨日重置判断：如果记录了上次净值日期且与最新日期不符，重置水位线为新 dwjz
-        if (navDate && alert.last_nav_date && navDate !== alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
+        } else if (navDate && alert.last_nav_date && navDate !== alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
           console.log(`[alerts] 跨日重置提醒 #${alert.id} ${alert.fund_code}: ${alert.last_nav_date} -> ${navDate}, 新昨收=${currentDwjz}`);
           highWater = currentDwjz;
           lowWater = currentDwjz;
