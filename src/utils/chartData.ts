@@ -180,7 +180,8 @@ export function buildSeries(
   range: RangeKey,
   history: FundHistoryPoint[] = [],
   fundName?: string,
-  fundCode?: string
+  fundCode?: string,
+  kind?: 'fund' | 'stock'
 ): ChartSeries {
   const market = detectFundMarket(fundName, fundCode);
   const rand = mulberry32(hashCode(code + range));
@@ -273,6 +274,14 @@ export function buildSeries(
       }
     }
 
+    const isStock = kind === 'stock' || /^[A-Za-z]{1,5}$/.test(code.trim()) || /^\d{4,5}$/.test(code.trim()) || (/^\d{6}$/.test(code.trim()) && /^(60|68|00|30|8)/.test(code.trim()));
+    const stockNote = market === 'us'
+      ? `分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
+      : '分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）';
+    const fundNote = market === 'us'
+      ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
+      : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）';
+
     return {
       points,
       source: 'estimated',
@@ -280,9 +289,7 @@ export function buildSeries(
       preMarket,
       note: preMarket
         ? `今日尚未开盘 — 平台线为昨日收盘 ¥${previous.toFixed(4)} 基准，右侧 tick 为当前估值；等待 ${formatHHMM(rawEndTs)} 开盘`
-        : (market === 'us'
-            ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
-            : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）'),
+        : (isStock ? stockNote : fundNote),
     };
   }
 

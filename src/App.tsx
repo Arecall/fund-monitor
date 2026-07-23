@@ -1580,6 +1580,7 @@ function App() {
             key="detail-drawer"
             onDismiss={() => setSelectedFundCode(null)}
             ariaLabel={isStock ? '股票详情' : '基金详情'}
+            title={isStock ? '股票详情' : '基金详情'}
           >
             <FundDetailPanel
               fund={fundsData[selectedFundCode]}
@@ -1719,11 +1720,13 @@ const PressableIconButton = React.forwardRef<HTMLButtonElement, HTMLMotionProps<
 function DetailDrawer({
   children,
   onDismiss,
-  ariaLabel
+  ariaLabel,
+  title = '详情'
 }: {
   children: React.ReactNode;
   onDismiss: () => void;
   ariaLabel: string;
+  title?: string;
 }) {
   const prefersReducedMotion = useReducedMotion();
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -1786,7 +1789,7 @@ function DetailDrawer({
           data-testid="drawer-header"
         >
           <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-            基金详情
+            {title}
           </span>
 
           {/* Close button — uses motion's native whileTap so onClick is

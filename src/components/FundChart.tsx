@@ -33,6 +33,7 @@ interface FundChartProps {
   fundName: string;
   current: number;            // gsz
   previous: number;           // dwjz
+  kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
   history?: FundHistoryPoint[];
@@ -48,6 +49,7 @@ export function FundChart({
   fundName,
   current,
   previous,
+  kind = 'fund',
   height = 280,
   history = [],
   refreshing = false,
@@ -73,8 +75,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode),
-    [fundCode, current, previous, range, history]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind),
+    [fundCode, current, previous, range, history, fundName, kind]
   );
   const points = series.points;
 
