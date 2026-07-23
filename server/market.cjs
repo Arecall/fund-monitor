@@ -632,44 +632,44 @@ async function getFundValuation(code, kindOverride) {
     } else if (kind === 'fund_us') {
       result = await fetchUSStockValuation(code);
     } else {
-      // kind === 'fund_a'：6 位数字（60/68 之外的）
-      // 00/30 开头可能是深市/创业板 A 股个股（如 002050），00 也可能是基金（如 001668）
-      // 解决：先试 Sina A 股个股，失败再走基金路径
-      try {
-        result = await fetchASHareStockValuation(code);
-        if (result) console.log(`[fund] ${code} matched as A-share stock (kind was fund_a, but Sina 返回数据)`);
-      } catch {}
-      if (!result) {
-        // 走 A 股基金路径：3 级 fallback
-        //   1. fundgz.1234567.com.cn（最常见，覆盖大部分 A 股基金）
-        //   2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
-        //   3. 东方财富 f10/lsjz（官方净值历史，QDII/老基金最后兜底）
+      // kind === 'fund_a'：6 位数字
+      // 1. 优先直接调 fundgz (A股基金主接口)
       const url = `http://fundgz.1234567.com.cn/js/${code}.js?rt=${now}`;
-      const response = await axios.get(url, {
-        headers: { 'Referer': 'http://fund.eastmoney.com/' },
-        timeout: 5000,
-        maxRedirects: 5
-      });
-      const text = response.data;
-      if (text && text.includes('jsonpgz')) {
-        const rawData = parseJsonp(text);
-        if (rawData && rawData.gsz && parseFloat(rawData.gsz) > 0) {
-          const name = rawData.name || '';
-          let market = 'domestic';
-          if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
-          else if (/港股|恒生|中华/i.test(name)) market = 'hk';
+      try {
+        const response = await axios.get(url, {
+          headers: { 'Referer': 'http://fund.eastmoney.com/' },
+          timeout: 5000,
+          maxRedirects: 5
+        });
+        const text = response.data;
+        if (text && text.includes('jsonpgz')) {
+          const rawData = parseJsonp(text);
+          if (rawData && rawData.gsz && parseFloat(rawData.gsz) > 0) {
+            const name = rawData.name || '';
+            let market = 'domestic';
+            if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
+            else if (/港股|恒生|中华/i.test(name)) market = 'hk';
 
-          result = {
-            fundcode: rawData.fundcode,
-            name,
-            jzrq: rawData.jzrq,
-            dwjz: rawData.dwjz,
-            gsz: rawData.gsz,
-            gszzl: rawData.gszzl,
-            gztime: rawData.gztime,
-            market
-          };
+            result = {
+              fundcode: rawData.fundcode,
+              name,
+              jzrq: rawData.jzrq,
+              dwjz: rawData.dwjz,
+              gsz: rawData.gsz,
+              gszzl: rawData.gszzl,
+              gztime: rawData.gztime,
+              market
+            };
+          }
         }
+      } catch {}
+
+      // 仅在 fundgz 未命中时，尝试测试是否为 A 股个股（如深市 002050）
+      if (!result) {
+        try {
+          result = await fetchASHareStockValuation(code);
+          if (result) console.log(`[fund] ${code} matched as A-share stock (fundgz miss, Sina fallback)`);
+        } catch {}
       }
       // 第 2 级 fallback
       if (!result) {
@@ -698,7 +698,6 @@ async function getFundValuation(code, kindOverride) {
           result = estimate;
         }
       }
-      }  // 关闭 if (!result) { ... } 块
     }
 
     if (result) {
