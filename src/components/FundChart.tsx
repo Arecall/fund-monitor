@@ -177,47 +177,54 @@ export function FundChart({
   const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
   const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
 
+  // 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
+  // 盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。
+  // 提前 memoize，避免每次 render 重新分配 Date 对象和字符串
+  const dataDateBadge = useMemo(() => {
+    if (series.points.length === 0 || series.preMarket) return null;
+    const lastTs = series.points[series.points.length - 1].t;
+    const today = new Date();
+    const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+    const sameDay = lastTs >= dayStart && lastTs < dayEnd;
+    const d = new Date(lastTs);
+    const dataStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    return { sameDay, dataStr };
+  }, [series.points, series.preMarket]);
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
-      {/* 行1：标题 + 数据源 + 日期 badge */}
-      <div className="flex items-center justify-between mb-1.5 px-1">
-        <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
-          分时走势
+      {/* 行1：标题 + 数据源 + 日期 badge — 移动端窄屏会自动收缩 */}
+      <div className="flex items-center justify-between gap-2 mb-1.5 px-1 min-w-0">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 min-w-0 flex-1">
+          <span className="shrink-0">分时走势</span>
           <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
           {range === 'intraday' && series.preMarket && (
             <span
               title={series.note}
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50"
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0"
             >
               <Clock size={9} />
               盘前 · 等待开盘
             </span>
           )}
         </div>
-        {series.points.length > 0 && !series.preMarket && (() => {
-          const lastTs = series.points[series.points.length - 1].t;
-          const today = new Date();
-          const dataDate = new Date(lastTs);
-          const sameDay = lastTs >= new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-                          && lastTs < new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
-          const dataStr = `${String(dataDate.getMonth() + 1).padStart(2, '0')}/${String(dataDate.getDate()).padStart(2, '0')}`;
-          return (
-            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
-              sameDay
-                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
-                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
-            }`}>
-              {sameDay ? `今日 ${dataStr}` : `数据 ${dataStr}`}
-            </span>
-          );
-        })()}
+        {dataDateBadge && (
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap shrink-0 ${
+            dataDateBadge.sameDay
+              ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
+              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+          }`}>
+            {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `数据 ${dataDateBadge.dataStr}`}
+          </span>
+        )}
       </div>
       {/* 行2：刷新状态 + 手动刷新按钮 */}
-      <div className="flex items-center justify-between mb-3 px-1">
-        <span className="flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap">
+      <div className="flex items-center justify-between gap-2 mb-3 px-1">
+        <span className="flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap min-w-0">
           <motion.span
-            className={`inline-block w-1.5 h-1.5 rounded-full ${
+            className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
               refreshing
                 ? 'bg-blue-500'
                 : isCurrentlyOpen
@@ -227,16 +234,18 @@ export function FundChart({
             animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
             transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
           />
-          {refreshing
-            ? `刷新中…`
-            : isCurrentlyOpen
-            ? `自动刷新 · ${formatTick(lastPointTime, range)}`
-            : `已休市 · ${formatTick(lastPointTime, range)}`}
+          <span className="truncate">
+            {refreshing
+              ? `刷新中…`
+              : isCurrentlyOpen
+              ? `自动刷新 · ${formatTick(lastPointTime, range)}`
+              : `已休市 · ${formatTick(lastPointTime, range)}`}
+          </span>
         </span>
         <PressableButton
           onClick={() => onRefresh?.()}
           disabled={refreshing}
-          className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50"
+          className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50 shrink-0"
         >
           <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
           手动刷新
@@ -589,11 +598,6 @@ export function FundChart({
    always knows whether they're looking at real NAV or an interpolation.
    ─────────────────────────────────────────────────────────────────── */
 
-/* ───────────────────────────────────────────────────────────────────
-   DataSourceBadge — surfaces the provenance of the curve so the user
-   always knows whether they're looking at real NAV or an interpolation.
-   ─────────────────────────────────────────────────────────────────── */
-
 function DataSourceBadge({
   source,
   onInfo
@@ -601,18 +605,21 @@ function DataSourceBadge({
   source: DataSource;
   onInfo: () => void;
 }) {
-  const map: Record<DataSource, { label: string; bg: string; text: string; ring: string }> = {
-    real:      { label: '真实数据', bg: 'bg-emerald-50 dark:bg-emerald-950/30',     text: 'text-emerald-700 dark:text-emerald-400', ring: 'border-emerald-200/70 dark:border-emerald-800/50' },
-    mixed:     { label: '混合数据', bg: 'bg-amber-50 dark:bg-amber-950/30',         text: 'text-amber-700 dark:text-amber-400',     ring: 'border-amber-200/70 dark:border-amber-800/50' },
-    estimated: { label: '估算走势', bg: 'bg-slate-100 dark:bg-slate-800/50',        text: 'text-slate-600 dark:text-slate-400',    ring: 'border-slate-200/70 dark:border-slate-700/50' },
+  const map: Record<DataSource, { label: string; short: string; bg: string; text: string; ring: string }> = {
+    real:      { label: '真实数据', short: '真实', bg: 'bg-emerald-50 dark:bg-emerald-950/30',     text: 'text-emerald-700 dark:text-emerald-400', ring: 'border-emerald-200/70 dark:border-emerald-800/50' },
+    mixed:     { label: '混合数据', short: '混合', bg: 'bg-amber-50 dark:bg-amber-950/30',         text: 'text-amber-700 dark:text-amber-400',     ring: 'border-amber-200/70 dark:border-amber-800/50' },
+    estimated: { label: '估算走势', short: '估算', bg: 'bg-slate-100 dark:bg-slate-800/50',        text: 'text-slate-600 dark:text-slate-400',    ring: 'border-slate-200/70 dark:border-slate-700/50' },
   };
   const m = map[source];
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full border ${m.bg} ${m.text} ${m.ring}`}
+      title={m.label}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full border whitespace-nowrap shrink-0 ${m.bg} ${m.text} ${m.ring}`}
     >
       <Database size={9} />
-      {m.label}
+      {/* sm+ 显示完整标签；< sm 屏幕（窄屏）只显示两字简称 */}
+      <span className="hidden sm:inline">{m.label}</span>
+      <span className="sm:hidden">{m.short}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onInfo(); }}
         className="ml-0.5 opacity-60 hover:opacity-100 transition-opacity"
