@@ -359,6 +359,13 @@ function App() {
     activated: boolean;
   }>());
 
+  // 关键设计：move/up 监听绑到 document 而非每行。原因：
+  //   1. setPointerCapture 在某些浏览器/React Synthetic Event 上下文里会静默失败，
+  //      此时指针离开原 row 后 onPointerMove 不再触发 → 跨行拖动失效
+  //   2. 绑到 document 后，无论指针在哪都能持续收到 move/up，跨行拖动可靠
+  // 单个 ref 跟踪"当前手势是哪个 code"，document 级 listener 读取并分派
+  const gestureCodeRef = useRef<string | null>(null);
+
   const makeRowHandlers = useCallback((code: string) => {
     const onPointerDown = (e: React.PointerEvent) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -372,17 +379,18 @@ function App() {
       const el = e.currentTarget as Element | null;
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
+      gestureCodeRef.current = code;
       // 进入等待态：CSS 给该行 touch-action:none 阻止浏览器滚动误判
       setPendingDragCode(code);
       // 拖动已结束的标志位在新手势开始时先重置（如果上一手势的合成 click 已经过了）
       dragCommittedRef.current = false;
+      // pointer capture 是 best-effort：失败也无所谓，document 级 listener 会兜底
       if (el && typeof (el as any).setPointerCapture === 'function') {
         try { (el as any).setPointerCapture(e.pointerId); } catch { /* ignore */ }
       }
       const isTouch = e.pointerType === 'touch';
       const threshold = isTouch ? 450 : 200;
       st.timer = window.setTimeout(() => {
-        // timer 期间用户可能已经释放 / 滚动，取消状态已被清空
         if (!st!.start) return;
         st!.activated = true;
         setDragActiveCode(code);
@@ -393,7 +401,11 @@ function App() {
       }, threshold);
     };
 
+    // per-row 上还保留 onPointerMove 作为"快速路径"（用户在原 row 内小幅移动时立即反应）
+    // 真正的跨行拖动由 document 级 listener 接管
     const onPointerMove = (e: React.PointerEvent) => {
+      const gcode = gestureCodeRef.current;
+      if (gcode !== code) return;
       const st = rowGestureRefs.current.get(code);
       if (!st || !st.start) return;
       const dx = e.clientX - st.start.x;
@@ -403,59 +415,96 @@ function App() {
         // 未激活就大距离移动 → 视为滚动意图
         if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
         st.start = null;
-        setPendingDragCode(null);  // 退出等待态，让浏览器接管滚动
+        setPendingDragCode(null);
+        gestureCodeRef.current = null;
         return;
       }
-      if (st.activated) {
-        e.preventDefault();
-        setPendingOrder(curr => {
-          if (!curr) return curr;
-          const fromIdx = curr.indexOf(code);
-          if (fromIdx < 0) return curr;
-          const rects = rowRectMapRef.current;
-          let toIdx = curr.length - 1;
-          for (let i = 0; i < curr.length; i++) {
-            const c = curr[i];
-            if (c === code) continue;
-            const rect = rects.get(c);
-            if (!rect) continue;
-            const mid = (rect.top + rect.bottom) / 2;
-            if (e.clientY < mid) { toIdx = i; break; }
-          }
-          if (toIdx === fromIdx) return curr;
-          const next = [...curr];
-          next.splice(fromIdx, 1);
-          next.splice(toIdx, 0, code);
-          setDragOverIndex(toIdx);
-          return next;
-        });
-      }
-    };
-
-    const release = () => {
-      const st = rowGestureRefs.current.get(code);
-      if (!st) return;
-      if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
-      if (st.start && st.start.el && typeof (st.start.el as any).releasePointerCapture === 'function') {
-        try { (st.start.el as any).releasePointerCapture(st.start.pointerId); } catch { /* ignore */ }
-      }
-      st.start = null;
-      // 释放 pointer capture 后退出等待/激活态视觉
-      setPendingDragCode(curr => (curr === code ? null : curr));
+      // 已激活的 move 由 document 级 listener 处理
     };
 
     const onPointerUp = () => {
-      const st = rowGestureRefs.current.get(code);
-      if (st && st.activated) commitDrag();
-      release();
-      // 释放后下一帧重置 activated，让 onClick 不被误拦截
-      if (st) st.activated = false;
+      // 已激活的 up 由 document 级 listener 处理
+      // 这里什么都不做 —— document 级 listener 会 commit
     };
 
-    const onPointerCancel = () => { release(); };
+    const onPointerCancel = () => {
+      const st = rowGestureRefs.current.get(code);
+      if (st && st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+      if (st) st.start = null;
+      if (gestureCodeRef.current === code) gestureCodeRef.current = null;
+      setPendingDragCode(curr => (curr === code ? null : curr));
+    };
 
     return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel };
   }, [visibleList, commitDrag]);
+
+  // Document 级 move/up/cancel —— 兜底：无论指针 capture 是否生效，跨行都能持续响应
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const gcode = gestureCodeRef.current;
+      if (!gcode) return;
+      const st = rowGestureRefs.current.get(gcode);
+      if (!st || !st.start || !st.activated) return;
+      e.preventDefault();
+      // clientY → 落点 index → splice pendingOrder
+      setPendingOrder(curr => {
+        if (!curr) return curr;
+        const fromIdx = curr.indexOf(gcode);
+        if (fromIdx < 0) return curr;
+        const rects = rowRectMapRef.current;
+        let toIdx = curr.length - 1;
+        for (let i = 0; i < curr.length; i++) {
+          const c = curr[i];
+          if (c === gcode) continue;
+          const rect = rects.get(c);
+          if (!rect) continue;
+          const mid = (rect.top + rect.bottom) / 2;
+          if (e.clientY < mid) { toIdx = i; break; }
+        }
+        if (toIdx === fromIdx) return curr;
+        const next = [...curr];
+        next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, gcode);
+        setDragOverIndex(toIdx);
+        return next;
+      });
+    };
+    const onUp = () => {
+      const gcode = gestureCodeRef.current;
+      if (!gcode) return;
+      const st = rowGestureRefs.current.get(gcode);
+      if (st && st.activated) commitDrag();
+      if (st) {
+        if (st.timer != null) clearTimeout(st.timer);
+        st.timer = null;
+        st.start = null;
+        st.activated = false;
+      }
+      gestureCodeRef.current = null;
+      setPendingDragCode(null);
+      // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
+    };
+    const onCancel = () => {
+      const gcode = gestureCodeRef.current;
+      if (!gcode) return;
+      const st = rowGestureRefs.current.get(gcode);
+      if (st) {
+        if (st.timer != null) clearTimeout(st.timer);
+        st.timer = null;
+        st.start = null;
+      }
+      gestureCodeRef.current = null;
+      setPendingDragCode(null);
+    };
+    document.addEventListener('pointermove', onMove, { passive: false });
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onCancel);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
+    };
+  }, [commitDrag]);
 
   /* ---------- Boot ---------- */
   useEffect(() => {
@@ -1473,8 +1522,6 @@ function App() {
                               const h = makeRowHandlers(code);
                               return {
                                 onPointerDown: h.onPointerDown,
-                                onPointerMove: h.onPointerMove,
-                                onPointerUp: h.onPointerUp,
                                 onPointerCancel: h.onPointerCancel,
                               };
                             })()}
@@ -1643,8 +1690,6 @@ function App() {
                                   const h = makeRowHandlers(code);
                                   return {
                                     onPointerDown: h.onPointerDown,
-                                    onPointerMove: h.onPointerMove,
-                                    onPointerUp: h.onPointerUp,
                                     onPointerCancel: h.onPointerCancel,
                                   };
                                 })()}
