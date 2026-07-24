@@ -63,6 +63,9 @@ const SPRING = {
   sheet:   { type: 'spring' as const, bounce: 0.05, duration: 0.42 },
   // Toast — slide-in from top
   toast:   { type: 'spring' as const, bounce: 0, duration: 0.34 },
+  // 拖动期：极短 spring — 跨过落点中点时 1-2 帧内基本到位，
+  //   即便被后续 setState 截断，视觉上不会"积累误差"，避免跳帧
+  drag:    { type: 'spring' as const, bounce: 0, duration: 0.16 },
 };
 
 /* ───────────────────────────────────────────────────────────────────
@@ -213,6 +216,11 @@ function App() {
   const dragCommittedRef = useRef(false);
   // 行 DOM rect 缓存，给 onMove 用：客户端 Y 坐标 → 落点 index
   const rowRectMapRef = useRef<Map<string, DOMRect>>(new Map());
+  // pointermove rAF 节流：避免 60-240Hz 设备上一帧多次 setState 让 motion spring 反复被截断
+  const dragRafPendingRef = useRef(false);
+  const dragLastClientYRef = useRef(0);
+  // 上一次算出的 toIdx —— 跨过中点才 setState 触发 spring，邻帧同一 toIdx 直接 bail
+  const dragLastToIdxRef = useRef<number>(-1);
 
   useEffect(() => {
     // If the currently-selected fund was removed from the watchlist, drop
@@ -297,6 +305,8 @@ function App() {
     setDragOverIndex(null);
     setPendingOrder(null);
     dragCommittedRef.current = false;
+    dragRafPendingRef.current = false;
+    dragLastToIdxRef.current = -1;
   }, []);
 
   const commitDrag = useCallback(async () => {
@@ -380,6 +390,10 @@ function App() {
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
       gestureCodeRef.current = code;
+      // 新手势开始：重置 rAF + toIdx dedup 状态
+      dragLastToIdxRef.current = -1;
+      dragRafPendingRef.current = false;
+      dragLastClientYRef.current = e.clientY;
       // 进入等待态：CSS 给该行 touch-action:none 阻止浏览器滚动误判
       setPendingDragCode(code);
       // 拖动已结束的标志位在新手势开始时先重置（如果上一手势的合成 click 已经过了）
@@ -440,13 +454,15 @@ function App() {
 
   // Document 级 move/up/cancel —— 兜底：无论指针 capture 是否生效，跨行都能持续响应
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
+    // rAF tick：把"上一帧最新 clientY"应用到 pendingOrder，每帧最多一次 setState
+    const tickMove = () => {
+      dragRafPendingRef.current = false;
       const gcode = gestureCodeRef.current;
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
-      if (!st || !st.start || !st.activated) return;
-      e.preventDefault();
-      // clientY → 落点 index → splice pendingOrder
+      if (!st || !st.activated || !st.start) return;
+      const clientY = dragLastClientYRef.current;
+
       setPendingOrder(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
@@ -459,15 +475,31 @@ function App() {
           const rect = rects.get(c);
           if (!rect) continue;
           const mid = (rect.top + rect.bottom) / 2;
-          if (e.clientY < mid) { toIdx = i; break; }
+          if (clientY < mid) { toIdx = i; break; }
         }
+        // bail 1: 抬起行已在目标位置
         if (toIdx === fromIdx) return curr;
+        // bail 2: 同一 toIdx 邻帧已 setState（避免每帧重复触发 motion spring）
+        if (toIdx === dragLastToIdxRef.current) return curr;
+        dragLastToIdxRef.current = toIdx;
         const next = [...curr];
         next.splice(fromIdx, 1);
         next.splice(toIdx, 0, gcode);
         setDragOverIndex(toIdx);
         return next;
       });
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const gcode = gestureCodeRef.current;
+      if (!gcode) return;
+      const st = rowGestureRefs.current.get(gcode);
+      if (!st || !st.start || !st.activated) return;
+      e.preventDefault();
+      dragLastClientYRef.current = e.clientY;
+      if (dragRafPendingRef.current) return;
+      dragRafPendingRef.current = true;
+      requestAnimationFrame(tickMove);
     };
     const onUp = () => {
       const gcode = gestureCodeRef.current;
@@ -480,6 +512,8 @@ function App() {
         st.start = null;
         st.activated = false;
       }
+      dragRafPendingRef.current = false;
+      dragLastToIdxRef.current = -1;
       gestureCodeRef.current = null;
       setPendingDragCode(null);
       // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
@@ -493,6 +527,8 @@ function App() {
         st.timer = null;
         st.start = null;
       }
+      dragRafPendingRef.current = false;
+      dragLastToIdxRef.current = -1;
       gestureCodeRef.current = null;
       setPendingDragCode(null);
     };
@@ -1509,7 +1545,7 @@ function App() {
                             initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                            transition={SPRING.default}
+                            transition={dragActiveCode ? SPRING.drag : SPRING.default}
                             onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
                             onClickCapture={(e) => {
                               if (dragCommittedRef.current) {
@@ -1685,7 +1721,7 @@ function App() {
                                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                                transition={SPRING.default}
+                                transition={dragActiveCode ? SPRING.drag : SPRING.default}
                                 {...(() => {
                                   const h = makeRowHandlers(code);
                                   return {
