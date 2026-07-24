@@ -594,7 +594,12 @@ function App() {
       dragLastToIdxRef.current = -1;
       gestureCodeRef.current = null;
       setPendingDragCode(null);
-      // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
+      // 若没有激活过拖拽，立即复位 dragCommittedRef；若激活过，延迟 300ms 清零拦截 click
+      if (!st || !st.activated) {
+        dragCommittedRef.current = false;
+      } else {
+        setTimeout(() => { dragCommittedRef.current = false; }, 300);
+      }
     };
 
     // onUp 时强制把 gcode 推到 goalIdx (一次性, 突破 ±1 步限制)
@@ -1901,7 +1906,7 @@ function App() {
                                   )}
                                 </td>
 
-                                <td className="p-4 text-center pr-6">
+                                <td className="p-4 text-center pr-6" onClick={e => e.stopPropagation()}>
                                   <div className="flex items-center justify-center gap-1">
                                     <PressableButton
                                       onClick={() => setSelectedFundCode(code)}
