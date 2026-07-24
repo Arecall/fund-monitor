@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -219,8 +220,34 @@ function App() {
   // pointermove rAF 节流：避免 60-240Hz 设备上一帧多次 setState 让 motion spring 反复被截断
   const dragRafPendingRef = useRef(false);
   const dragLastClientYRef = useRef(0);
-  // 上一次算出的 toIdx —— 跨过中点才 setState 触发 spring，邻帧同一 toIdx 直接 bail
-  const dragLastToIdxRef = useRef<number>(-1);
+  // 物理插槽边界信息 (Slot 0..N-1)
+  const slotBoundsRef = useRef<{ top: number; bottom: number; mid: number }[]>([]);
+  // 拖拽按住瞬间的垂直 offset（相对卡片顶部）
+  const dragGrabOffsetRef = useRef<number>(0);
+
+  // 根据当前鼠标停留的物理位置计算目标插入位置 (goalIdx)
+  const calculateGoalIdx = useCallback((gcode: string, clientY: number, currList: string[]): number => {
+    const fromIdx = currList.indexOf(gcode);
+    if (fromIdx < 0) return 0;
+
+    const bounds = slotBoundsRef.current;
+    if (bounds.length === 0) return fromIdx;
+
+    // 校准计算：以被抓取卡片的“几何中心/中点”作为实际检测点
+    // clientY 是鼠标点，clientY - grabOffset 是卡片 top，+ cardHeight/2 即为卡片中点
+    const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
+    const cardMidY = clientY - dragGrabOffsetRef.current + (cardHeight / 2);
+
+    let targetIdx = 0;
+    // 检测卡片中心目前停留在哪个物理 Slot 的 Bounds（或超过了哪个 Mid）
+    for (let i = 0; i < bounds.length; i++) {
+      if (cardMidY > bounds[i].mid) {
+        targetIdx = i + 1;
+      }
+    }
+
+    return Math.min(Math.max(0, targetIdx), currList.length - 1);
+  }, []);
 
   useEffect(() => {
     // If the currently-selected fund was removed from the watchlist, drop
@@ -409,7 +436,35 @@ function App() {
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
         st!.activated = true;
-        setDragActiveCode(code);
+
+        // 采样当前所有可见行的静态 DOM 物理 Bound (top, bottom, mid)
+        const rowElements = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'));
+        const elementRects = rowElements.map(el => ({
+          code: el.dataset.fundCode!,
+          rect: el.getBoundingClientRect()
+        }));
+
+        // 按 Y 轴升序排列，提取各物理插槽的 bounds
+        const bounds = elementRects
+          .map(item => ({
+            top: item.rect.top,
+            bottom: item.rect.bottom,
+            mid: (item.rect.top + item.rect.bottom) / 2
+          }))
+          .sort((a, b) => a.top - b.top);
+        slotBoundsRef.current = bounds;
+
+        // 记录鼠标在卡片内部的抓取偏移量 (grabOffset)
+        const activeRect = elementRects.find(item => item.code === code)?.rect;
+        if (activeRect) {
+          dragGrabOffsetRef.current = st.start.y - activeRect.top;
+        } else {
+          dragGrabOffsetRef.current = 0;
+        }
+
+        // 关键点：用闭包传入此刻捕获的 code，避免后续动画或 state 重绘改变激活的基金
+        const activeCode = code;
+        setDragActiveCode(activeCode);
         setPendingDragCode(null);  // 等待结束，由激活态接管视觉反馈
         setPendingOrder(visibleList);
         // 标记本次手势已激活 drag —— 释放后浏览器合成的 click 必须被 onClickCapture 拦截
@@ -424,6 +479,13 @@ function App() {
       if (gcode !== code) return;
       const st = rowGestureRefs.current.get(code);
       if (!st || !st.start) return;
+
+      // 如果拖拽手势已经激活，强制阻止默认滚动行为 (避免向上拖拽触发页面上滑)
+      if (st.activated) {
+        e.preventDefault();
+        return;
+      }
+
       const dx = e.clientX - st.start.x;
       const dy = e.clientY - st.start.y;
       const dist = Math.hypot(dx, dy);
@@ -435,7 +497,6 @@ function App() {
         gestureCodeRef.current = null;
         return;
       }
-      // 已激活的 move 由 document 级 listener 处理
     };
 
     const onPointerUp = () => {
@@ -473,35 +534,21 @@ function App() {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
-        const rects = rowRectMapRef.current;
-        // 方向判定：直接用 gcode 自己当前的 mid 与 clientY 比较。
-        // 原 goalIdx 算法（clientY 跨过其它行 mid）会在 gcode 已到顶/底时
-        //   错误返回"对面"方向 —— 例如 gcode 在 idx=0、clientY 在最顶时，
-        //   循环跳过 gcode 后取 idx=1 行的 mid 作落点 → direction=+1 → 反向推。
-        // 改用 gcode.mid 后方向严格对应"手指在 gcode 之上/之下"。
-        const gcodeRect = rects.get(gcode);
-        if (!gcodeRect) return curr;
-        const gcodeMid = (gcodeRect.top + gcodeRect.bottom) / 2;
-        const direction = clientY < gcodeMid ? -1 : clientY > gcodeMid ? 1 : 0;
-        if (direction === 0) return curr;
-        // 边界：已经在最顶/最底 → 同方向不能再推
-        if (direction < 0 && fromIdx === 0) return curr;
-        if (direction > 0 && fromIdx === curr.length - 1) return curr;
-        const toIdx = fromIdx + direction;
-        dragLastToIdxRef.current = toIdx;
-        // 实际发生了 setState → 链式 rAF 下一帧继续推
-        shouldReschedule = true;
+
+        const goalIdx = calculateGoalIdx(gcode, clientY, curr);
+        if (goalIdx === fromIdx) return curr;
+
+        // 直接一次性步进至当前鼠标停靠的物理 Goal Index
+        // 不再逐帧 ±1 步累加，彻底消除逐步推演带来的跳帧和中途反复动画抖动
         const next = [...curr];
         next.splice(fromIdx, 1);
-        next.splice(toIdx, 0, gcode);
-        setDragOverIndex(toIdx);
+        next.splice(goalIdx, 0, gcode);
+        setDragOverIndex(goalIdx);
         return next;
       });
 
-      if (shouldReschedule && !dragRafPendingRef.current) {
-        dragRafPendingRef.current = true;
-        requestAnimationFrame(tickMove);
-      }
+      // 直接更新至最新鼠标位置，不需要 reschedule 链式推演
+      shouldReschedule = false;
     };
 
     const onMove = (e: PointerEvent) => {
@@ -515,10 +562,27 @@ function App() {
       dragRafPendingRef.current = true;
       requestAnimationFrame(tickMove);
     };
+
+    // 关键修复：增加原生的 touchmove 监听，解决 PC 触屏模拟器 / 移动端向上拖动时触发页面上滑的问题
+    const onNativeTouchMove = (e: TouchEvent) => {
+      const gcode = gestureCodeRef.current;
+      if (!gcode) return;
+      const st = rowGestureRefs.current.get(gcode);
+      if (st && st.activated) {
+        if (e.cancelable) e.preventDefault();
+      }
+    };
     const onUp = () => {
       const gcode = gestureCodeRef.current;
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
+      // 关键: onUp 之前先同步跑一次 tickMove + flushToGoal, 并 flushSync 强制 commit
+      //   避免 onUp 与 chain rAF race 导致 commitDrag 读到旧 pendingOrder
+      if (st && st.activated) {
+        tickMove();
+        flushToGoal(gcode);
+        flushSync(() => {});   // 强制 React 立即 commit flushToGoal 的 setState
+      }
       if (st && st.activated) commitDrag();
       if (st) {
         if (st.timer != null) clearTimeout(st.timer);
@@ -531,6 +595,24 @@ function App() {
       gestureCodeRef.current = null;
       setPendingDragCode(null);
       // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
+    };
+
+    // onUp 时强制把 gcode 推到 goalIdx (一次性, 突破 ±1 步限制)
+    //   拖动期间的 chain rAF 因为是 ±1 步, 可能还没推到 goal 就被 onUp 打断;
+    //   onUp 时一次性 jump 到 goal, 保证最终顺序符合手指落点.
+    const flushToGoal = (gcode: string) => {
+      const clientY = dragLastClientYRef.current;
+      setPendingOrder(curr => {
+        if (!curr) return curr;
+        const fromIdx = curr.indexOf(gcode);
+        if (fromIdx < 0) return curr;
+        const goalIdx = calculateGoalIdx(gcode, clientY, curr);
+        if (goalIdx === fromIdx) return curr;
+        const next = [...curr];
+        next.splice(fromIdx, 1);
+        next.splice(goalIdx, 0, gcode);
+        return next;
+      });
     };
     const onCancel = () => {
       const gcode = gestureCodeRef.current;
@@ -547,10 +629,12 @@ function App() {
       setPendingDragCode(null);
     };
     document.addEventListener('pointermove', onMove, { passive: false });
+    document.addEventListener('touchmove', onNativeTouchMove, { passive: false });
     document.addEventListener('pointerup', onUp);
     document.addEventListener('pointercancel', onCancel);
     return () => {
       document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('touchmove', onNativeTouchMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onCancel);
     };
@@ -1575,12 +1659,12 @@ function App() {
                                 onPointerCancel: h.onPointerCancel,
                               };
                             })()}
-                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 ${
+                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 touch-none select-none ${
                               (pendingDragCode === code || dragActiveCode === code)
-                                ? 'is-dragging touch-none select-none relative bg-white dark:bg-[#1d1d1f] '
+                                ? 'is-dragging relative bg-white dark:bg-[#1d1d1f] '
                                 : ''
-                            }${dragActiveCode === code ? 'z-50 scale-[1.02] shadow-2xl' : ''}`}
-                            style={pendingDragCode === code ? { touchAction: 'none' } : undefined}
+                            }${dragActiveCode === code ? 'z-50 scale-[1.02] shadow-2xl ring-2 ring-[#0066cc]/40 dark:ring-[#2997ff]/40' : ''}`}
+                            style={{ touchAction: 'none' }}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
                             <div className="flex items-start justify-between gap-2">
@@ -1743,8 +1827,8 @@ function App() {
                                     onPointerCancel: h.onPointerCancel,
                                   };
                                 })()}
-                                className={`apple-row ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging touch-none select-none' : ''}`}
-                                style={pendingDragCode === code ? { touchAction: 'none' } : undefined}
+                                className={`apple-row touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''} ${dragActiveCode === code ? 'z-50 shadow-xl bg-blue-50/30 dark:bg-blue-900/20' : ''}`}
+                                style={{ touchAction: 'none' }}
                               >
                                 <td className="p-4 pl-6">
                                   <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
