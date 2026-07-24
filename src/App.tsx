@@ -849,11 +849,12 @@ function App() {
       </AnimatePresence>
 
       {/* Top navigation — Frosted Glass material */}
-      <nav className="apple-navbar sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-6">
-          <h1 className="text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-2">
+      <nav className="apple-navbar sticky top-0 z-40 px-3.5 py-3 md:px-6 md:py-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 sm:gap-6">
+          <h1 className="text-sm sm:text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-1.5">
             <span aria-hidden>📊</span>
-            <span>全球基金监控终端</span>
+            <span className="hidden xs:inline sm:inline">全球基金监控</span>
+            <span className="inline xs:hidden sm:hidden">基金监控</span>
           </h1>
 
           {/* 主 tab: 自选 (portfolio) / 金价 (gold) */}
@@ -892,29 +893,29 @@ function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3">
           {/* User pill */}
           <motion.div
             whileHover={prefersReducedMotion ? undefined : { scale: 1.02 }}
             transition={SPRING.default}
-            className="flex items-center gap-2 bg-[#f5f5f7] dark:bg-black/40 px-3 py-1.5 rounded-full border border-[var(--hairline-border)]"
+            className="flex items-center gap-1 sm:gap-2 bg-[#f5f5f7] dark:bg-black/40 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-[var(--hairline-border)]"
           >
-            <div className="w-6 h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[10px]">
+            <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[9px] sm:text-[10px]">
               {currentUser.substring(0, 2).toUpperCase()}
             </div>
-            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-[100px] truncate">
+            <span className="hidden sm:inline text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-[100px] truncate">
               {currentUser}
             </span>
             <PressableIconButton
               onClick={handleLogout}
               aria-label="切换/登出用户"
-              className="p-1 rounded-full text-slate-400 hover:text-red-500 ml-1"
+              className="p-0.5 sm:p-1 rounded-full text-slate-400 hover:text-red-500 ml-0.5"
             >
-              <LogOut size={13} />
+              <LogOut size={12} />
             </PressableIconButton>
           </motion.div>
 
-          <span className="h-4 w-px bg-[var(--divider)]" />
+          <span className="hidden sm:inline h-4 w-px bg-[var(--divider)]" />
 
           <div className="flex items-center gap-2">
             <EmailConfigPanel
@@ -940,7 +941,7 @@ function App() {
       </nav>
 
       {/* Market ticker strip */}
-      <div className="apple-toolbar px-6 py-3 overflow-x-auto scrollbar-none flex items-center gap-6 text-[11px] whitespace-nowrap">
+      <div className="apple-toolbar px-3.5 py-2.5 md:px-6 md:py-3 overflow-x-auto scrollbar-none flex items-center gap-3 md:gap-6 text-[11px] whitespace-nowrap">
         <span className="apple-eyebrow flex items-center gap-1.5 whitespace-nowrap">
           <Sparkles size={13} className="text-amber-500" /> 全球大盘
         </span>
@@ -980,45 +981,48 @@ function App() {
 
       {/* Main grid — 金价 tab 占满整页时只渲染金价 */}
       {mainTab === 'gold' ? (
-        <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6">
+        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
           <GoldTab />
         </div>
       ) : (
-      <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-6">
 
         {/* Left column: portfolio summary + settings */}
-        <div className="lg:col-span-1 flex flex-col gap-6">
+        <div className="lg:col-span-1 flex flex-col gap-4 md:gap-6">
 
           {/* Portfolio summary card — dark glass, spring hover */}
           <motion.section
             whileHover={prefersReducedMotion ? undefined : { y: -3 }}
             transition={SPRING.default}
-            className="bg-black text-white rounded-[20px] p-6 shadow-md border border-slate-900 relative overflow-hidden"
+            className="bg-black text-white rounded-[20px] p-5 md:p-6 shadow-md border border-slate-900 relative overflow-hidden"
           >
             <div className="absolute right-0 top-0 w-32 h-32 bg-blue-500/20 rounded-full filter blur-3xl pointer-events-none" />
 
-            <h2 className="apple-eyebrow text-slate-400 mb-3 flex items-center gap-1.5">
-              <DollarSign size={14} className="text-[#2997ff]" /> 资产预估总额
-            </h2>
+            <div className="flex flex-col md:block">
+              <h2 className="apple-eyebrow text-slate-400 mb-2.5 flex items-center gap-1.5">
+                <DollarSign size={14} className="text-[#2997ff]" /> 资产预估总额
+              </h2>
 
-            <div className="mb-6">
-              <div className="apple-display-large font-mono text-white tabular-nums">
-                ¥{' '}
-                <AnimatedNumber
-                  value={stats.totalValue}
-                  decimals={2}
-                  className="inline"
-                />
-              </div>
-              <div className="text-[10px] text-slate-500 mt-1">
-                持仓总成本: ¥{stats.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              <div className="mb-4 md:mb-6">
+                <div className="apple-display-large font-mono text-white tabular-nums text-2xl sm:text-3xl md:text-2xl lg:text-3xl font-bold">
+                  ¥{' '}
+                  <AnimatedNumber
+                    value={stats.totalValue}
+                    decimals={2}
+                    className="inline"
+                  />
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  持仓总成本: <span className="font-mono text-slate-300">¥{stats.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-3.5 pt-4 border-t border-slate-900">
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-400">今日预估盈亏</span>
-                <span className={`text-sm font-bold font-mono tabular-nums ${
+            {/* 盈亏指标：移动端双列卡片，侧边栏上下自适应 */}
+            <div className="grid grid-cols-2 md:grid-cols-1 gap-2.5 pt-3.5 border-t border-slate-800/80">
+              <div className="bg-white/5 md:bg-transparent p-2.5 md:p-0 rounded-xl md:rounded-none flex flex-col md:flex-row md:justify-between md:items-center gap-1">
+                <span className="text-[10px] md:text-xs text-slate-400">今日预估盈亏</span>
+                <span className={`text-xs sm:text-sm font-bold font-mono tabular-nums ${
                   stats.todayProfit > 0 ? 'text-[#ff453a]'
                     : stats.todayProfit < 0 ? 'text-[#30d158]' : 'text-slate-300'
                 }`}>
@@ -1026,14 +1030,14 @@ function App() {
                 </span>
               </div>
 
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-slate-400">累计预估盈亏</span>
-                <span className={`text-sm font-bold font-mono tabular-nums ${
+              <div className="bg-white/5 md:bg-transparent p-2.5 md:p-0 rounded-xl md:rounded-none flex flex-col md:flex-row md:justify-between md:items-center gap-1">
+                <span className="text-[10px] md:text-xs text-slate-400">累计预估盈亏</span>
+                <span className={`text-xs sm:text-sm font-bold font-mono tabular-nums ${
                   stats.totalProfit > 0 ? 'text-[#ff453a]'
                     : stats.totalProfit < 0 ? 'text-[#30d158]' : 'text-slate-300'
                 }`}>
                   {stats.totalProfit > 0 ? '+' : ''}{stats.totalProfit.toFixed(2)}
-                  <span className="text-[10px] font-semibold ml-1.5">
+                  <span className="text-[9px] md:text-[10px] font-semibold ml-1 block sm:inline">
                     ({stats.totalProfitRate > 0 ? '+' : ''}{stats.totalProfitRate.toFixed(2)}%)
                   </span>
                 </span>
@@ -1179,187 +1183,328 @@ function App() {
               )}
             </AnimatePresence>
 
-            {/* Watchlist content */}
-            <div className="overflow-x-auto flex-1">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold">
-                    <th className="p-4 pl-6">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
-                    {selfTab === 'stock' ? (
-                      <>
-                        <th className="p-4 text-right">昨收</th>
-                        <th className="p-4 text-right">现价</th>
-                        <th className="p-4 text-right">涨跌幅</th>
-                      </>
-                    ) : (
-                      <>
-                        <th className="p-4 text-right">昨日单位净值</th>
-                        <th className="p-4 text-right">实时估算净值</th>
-                        <th className="p-4 text-right">实时估算涨跌</th>
-                      </>
-                    )}
-                    <th className="p-4 text-right">我的持仓预估</th>
-                    <th className="p-4 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
-                    <th className="p-4 text-center pr-6">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                  <AnimatePresence initial={false}>
-                    {watchlist.filter(code => {
-                      if (selfTab === 'fund') {
-                        const it = watchlistItems.find(w => w.fund_code === code);
-                        return !it || it.kind === 'fund';
-                      }
-                      if (selfTab === 'stock') {
-                        const it = watchlistItems.find(w => w.fund_code === code);
-                        return it?.kind === 'stock';
-                      }
-                      return true;
-                    }).map((code) => {
-                      const fund = fundsData[code];
-                      const pos = positions[code];
+            {/* Watchlist content — Mobile Card View (md:hidden) & Desktop Table (hidden md:block) */}
+            {(() => {
+              const filteredList = watchlist.filter(code => {
+                if (selfTab === 'fund') {
+                  const it = watchlistItems.find(w => w.fund_code === code);
+                  return !it || it.kind === 'fund';
+                }
+                if (selfTab === 'stock') {
+                  const it = watchlistItems.find(w => w.fund_code === code);
+                  return it?.kind === 'stock';
+                }
+                return true;
+              });
 
-                      if (!fund) {
-                        return (
-                          <tr key={code}>
-                            <td className="p-4 pl-6 text-slate-400 font-mono font-semibold">{code}</td>
-                            <td colSpan={6} className="p-4 text-center text-[10px] text-slate-400 animate-pulse">
-                              读取中...
-                            </td>
-                          </tr>
-                        );
-                      }
+              if (filteredList.length === 0) {
+                return (
+                  <div className="p-8 text-center text-slate-400 text-xs font-medium">
+                    当前列表无记录。请在上方搜索框输入代码添加。
+                  </div>
+                );
+              }
 
-                      const changeVal = parseFloat(fund.gszzl);
-                      const isUp = changeVal > 0;
-                      const isDown = changeVal < 0;
-                      const changeColor = isUp
-                        ? 'text-[var(--color-up)]'
-                        : isDown ? 'text-[var(--color-down)]' : 'text-slate-400';
-
-                      let holdingValue = 0;
-                      let todayProfit = 0;
-                      if (pos) {
-                        const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-                        const prevPrice = parseFloat(fund.dwjz);
-                        holdingValue = pos.shares * currentPrice;
-                        if (prevPrice > 0) {
-                          todayProfit = pos.shares * (currentPrice - prevPrice);
+              return (
+                <>
+                  {/* ── Mobile Card List ── */}
+                  <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800/60">
+                    <AnimatePresence initial={false}>
+                      {filteredList.map((code) => {
+                        const fund = fundsData[code];
+                        const pos = positions[code];
+                        if (!fund) {
+                          return (
+                            <div key={code} className="p-4 text-xs text-slate-400 font-mono animate-pulse">
+                              {code} 读取中...
+                            </div>
+                          );
                         }
-                      }
 
-                      return (
-                        <motion.tr
-                          key={code}
-                          layout="position"
-                          initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                          transition={SPRING.default}
-                          className="apple-row"
-                        >
-                          <td className="p-4 pl-6">
-                            <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
-                              {fund.name}
-                            </div>
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
-                              <span className="tabular-nums">{fund.fundcode}</span>
-                              <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
-                                selfTab === 'stock'
-                                  ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                                    : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                                    : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-                                  : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-                              }`}>
-                                {selfTab === 'stock'
-                                  ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
-                                  : '公募场外'}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-4 text-right font-mono font-medium tabular-nums">
-                            {parseFloat(fund.dwjz).toFixed(4)}
-                            <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
-                          </td>
-                          <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums">
-                            {parseFloat(fund.gsz).toFixed(4)}
-                            <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
-                          </td>
-                          <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
-                            {isUp ? '+' : ''}{changeVal.toFixed(2)}%
-                          </td>
+                        const changeVal = parseFloat(fund.gszzl);
+                        const isUp = changeVal > 0;
+                        const isDown = changeVal < 0;
+                        const changeBg = isUp
+                          ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
+                          : isDown
+                            ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
 
-                          <td className="p-4 text-right">
-                            {pos ? (
-                              <button
-                                onClick={() => openEditPosition(code)}
-                                className="cursor-pointer group text-right"
-                              >
-                                <div className="font-bold font-mono text-slate-800 dark:text-slate-100 tabular-nums">
-                                  ¥{holdingValue.toFixed(2)}
+                        let holdingValue = 0;
+                        let todayProfit = 0;
+                        if (pos) {
+                          const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+                          const prevPrice = parseFloat(fund.dwjz);
+                          holdingValue = pos.shares * currentPrice;
+                          if (prevPrice > 0) {
+                            todayProfit = pos.shares * (currentPrice - prevPrice);
+                          }
+                        }
+
+                        return (
+                          <motion.div
+                            key={code}
+                            layout="position"
+                            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+                            transition={SPRING.default}
+                            onClick={() => setSelectedFundCode(code)}
+                            className="p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2"
+                          >
+                            {/* Card Header: Name + Code + Tag + Actions */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+                                  {fund.name}
                                 </div>
-                                <div className="text-[9px] text-slate-400 group-hover:text-blue-500 mt-0.5 transition-colors flex items-center justify-end gap-1 tabular-nums">
-                                  {pos.shares}份 | @{pos.cost.toFixed(4)} ✏️
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+                                  <span className="tabular-nums">{fund.fundcode}</span>
+                                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-sans font-medium border ${
+                                    selfTab === 'stock'
+                                      ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                                        : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                                        : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+                                      : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+                                  }`}>
+                                    {selfTab === 'stock'
+                                      ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+                                      : '公募场外'}
+                                  </span>
                                 </div>
-                              </button>
-                            ) : (
-                              <PressableButton
-                                onClick={() => openEditPosition(code)}
-                                className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 border border-blue-100/50 dark:border-blue-900/10 font-semibold"
-                              >
-                                + 持仓
-                              </PressableButton>
-                            )}
-                          </td>
+                              </div>
 
-                          <td className={`p-4 text-right font-mono font-bold tabular-nums ${
-                            pos
-                              ? (todayProfit > 0 ? 'text-[var(--color-up)]'
-                                  : todayProfit < 0 ? 'text-[var(--color-down)]'
-                                  : 'text-slate-400')
-                              : 'text-slate-300 dark:text-slate-700'
-                          }`}>
-                            {pos ? (
-                              <>
-                                {todayProfit > 0 ? '+' : ''}
-                                {todayProfit.toFixed(2)}
-                              </>
-                            ) : (
-                              '--'
-                            )}
-                          </td>
-
-                          <td className="p-4 text-center pr-6">
-                            <div className="flex items-center justify-center gap-1">
-                              <PressableButton
-                                onClick={() => setSelectedFundCode(code)}
-                                className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2 py-1 rounded-full"
-                              >
-                                查看详情
-                              </PressableButton>
-                              <PressableIconButton
-                                onClick={() => handleRemoveFund(code, fund.name)}
-                                aria-label="退订基金"
-                                className="p-1.5 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20"
-                              >
-                                <Trash2 size={13} />
-                              </PressableIconButton>
+                              <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                                <PressableIconButton
+                                  onClick={() => handleRemoveFund(code, fund.name)}
+                                  aria-label="退订基金"
+                                  className="p-1.5 rounded-full text-slate-400 hover:text-red-500"
+                                >
+                                  <Trash2 size={14} />
+                                </PressableIconButton>
+                              </div>
                             </div>
-                          </td>
-                        </motion.tr>
-                      );
-                    })}
-                  </AnimatePresence>
-                  {watchlist.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="p-12 text-center text-slate-400 font-medium">
-                        当前账户无自选基金。请在右上角输入6位基金代码点击"订阅"。
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+
+                            {/* Card Body: Price & Change Pill */}
+                            <div className="flex items-baseline justify-between pt-1">
+                              <div>
+                                <div className="text-[10px] text-slate-400">
+                                  {selfTab === 'stock' ? '现价' : '估算净值'}
+                                </div>
+                                <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                                  {parseFloat(fund.gsz).toFixed(4)}
+                                  <span className="text-[10px] font-normal text-slate-400 ml-1.5">
+                                    {fund.gztime.split(' ')[1] || fund.gztime}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
+                                {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+                              </div>
+                            </div>
+
+                            {/* Position info bar if held or button to add */}
+                            <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onClick={e => e.stopPropagation()}>
+                              {pos ? (
+                                <div className="flex items-center justify-between w-full">
+                                  <div className="text-slate-500 text-[10px]">
+                                    持仓 <span className="font-mono font-bold text-slate-700 dark:text-slate-200">¥{holdingValue.toFixed(2)}</span>
+                                  </div>
+                                  <div className="font-mono font-semibold text-[10px]">
+                                    今日: <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}>
+                                      {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <button
+                                    onClick={() => openEditPosition(code)}
+                                    className="text-[10px] text-blue-600 dark:text-blue-400 underline ml-2"
+                                  >
+                                    改持仓
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => openEditPosition(code)}
+                                  className="text-[10px] text-slate-400 hover:text-blue-500 flex items-center gap-1"
+                                >
+                                  + 添加持仓数据
+                                </button>
+                              )}
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* ── Desktop Table View ── */}
+                  <div className="hidden md:block overflow-x-auto flex-1">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold">
+                          <th className="p-4 pl-6">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
+                          {selfTab === 'stock' ? (
+                            <>
+                              <th className="p-4 text-right">昨收</th>
+                              <th className="p-4 text-right">现价</th>
+                              <th className="p-4 text-right">涨跌幅</th>
+                            </>
+                          ) : (
+                            <>
+                              <th className="p-4 text-right">昨日单位净值</th>
+                              <th className="p-4 text-right">实时估算净值</th>
+                              <th className="p-4 text-right">实时估算涨跌</th>
+                            </>
+                          )}
+                          <th className="p-4 text-right">我的持仓预估</th>
+                          <th className="p-4 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
+                          <th className="p-4 text-center pr-6">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                        <AnimatePresence initial={false}>
+                          {filteredList.map((code) => {
+                            const fund = fundsData[code];
+                            const pos = positions[code];
+
+                            if (!fund) {
+                              return (
+                                <tr key={code}>
+                                  <td className="p-4 pl-6 text-slate-400 font-mono font-semibold">{code}</td>
+                                  <td colSpan={6} className="p-4 text-center text-[10px] text-slate-400 animate-pulse">
+                                    读取中...
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            const changeVal = parseFloat(fund.gszzl);
+                            const isUp = changeVal > 0;
+                            const isDown = changeVal < 0;
+                            const changeColor = isUp
+                              ? 'text-[var(--color-up)]'
+                              : isDown ? 'text-[var(--color-down)]' : 'text-slate-400';
+
+                            let holdingValue = 0;
+                            let todayProfit = 0;
+                            if (pos) {
+                              const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+                              const prevPrice = parseFloat(fund.dwjz);
+                              holdingValue = pos.shares * currentPrice;
+                              if (prevPrice > 0) {
+                                todayProfit = pos.shares * (currentPrice - prevPrice);
+                              }
+                            }
+
+                            return (
+                              <motion.tr
+                                key={code}
+                                layout="position"
+                                initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+                                transition={SPRING.default}
+                                className="apple-row"
+                              >
+                                <td className="p-4 pl-6">
+                                  <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
+                                    {fund.name}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+                                    <span className="tabular-nums">{fund.fundcode}</span>
+                                    <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
+                                      selfTab === 'stock'
+                                        ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                                          : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                                          : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+                                        : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+                                    }`}>
+                                      {selfTab === 'stock'
+                                        ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+                                        : '公募场外'}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-4 text-right font-mono font-medium tabular-nums">
+                                  {parseFloat(fund.dwjz).toFixed(4)}
+                                  <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
+                                </td>
+                                <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums">
+                                  {parseFloat(fund.gsz).toFixed(4)}
+                                  <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
+                                </td>
+                                <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
+                                  {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+                                </td>
+
+                                <td className="p-4 text-right">
+                                  {pos ? (
+                                    <button
+                                      onClick={() => openEditPosition(code)}
+                                      className="cursor-pointer group text-right"
+                                    >
+                                      <div className="font-bold font-mono text-slate-800 dark:text-slate-100 tabular-nums">
+                                        ¥{holdingValue.toFixed(2)}
+                                      </div>
+                                      <div className="text-[9px] text-slate-400 group-hover:text-blue-500 mt-0.5 transition-colors flex items-center justify-end gap-1 tabular-nums">
+                                        {pos.shares}份 | @{pos.cost.toFixed(4)} ✏️
+                                      </div>
+                                    </button>
+                                  ) : (
+                                    <PressableButton
+                                      onClick={() => openEditPosition(code)}
+                                      className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 border border-blue-100/50 dark:border-blue-900/10 font-semibold"
+                                    >
+                                      + 持仓
+                                    </PressableButton>
+                                  )}
+                                </td>
+
+                                <td className={`p-4 text-right font-mono font-bold tabular-nums ${
+                                  pos
+                                    ? (todayProfit > 0 ? 'text-[var(--color-up)]'
+                                        : todayProfit < 0 ? 'text-[var(--color-down)]'
+                                        : 'text-slate-400')
+                                    : 'text-slate-300 dark:text-slate-700'
+                                }`}>
+                                  {pos ? (
+                                    <>
+                                      {todayProfit > 0 ? '+' : ''}
+                                      {todayProfit.toFixed(2)}
+                                    </>
+                                  ) : (
+                                    '--'
+                                  )}
+                                </td>
+
+                                <td className="p-4 text-center pr-6">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <PressableButton
+                                      onClick={() => setSelectedFundCode(code)}
+                                      className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2 py-1 rounded-full"
+                                    >
+                                      查看详情
+                                    </PressableButton>
+                                    <PressableIconButton
+                                      onClick={() => handleRemoveFund(code, fund.name)}
+                                      aria-label="退订基金"
+                                      className="p-1.5 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20"
+                                    >
+                                      <Trash2 size={13} />
+                                    </PressableIconButton>
+                                  </div>
+                                </td>
+                              </motion.tr>
+                            );
+                          })}
+                        </AnimatePresence>
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </section>
         </div>
       </div>

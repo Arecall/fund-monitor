@@ -125,8 +125,10 @@ export function FundDetailPanel({
 
       {/* ── Metric row — 5 cards ─────────────────────────────── */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
-        <MetricCard label="当前净值" tone="neutral">
-          <span className="font-mono font-bold text-[1.4rem] tabular-nums text-slate-900 dark:text-slate-50 leading-none truncate">
+        <MetricCard label="当前净值" tone="neutral" title={current.toFixed(6)}>
+          <span
+            className="font-mono font-bold text-[1.4rem] tabular-nums text-slate-900 dark:text-slate-50 leading-none cursor-default"
+          >
             {current.toFixed(4)}
           </span>
         </MetricCard>
@@ -150,12 +152,11 @@ export function FundDetailPanel({
         </MetricCard>
 
         <MetricCard label="更新时间" tone="neutral">
-          <RelativeTime
-            timestamp={gzTs}
-            className="font-mono font-semibold text-[0.9rem] tabular-nums text-slate-700 dark:text-slate-200"
-          />
-          <span className="text-[10px] text-slate-400 mt-0.5">
+          <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200" style={{ fontSize: '1rem', letterSpacing: '0.01em' }}>
             {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
+          </span>
+          <span className="text-[10px] text-slate-400 mt-0.5">
+            {new Date(gzTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
           </span>
         </MetricCard>
 
@@ -163,6 +164,7 @@ export function FundDetailPanel({
           label="持有金额"
           tone={position ? (holdingProfit > 0 ? 'up' : holdingProfit < 0 ? 'down' : 'neutral') : 'muted'}
           onClick={onEditPosition}
+          className="col-span-2 sm:col-span-1"
         >
           {position ? (
             <>
@@ -538,12 +540,16 @@ function MetricCard({
   tone,
   highlight,
   onClick,
+  title,
+  className = '',
   children
 }: {
   label: string;
   tone: 'up' | 'down' | 'neutral' | 'muted';
   highlight?: boolean;
   onClick?: () => void;
+  title?: string;
+  className?: string;
   children: React.ReactNode;
 }) {
   const isUp = tone === 'up';
@@ -563,7 +569,7 @@ function MetricCard({
       : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50';
 
   const content = (
-    <div className={`flex flex-col gap-1.5 p-3 min-h-[88px] rounded-2xl border ${toneStyles} ${highlight ? (isUp ? 'bg-[var(--color-up-bg)]' : isDown ? 'bg-[var(--color-down-bg)]' : 'bg-slate-50 dark:bg-white/5') : 'bg-white/40 dark:bg-white/[0.02]'} ${onClick ? 'cursor-pointer hover:bg-white/70 dark:hover:bg-white/[0.05] transition-colors' : ''}`}>
+    <div title={title} className={`flex flex-col gap-1.5 p-3 min-h-[88px] rounded-2xl border ${toneStyles} ${highlight ? (isUp ? 'bg-[var(--color-up-bg)]' : isDown ? 'bg-[var(--color-down-bg)]' : 'bg-slate-50 dark:bg-white/5') : 'bg-white/40 dark:bg-white/[0.02]'} ${onClick ? 'cursor-pointer hover:bg-white/70 dark:hover:bg-white/[0.05] transition-colors' : ''} ${className}`}>
       <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500'} uppercase tracking-wider truncate`}>
         {label}
       </div>
@@ -577,7 +583,7 @@ function MetricCard({
     return (
       <PressableButton
         onClick={onClick}
-        className="text-left"
+        className={`text-left ${className}`}
       >
         {content}
       </PressableButton>
