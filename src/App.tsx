@@ -206,8 +206,6 @@ function App() {
   //   此时需要 touch-action:none 阻止浏览器误判滚动。
   // dragCommittedRef = 拖动已激活，下一次合成 click 必须被拦截，避免打开详情 drawer。
   // dragOverIndex 暂未深度使用（FLIP 自动补间已经给出足够视觉反馈），保留以备后续插入指示线。
-  // 抬起行的视觉跟手用 ref（dragOffsetYRef + rafRef）直接写 DOM 样式，**不**走 React state，
-  //   否则每帧 60+ 次 setState 触发整个列表 reconcile + FLIP 测量，反复打断 spring → 跳帧。
   const [dragActiveCode, setDragActiveCode] = useState<string | null>(null);
   const [pendingDragCode, setPendingDragCode] = useState<string | null>(null);
   const [, setDragOverIndex] = useState<number | null>(null);
@@ -215,17 +213,6 @@ function App() {
   const dragCommittedRef = useRef(false);
   // 行 DOM rect 缓存，给 onMove 用：客户端 Y 坐标 → 落点 index
   const rowRectMapRef = useRef<Map<string, DOMRect>>(new Map());
-  // 抬起行相对其原位的 Y 偏移（跟手用，ref 不触发渲染）
-  const dragOffsetYRef = useRef(0);
-  // pointermove 的 rAF 节流：每帧最多合并一次
-  const dragRafPendingRef = useRef(false);
-  const dragLastClientYRef = useRef(0);
-  // 当前抬起行的 DOM 元素（直写 transform，不经过 React）
-  const draggingElRef = useRef<HTMLElement | null>(null);
-  // 当前抬起行的初始 rect（拖动开始时的 top）— 跟手 translateY = clientY - rect.top
-  const draggingStartRectRef = useRef<DOMRect | null>(null);
-  // 上一次算出的 toIdx —— 跨过中点才 setState 触发 spring，未跨过直接 bail
-  const dragLastToIdxRef = useRef<number>(-1);
 
   useEffect(() => {
     // If the currently-selected fund was removed from the watchlist, drop
@@ -310,7 +297,6 @@ function App() {
     setDragOverIndex(null);
     setPendingOrder(null);
     dragCommittedRef.current = false;
-    dragLastToIdxRef.current = -1;
   }, []);
 
   const commitDrag = useCallback(async () => {
@@ -356,17 +342,11 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfTab]);
 
-  // Rect 采样：仅在列表结构变化或拖动开始时刷新。**拖动期间不刷新**——
-  //   抬起行被 transform 移走不影响其它行布局，每帧 querySelectorAll + getBoundingClientRect
-  //   反而会触发 layout thrashing。
+  // Rect 采样：每次列表变化或拖动状态变化后重算各行 rect，用于 clientY → drop index
   useLayoutEffect(() => {
     const map = new Map<string, DOMRect>();
     document.querySelectorAll<HTMLElement>('[data-fund-code]').forEach(el => {
-      const code = el.dataset.fundCode!;
-      // 抬起行的 rect 在拖动中会被 transform 改变；只缓存"其它行"的"自然位置"
-      if (code !== dragActiveCode) {
-        map.set(code, el.getBoundingClientRect());
-      }
+      map.set(el.dataset.fundCode!, el.getBoundingClientRect());
     });
     rowRectMapRef.current = map;
   }, [visibleList, dragActiveCode]);
@@ -400,8 +380,6 @@ function App() {
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
       gestureCodeRef.current = code;
-      // 新手势开始，重置 toIdx dedup ref
-      dragLastToIdxRef.current = -1;
       // 进入等待态：CSS 给该行 touch-action:none 阻止浏览器滚动误判
       setPendingDragCode(code);
       // 拖动已结束的标志位在新手势开始时先重置（如果上一手势的合成 click 已经过了）
@@ -415,10 +393,6 @@ function App() {
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
         st!.activated = true;
-        // 缓存抬起行的 DOM 元素 + 起始 rect，rAF tick 会直写它的 transform
-        draggingElRef.current = el as HTMLElement | null;
-        draggingStartRectRef.current = el ? (el as HTMLElement).getBoundingClientRect() : null;
-        dragLastClientYRef.current = st!.start!.y;
         setDragActiveCode(code);
         setPendingDragCode(null);  // 等待结束，由激活态接管视觉反馈
         setPendingOrder(visibleList);
@@ -466,32 +440,13 @@ function App() {
 
   // Document 级 move/up/cancel —— 兜底：无论指针 capture 是否生效，跨行都能持续响应
   useEffect(() => {
-    // rAF tick：把上一帧的 clientY → DOM 跟手 + 落点 index 计算
-    const tickMove = () => {
-      dragRafPendingRef.current = false;
+    const onMove = (e: PointerEvent) => {
       const gcode = gestureCodeRef.current;
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
-      if (!st || !st.activated || !st.start) return;
-
-      const clientY = dragLastClientYRef.current;
-      const startY = st.start.y;
-      const offsetY = clientY - startY;
-      dragOffsetYRef.current = offsetY;
-
-      // 1) 抬起行视觉跟手：直写 DOM transform，**不**触发 React 重渲
-      //    translate3d(0, dy, 0) + scale(1.02) + 阴影让位一并合成，
-      //    避免 className 的 scale 与 motion 的 transform 互相覆盖。
-      const el = draggingElRef.current;
-      if (el) {
-        el.style.transform = `translate3d(0, ${offsetY}px, 0) scale(1.02)`;
-        el.style.boxShadow = '0 24px 50px -12px rgba(0, 0, 0, 0.25)';
-        el.style.zIndex = '50';
-        el.style.willChange = 'transform';
-      }
-
-      // 2) 落点 index：clientY 跨越某行中点时 setState 重排，**仅在跨中点时**触发
-      //    这是避免"反复跳帧"的关键 — 不再每帧 setState，spring 不被打断。
+      if (!st || !st.start || !st.activated) return;
+      e.preventDefault();
+      // clientY → 落点 index → splice pendingOrder
       setPendingOrder(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
@@ -504,31 +459,15 @@ function App() {
           const rect = rects.get(c);
           if (!rect) continue;
           const mid = (rect.top + rect.bottom) / 2;
-          if (clientY < mid) { toIdx = i; break; }
+          if (e.clientY < mid) { toIdx = i; break; }
         }
-        // bail 1: 抬起行已经在目标位置
         if (toIdx === fromIdx) return curr;
-        // bail 2: 同一帧 / 邻帧已经 setState 到这个 toIdx（不重复触发 spring）
-        if (toIdx === dragLastToIdxRef.current) return curr;
-        dragLastToIdxRef.current = toIdx;
         const next = [...curr];
         next.splice(fromIdx, 1);
         next.splice(toIdx, 0, gcode);
         setDragOverIndex(toIdx);
         return next;
       });
-    };
-
-    const onMove = (e: PointerEvent) => {
-      const gcode = gestureCodeRef.current;
-      if (!gcode) return;
-      const st = rowGestureRefs.current.get(gcode);
-      if (!st || !st.start || !st.activated) return;
-      e.preventDefault();
-      dragLastClientYRef.current = e.clientY;
-      if (dragRafPendingRef.current) return;
-      dragRafPendingRef.current = true;
-      requestAnimationFrame(tickMove);
     };
     const onUp = () => {
       const gcode = gestureCodeRef.current;
@@ -541,18 +480,6 @@ function App() {
         st.start = null;
         st.activated = false;
       }
-      // 释放：清掉抬起行的 inline transform，让 React 的 layout 把它送回原位
-      const el = draggingElRef.current;
-      if (el) {
-        el.style.transform = '';
-        el.style.boxShadow = '';
-        el.style.zIndex = '';
-        el.style.willChange = '';
-        draggingElRef.current = null;
-      }
-      draggingStartRectRef.current = null;
-      dragOffsetYRef.current = 0;
-      dragLastToIdxRef.current = -1;
       gestureCodeRef.current = null;
       setPendingDragCode(null);
       // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
@@ -566,17 +493,6 @@ function App() {
         st.timer = null;
         st.start = null;
       }
-      const el = draggingElRef.current;
-      if (el) {
-        el.style.transform = '';
-        el.style.boxShadow = '';
-        el.style.zIndex = '';
-        el.style.willChange = '';
-        draggingElRef.current = null;
-      }
-      draggingStartRectRef.current = null;
-      dragOffsetYRef.current = 0;
-      dragLastToIdxRef.current = -1;
       gestureCodeRef.current = null;
       setPendingDragCode(null);
     };
@@ -1588,16 +1504,12 @@ function App() {
                         return (
                           <motion.div
                             key={code}
-                            // 关键：抬起行不参与 layout FLIP，transform 由 rAF 直写，
-                            //   避免 motion 每帧测量 + spring 反复打断导致跳帧。
-                            // 其它行用 position 短 spring（0.18s）让位，跟手。
-                            layout={dragActiveCode === code ? false : 'position'}
+                            layout="position"
                             data-fund-code={code}
                             initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                            // 拖动期间短 spring；非拖动用默认；抬起行 transition 不参与（transform 由 rAF 写）
-                            transition={dragActiveCode ? { ...SPRING.default, duration: 0.18 } : SPRING.default}
+                            transition={SPRING.default}
                             onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
                             onClickCapture={(e) => {
                               if (dragCommittedRef.current) {
@@ -1617,7 +1529,7 @@ function App() {
                               (pendingDragCode === code || dragActiveCode === code)
                                 ? 'is-dragging touch-none select-none relative bg-white dark:bg-[#1d1d1f] '
                                 : ''
-                            }${dragActiveCode === code ? 'shadow-2xl' : ''}`}
+                            }${dragActiveCode === code ? 'z-50 scale-[1.02] shadow-2xl' : ''}`}
                             style={pendingDragCode === code ? { touchAction: 'none' } : undefined}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
@@ -1768,14 +1680,12 @@ function App() {
                             return (
                               <motion.tr
                                 key={code}
-                                // 同 mobile：抬起行退出 FLIP（transform 由 rAF 直写），
-                                //   避免 spring 反复打断造成跳帧。
-                                layout={dragActiveCode === code ? false : 'position'}
+                                layout="position"
                                 data-fund-code={code}
                                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                                transition={dragActiveCode ? { ...SPRING.default, duration: 0.18 } : SPRING.default}
+                                transition={SPRING.default}
                                 {...(() => {
                                   const h = makeRowHandlers(code);
                                   return {
