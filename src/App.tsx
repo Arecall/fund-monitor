@@ -352,7 +352,9 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfTab]);
 
-  // Rect 采样：每次列表变化或拖动状态变化后重算各行 rect，用于 clientY → drop index
+  // Rect 采样：每次列表变化或拖动状态变化后重算各行 rect。
+  // 拖动期间也包含 gcode 自己的 rect（spring 进度反映在 mid 上），
+  //   用于 rAF tick 比较 clientY vs gcode.mid 决定推上/下。
   useLayoutEffect(() => {
     const map = new Map<string, DOMRect>();
     document.querySelectorAll<HTMLElement>('[data-fund-code]').forEach(el => {
@@ -472,26 +474,23 @@ function App() {
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
         const rects = rowRectMapRef.current;
-        // 目标 toIdx：clientY 对应的"理想落点"
-        let goalIdx = curr.length - 1;
-        for (let i = 0; i < curr.length; i++) {
-          const c = curr[i];
-          if (c === gcode) continue;
-          const rect = rects.get(c);
-          if (!rect) continue;
-          const mid = (rect.top + rect.bottom) / 2;
-          if (clientY < mid) { goalIdx = i; break; }
-        }
-        // 关键：单帧最多让位 1 格
-        // 原因：从最底行往上拖时如果不限制，gcode 一帧内 splice 跨越多个位置，
-        //   其它所有行同步 spring 让位 → 看起来"瞬移"且多行叠加抖动。
-        // 限制为 ±1 后，每帧只换 1 个邻居格，多帧 rAF 推到 goal。
-        const direction = goalIdx > fromIdx ? 1 : goalIdx < fromIdx ? -1 : 0;
+        // 方向判定：直接用 gcode 自己当前的 mid 与 clientY 比较。
+        // 原 goalIdx 算法（clientY 跨过其它行 mid）会在 gcode 已到顶/底时
+        //   错误返回"对面"方向 —— 例如 gcode 在 idx=0、clientY 在最顶时，
+        //   循环跳过 gcode 后取 idx=1 行的 mid 作落点 → direction=+1 → 反向推。
+        // 改用 gcode.mid 后方向严格对应"手指在 gcode 之上/之下"。
+        const gcodeRect = rects.get(gcode);
+        if (!gcodeRect) return curr;
+        const gcodeMid = (gcodeRect.top + gcodeRect.bottom) / 2;
+        const direction = clientY < gcodeMid ? -1 : clientY > gcodeMid ? 1 : 0;
         if (direction === 0) return curr;
+        // 边界：已经在最顶/最底 → 同方向不能再推
+        if (direction < 0 && fromIdx === 0) return curr;
+        if (direction > 0 && fromIdx === curr.length - 1) return curr;
         const toIdx = fromIdx + direction;
         dragLastToIdxRef.current = toIdx;
-        // 还没到 goal → 链式 rAF 下一帧继续推
-        if (toIdx !== goalIdx) shouldReschedule = true;
+        // 实际发生了 setState → 链式 rAF 下一帧继续推
+        shouldReschedule = true;
         const next = [...curr];
         next.splice(fromIdx, 1);
         next.splice(toIdx, 0, gcode);
