@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -29,6 +29,7 @@ import {
   fetchWatchlist,
   addWatchlistItem,
   removeFromWatchlist,
+  reorderWatchlist,
   fetchPositions,
   savePosition,
   removePosition,
@@ -199,6 +200,16 @@ function App() {
   const [basicMap, setBasicMap] = useState<Record<string, FundBasicInfo | null>>({});
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
 
+  /* ---------- Drag-to-reorder state ---------- */
+  // 拖动中：dragActiveCode = 当前抬起的行；pendingOrder = 本次手势重排后的预览顺序。
+  // dragOverIndex 暂未深度使用（FLIP 自动补间已经给出足够视觉反馈），保留以备后续插入指示线。
+  const [dragActiveCode, setDragActiveCode] = useState<string | null>(null);
+  const [, setDragOverIndex] = useState<number | null>(null);  // 保留 setter 以备后续插入指示线
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  const dragCommittedRef = useRef(false);
+  // 行 DOM rect 缓存，给 onMove 用：客户端 Y 坐标 → 落点 index
+  const rowRectMapRef = useRef<Map<string, DOMRect>>(new Map());
+
   useEffect(() => {
     // If the currently-selected fund was removed from the watchlist, drop
     // the selection. We deliberately do NOT auto-select anything on initial
@@ -246,6 +257,189 @@ function App() {
   }, [selectedFundCode, basicMap, holdingsMap]);
 
   const prefersReducedMotion = useReducedMotion();
+
+  /* ---------- Drag-to-reorder: state + handlers ---------- */
+
+  // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = filteredList。
+  const visibleList = useMemo(() => {
+    if (pendingOrder) return pendingOrder;
+    return watchlist.filter(code => {
+      if (selfTab === 'fund') {
+        const it = watchlistItems.find(w => w.fund_code === code);
+        return !it || it.kind === 'fund';
+      }
+      if (selfTab === 'stock') {
+        const it = watchlistItems.find(w => w.fund_code === code);
+        return it?.kind === 'stock';
+      }
+      return true;
+    });
+  }, [pendingOrder, watchlist, watchlistItems, selfTab]);
+
+  // 用 kindOf 把重排后的子序列塞回全局 watchlist，同时保留另一 kind 的相对位置
+  function mergeKindOrder(
+    global: string[],
+    reorderedKind: string[],
+    activeKind: 'fund' | 'stock',
+    kindOf: (c: string) => 'fund' | 'stock'
+  ): string[] {
+    const queue = [...reorderedKind];
+    return global.map(code => (kindOf(code) === activeKind ? queue.shift()! : code));
+  }
+
+  const cancelDrag = useCallback(() => {
+    setDragActiveCode(null);
+    setDragOverIndex(null);
+    setPendingOrder(null);
+    dragCommittedRef.current = false;
+  }, []);
+
+  const commitDrag = useCallback(async () => {
+    if (!pendingOrder || !dragActiveCode) return;
+    const newOrder = pendingOrder;
+    const previousWatchlist = watchlist;
+    setPendingOrder(null);
+    dragCommittedRef.current = false;
+    setDragActiveCode(null);
+    setDragOverIndex(null);
+
+    // 顺序未变 → 不发请求
+    const kindOf = (c: string) => watchlistItems.find(w => w.fund_code === c)?.kind || 'fund';
+    const merged = mergeKindOrder(watchlist, newOrder, selfTab, kindOf);
+    const unchanged = merged.length === watchlist.length &&
+      merged.every((c, i) => c === watchlist[i]);
+    if (unchanged) return;
+
+    // 乐观合并回全局
+    setWatchlist(merged);
+
+    try {
+      await reorderWatchlist(selfTab, newOrder);
+    } catch (err: any) {
+      setWatchlist(previousWatchlist);  // 回滚
+      setToastMsg('排序保存失败：' + (err?.message || '请检查后端'));
+      setTimeout(() => setToastMsg(null), 3000);
+    }
+  }, [pendingOrder, dragActiveCode, watchlist, watchlistItems, selfTab]);
+
+  // 拖动中按 Esc 取消
+  useEffect(() => {
+    if (!dragActiveCode) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cancelDrag(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dragActiveCode, cancelDrag]);
+
+  // 切换 tab 强制取消拖动（避免跨 kind 错乱）
+  useEffect(() => {
+    if (dragActiveCode) cancelDrag();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfTab]);
+
+  // Rect 采样：每次列表变化或拖动状态变化后重算各行 rect，用于 clientY → drop index
+  useLayoutEffect(() => {
+    const map = new Map<string, DOMRect>();
+    document.querySelectorAll<HTMLElement>('[data-fund-code]').forEach(el => {
+      map.set(el.dataset.fundCode!, el.getBoundingClientRect());
+    });
+    rowRectMapRef.current = map;
+  }, [visibleList, dragActiveCode]);
+
+  // 每行调用的回调：长按激活、移动重排、提交落库
+  // 手势状态用 Map<Ref> 而非 useState，避免每行都触发渲染 + 满足 hooks 规则
+  const rowGestureRefs = useRef(new Map<string, {
+    timer: number | null;
+    start: { x: number; y: number; pointerId: number; el: Element | null } | null;
+    activated: boolean;
+  }>());
+
+  const makeRowHandlers = useCallback((code: string) => {
+    const onPointerDown = (e: React.PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      let st = rowGestureRefs.current.get(code);
+      if (!st) {
+        st = { timer: null, start: null, activated: false };
+        rowGestureRefs.current.set(code, st);
+      }
+      // 清理上次未释放的资源
+      if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+      const el = e.currentTarget as Element | null;
+      st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
+      st.activated = false;
+      if (el && typeof (el as any).setPointerCapture === 'function') {
+        try { (el as any).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      }
+      const isTouch = e.pointerType === 'touch';
+      const threshold = isTouch ? 450 : 200;
+      st.timer = window.setTimeout(() => {
+        // timer 期间用户可能已经释放 / 滚动，取消状态已被清空
+        if (!st!.start) return;
+        st!.activated = true;
+        setDragActiveCode(code);
+        setPendingOrder(visibleList);
+      }, threshold);
+    };
+
+    const onPointerMove = (e: React.PointerEvent) => {
+      const st = rowGestureRefs.current.get(code);
+      if (!st || !st.start) return;
+      const dx = e.clientX - st.start.x;
+      const dy = e.clientY - st.start.y;
+      const dist = Math.hypot(dx, dy);
+      if (!st.activated && dist > 8) {
+        // 未激活就大距离移动 → 视为滚动意图
+        if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+        st.start = null;
+        return;
+      }
+      if (st.activated) {
+        e.preventDefault();
+        setPendingOrder(curr => {
+          if (!curr) return curr;
+          const fromIdx = curr.indexOf(code);
+          if (fromIdx < 0) return curr;
+          const rects = rowRectMapRef.current;
+          let toIdx = curr.length - 1;
+          for (let i = 0; i < curr.length; i++) {
+            const c = curr[i];
+            if (c === code) continue;
+            const rect = rects.get(c);
+            if (!rect) continue;
+            const mid = (rect.top + rect.bottom) / 2;
+            if (e.clientY < mid) { toIdx = i; break; }
+          }
+          if (toIdx === fromIdx) return curr;
+          const next = [...curr];
+          next.splice(fromIdx, 1);
+          next.splice(toIdx, 0, code);
+          setDragOverIndex(toIdx);
+          return next;
+        });
+      }
+    };
+
+    const release = () => {
+      const st = rowGestureRefs.current.get(code);
+      if (!st) return;
+      if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+      if (st.start && st.start.el && typeof (st.start.el as any).releasePointerCapture === 'function') {
+        try { (st.start.el as any).releasePointerCapture(st.start.pointerId); } catch { /* ignore */ }
+      }
+      st.start = null;
+    };
+
+    const onPointerUp = () => {
+      const st = rowGestureRefs.current.get(code);
+      if (st && st.activated) commitDrag();
+      release();
+      // 释放后下一帧重置 activated，让 onClick 不被误拦截
+      if (st) st.activated = false;
+    };
+
+    const onPointerCancel = () => { release(); };
+
+    return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel };
+  }, [visibleList, commitDrag]);
 
   /* ---------- Boot ---------- */
   useEffect(() => {
@@ -1198,19 +1392,7 @@ function App() {
 
             {/* Watchlist content — Mobile Card View (md:hidden) & Desktop Table (hidden md:block) */}
             {(() => {
-              const filteredList = watchlist.filter(code => {
-                if (selfTab === 'fund') {
-                  const it = watchlistItems.find(w => w.fund_code === code);
-                  return !it || it.kind === 'fund';
-                }
-                if (selfTab === 'stock') {
-                  const it = watchlistItems.find(w => w.fund_code === code);
-                  return it?.kind === 'stock';
-                }
-                return true;
-              });
-
-              if (filteredList.length === 0) {
+              if (visibleList.length === 0) {
                 return (
                   <div className="p-8 text-center text-slate-400 text-xs font-medium">
                     当前列表无记录。请在上方搜索框输入代码添加。
@@ -1223,7 +1405,7 @@ function App() {
                   {/* ── Mobile Card List ── */}
                   <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800/60">
                     <AnimatePresence initial={false}>
-                      {filteredList.map((code) => {
+                      {visibleList.map((code) => {
                         const fund = fundsData[code];
                         const pos = positions[code];
                         if (!fund) {
@@ -1258,12 +1440,31 @@ function App() {
                           <motion.div
                             key={code}
                             layout="position"
+                            data-fund-code={code}
                             initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                             transition={SPRING.default}
-                            onClick={() => setSelectedFundCode(code)}
-                            className="p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2"
+                            onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
+                            onClickCapture={(e) => {
+                              if (dragCommittedRef.current) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                dragCommittedRef.current = false;
+                              }
+                            }}
+                            {...(() => {
+                              const h = makeRowHandlers(code);
+                              return {
+                                onPointerDown: h.onPointerDown,
+                                onPointerMove: h.onPointerMove,
+                                onPointerUp: h.onPointerUp,
+                                onPointerCancel: h.onPointerCancel,
+                              };
+                            })()}
+                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 ${
+                              dragActiveCode === code ? 'is-dragging z-50 scale-[1.02] shadow-2xl relative bg-white dark:bg-[#1d1d1f]' : ''
+                            }`}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
                             <div className="flex items-start justify-between gap-2">
@@ -1377,7 +1578,7 @@ function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                         <AnimatePresence initial={false}>
-                          {filteredList.map((code) => {
+                          {visibleList.map((code) => {
                             const fund = fundsData[code];
                             const pos = positions[code];
 
@@ -1414,11 +1615,21 @@ function App() {
                               <motion.tr
                                 key={code}
                                 layout="position"
+                                data-fund-code={code}
                                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                                 transition={SPRING.default}
-                                className="apple-row"
+                                {...(() => {
+                                  const h = makeRowHandlers(code);
+                                  return {
+                                    onPointerDown: h.onPointerDown,
+                                    onPointerMove: h.onPointerMove,
+                                    onPointerUp: h.onPointerUp,
+                                    onPointerCancel: h.onPointerCancel,
+                                  };
+                                })()}
+                                className={`apple-row ${dragActiveCode === code ? 'is-dragging' : ''}`}
                               >
                                 <td className="p-4 pl-6">
                                   <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>

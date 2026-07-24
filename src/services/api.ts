@@ -418,6 +418,20 @@ export async function updateWatchlistItem(code: string, params: { sector?: strin
 }
 
 /**
+ * 拖动排序：把指定 kind 下的 codes 数组批量持久化为新的 sort_order
+ * 服务端单事务原子写入；调用失败时调用方应回滚本地顺序。
+ */
+export async function reorderWatchlist(
+  kind: 'fund' | 'stock',
+  codes: string[]
+): Promise<{ success: boolean; kind: string; count: number }> {
+  return request('/api/watchlist/order', {
+    method: 'PUT',
+    body: JSON.stringify({ kind, codes })
+  });
+}
+
+/**
  * 名称搜索：按关键字搜基金/股票，返回候选 (code, name, market, kind)
  * 用于前端添加自选时的实时下拉
  */

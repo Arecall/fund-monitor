@@ -16,7 +16,7 @@ app.set('trust proxy', 1);
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.21' });
+  res.json({ status: 'ok', version: '1.2.22' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -139,13 +139,23 @@ app.post('/api/auth/login', async (req, res) => {
 // 区分 kind: 'fund' (A 股/港股 QDII 基金) | 'stock' (A 股/港股/美股 个股)
 
 // 获取用户的自选（按 kind 过滤）
+// 排序：每个 kind 独立的 sort_order 列，所以重排 fund tab 不会影响 stock tab。
 app.get('/api/watchlist', async (req, res) => {
   try {
     const kind = req.query.kind;       // 可选: 'fund' | 'stock'
-    let sql = 'SELECT fund_code, kind, market, sector, note, created_at FROM watchlist WHERE user_id = ?';
+    let sql = `SELECT fund_code, kind, market, sector, note, created_at,
+                      fund_sort_order, stock_sort_order
+               FROM watchlist WHERE user_id = ?`;
     const params = [req.userId];
     if (kind) { sql += ' AND kind = ?'; params.push(kind); }
-    sql += ' ORDER BY created_at ASC';
+    // 按当前激活的 kind 选排序列；不传 kind 时按"基金优先 + 股票次之"的稳定顺序。
+    if (kind === 'fund') {
+      sql += ' ORDER BY fund_sort_order ASC, id ASC';
+    } else if (kind === 'stock') {
+      sql += ' ORDER BY stock_sort_order ASC, id ASC';
+    } else {
+      sql += ' ORDER BY fund_sort_order ASC, stock_sort_order ASC, id ASC';
+    }
     const rows = await dbHelper.all(sql, params);
     res.json({
       codes: rows.map(r => r.fund_code),
@@ -220,6 +230,55 @@ app.patch('/api/watchlist/:code', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: '更新失败' });
+  }
+});
+
+// 批量重排某个 kind 下的顺序（前端长按拖动排序落库）
+app.put('/api/watchlist/order', async (req, res) => {
+  const { kind, codes } = req.body || {};
+  if (kind !== 'fund' && kind !== 'stock') {
+    return res.status(400).json({ error: 'kind 必须是 fund 或 stock' });
+  }
+  if (!Array.isArray(codes) || codes.length === 0) {
+    return res.status(400).json({ error: 'codes 必须是非空数组' });
+  }
+  const col = kind === 'fund' ? 'fund_sort_order' : 'stock_sort_order';
+
+  try {
+    // 1. 校验 codes 全部属于当前用户 + 指定 kind
+    const placeholders = codes.map(() => '?').join(',');
+    const rows = await dbHelper.all(
+      `SELECT fund_code, kind FROM watchlist
+       WHERE user_id = ? AND fund_code IN (${placeholders})`,
+      [req.userId, ...codes]
+    );
+    if (rows.length !== codes.length) {
+      return res.status(400).json({ error: 'codes 含有未在自选中的项目' });
+    }
+    const wrongKind = rows.find(r => r.kind !== kind);
+    if (wrongKind) {
+      return res.status(400).json({ error: `${wrongKind.fund_code} 不是 ${kind} 类型` });
+    }
+
+    // 2. 单事务内批量更新（任一失败回滚，避免部分写入）
+    await dbHelper.db.exec('BEGIN');
+    try {
+      for (let i = 0; i < codes.length; i++) {
+        await dbHelper.run(
+          `UPDATE watchlist SET ${col} = ? WHERE user_id = ? AND fund_code = ?`,
+          [i + 1, req.userId, codes[i]]
+        );
+      }
+      await dbHelper.db.exec('COMMIT');
+    } catch (e) {
+      await dbHelper.db.exec('ROLLBACK');
+      throw e;
+    }
+
+    res.json({ success: true, kind, count: codes.length });
+  } catch (error) {
+    console.error('[watchlist order] error:', error.message);
+    res.status(500).json({ error: '排序保存失败' });
   }
 });
 

@@ -261,6 +261,15 @@ body {
   transition: background-color 160ms var(--spring-default);
 }
 
+/* 拖动中：禁止文本选择 + 阻止浏览器滚动劫持，让 pointer 拖动手势独占 */
+.is-dragging,
+.is-dragging * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  touch-action: none;
+  cursor: grabbing;
+}
+
 .apple-row:hover {
   background-color: rgba(0, 0, 0, 0.025);
 }

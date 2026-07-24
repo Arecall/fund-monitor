@@ -83,6 +83,26 @@ function initTables() {
           )
     `);
 
+    // v1.2.23 — per-kind 拖动排序字段。两列独立，reorder 一个 tab 不影响另一个。
+    const watchlistSortColumns = [
+      ['fund_sort_order',  'INTEGER'],
+      ['stock_sort_order', 'INTEGER'],
+    ];
+    for (const [name, definition] of watchlistSortColumns) {
+      db.run(`ALTER TABLE watchlist ADD COLUMN ${name} ${definition}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] watchlist sort migration failed for ${name}:`, err.message);
+        }
+      });
+    }
+    // 回填：用 id ASC 当作初始顺序。COALESCE 保证用户拖动过的值不被覆盖。
+    db.run(`
+      UPDATE watchlist
+      SET fund_sort_order  = COALESCE(fund_sort_order,  id),
+          stock_sort_order = COALESCE(stock_sort_order, id)
+      WHERE fund_sort_order IS NULL OR stock_sort_order IS NULL
+    `);
+
     // 3. 持仓记录表
     db.run(`
       CREATE TABLE IF NOT EXISTS positions (
