@@ -15,6 +15,7 @@ import {
   Sparkles,
   PieChart,
   Target,
+  Settings,
   X,
   Loader2
 } from 'lucide-react';
@@ -185,6 +186,7 @@ function App() {
   /* ---------- Preferences ---------- */
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isIntlColor, setIsIntlColor] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [autoRefreshInterval] = useState<number>(30);
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -849,16 +851,15 @@ function App() {
       </AnimatePresence>
 
       {/* Top navigation — Frosted Glass material */}
-      <nav className="apple-navbar sticky top-0 z-40 px-3.5 py-3 md:px-6 md:py-4 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 sm:gap-6">
-          <h1 className="text-sm sm:text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-1.5">
-            <span aria-hidden>📊</span>
-            <span className="hidden xs:inline sm:inline">全球基金监控</span>
-            <span className="inline xs:hidden sm:hidden">基金监控</span>
+      <nav className="apple-navbar sticky top-0 z-40 px-3 py-2.5 md:px-6 md:py-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 md:gap-6 shrink-0">
+          <h1 className="text-base md:text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-1.5 whitespace-nowrap shrink-0">
+            <span aria-hidden className="text-lg">📊</span>
+            <span className="hidden md:inline">全球基金监控终端</span>
           </h1>
 
           {/* 主 tab: 自选 (portfolio) / 金价 (gold) */}
-          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5">
+          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5 shrink-0">
             {([
               { key: 'portfolio', label: '自选', icon: '📋' },
               { key: 'gold',       label: '金价', icon: '💰' },
@@ -871,7 +872,7 @@ function App() {
                     setMainTab(t.key);
                     try { localStorage.setItem('fund_main_tab', t.key); } catch {}
                   }}
-                  className={`relative px-3.5 py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1 ${
+                  className={`relative px-2.5 md:px-3.5 py-1 md:py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1 whitespace-nowrap ${
                     active ? 'text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                   }`}
                 >
@@ -893,31 +894,32 @@ function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-3">
+        <div className="flex items-center gap-1 md:gap-3 shrink-0">
           {/* User pill */}
           <motion.div
             whileHover={prefersReducedMotion ? undefined : { scale: 1.02 }}
             transition={SPRING.default}
-            className="flex items-center gap-1 sm:gap-2 bg-[#f5f5f7] dark:bg-black/40 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-[var(--hairline-border)]"
+            className="flex items-center gap-1 md:gap-2 bg-[#f5f5f7] dark:bg-black/40 px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-[var(--hairline-border)] shrink-0"
           >
-            <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[9px] sm:text-[10px]">
+            <div className="w-5 h-5 md:w-6 md:h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[9px] md:text-[10px] shrink-0">
               {currentUser.substring(0, 2).toUpperCase()}
             </div>
-            <span className="hidden sm:inline text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-[100px] truncate">
+            <span className="hidden md:inline text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-[100px] truncate">
               {currentUser}
             </span>
             <PressableIconButton
               onClick={handleLogout}
               aria-label="切换/登出用户"
-              className="p-0.5 sm:p-1 rounded-full text-slate-400 hover:text-red-500 ml-0.5"
+              className="p-0.5 md:p-1 rounded-full text-slate-400 hover:text-red-500 ml-0.5 shrink-0"
             >
               <LogOut size={12} />
             </PressableIconButton>
           </motion.div>
 
-          <span className="hidden sm:inline h-4 w-px bg-[var(--divider)]" />
+          <span className="hidden md:inline h-4 w-px bg-[var(--divider)] shrink-0" />
 
-          <div className="flex items-center gap-2">
+          {/* 桌面端常驻设置按钮 */}
+          <div className="hidden md:flex items-center gap-2">
             <EmailConfigPanel
               isAdmin={currentUser.toLowerCase() === 'admin'}
               currentUser={currentUser}
@@ -936,6 +938,17 @@ function App() {
             >
               {isIntlColor ? '🟢涨🔴跌' : '🔴涨🟢跌'}
             </PressableButton>
+          </div>
+
+          {/* 移动端设置菜单入口图标 */}
+          <div className="flex md:hidden items-center">
+            <PressableIconButton
+              onClick={() => setIsMobileMenuOpen(true)}
+              aria-label="打开应用设置菜单"
+              className="p-2 rounded-full bg-slate-100/80 dark:bg-white/5 border border-[var(--hairline-border)] text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-white/10"
+            >
+              <Settings size={15} />
+            </PressableIconButton>
           </div>
         </div>
       </nav>
@@ -1707,6 +1720,124 @@ function App() {
               </div>
             </motion.div>
           </ModalShell>
+        )}
+      </AnimatePresence>
+
+      {/* ─────────────────────────────────────────────────────────────
+         Mobile Quick Settings Sheet
+         ───────────────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 md:hidden">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            />
+
+            {/* Bottom Sheet Card */}
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', bounce: 0.05, duration: 0.35 }}
+              className="absolute bottom-0 left-0 right-0 bg-[var(--canvas-bg)] dark:bg-[#1c1c1e] rounded-t-[28px] border-t border-[var(--hairline-border)] p-5 pb-8 space-y-5 shadow-2xl"
+            >
+              {/* Handle Indicator Bar */}
+              <div className="w-10 h-1 bg-slate-300 dark:bg-slate-700 rounded-full mx-auto" />
+
+              {/* Title & Close */}
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-slate-800 dark:text-slate-100 text-base flex items-center gap-2">
+                  <Settings size={18} className="text-[#0066cc]" /> 应用快捷设置
+                </h3>
+                <button
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Control items list */}
+              <div className="space-y-3 pt-1">
+                {/* 1. Theme Toggle */}
+                <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    {isDarkMode ? <Moon size={16} className="text-blue-400" /> : <Sun size={16} className="text-amber-500" />}
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">外观主题</div>
+                      <div className="text-[10px] text-slate-400">{isDarkMode ? '深色夜间模式' : '浅色明亮模式'}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={toggleDarkMode}
+                    className="text-xs font-bold px-3 py-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 border border-[var(--hairline-border)]"
+                  >
+                    {isDarkMode ? '🌙 切换亮色' : '☀️ 切换深色'}
+                  </button>
+                </div>
+
+                {/* 2. Color Rule Toggle */}
+                <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm">🎨</span>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">涨跌配色偏好</div>
+                      <div className="text-[10px] text-slate-400">{isIntlColor ? '美股/国际 (绿涨红跌)' : '国内传统 (红涨绿跌)'}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={toggleColorRule}
+                    className="text-xs font-bold px-3 py-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 border border-[var(--hairline-border)]"
+                  >
+                    {isIntlColor ? '🟢 涨 🔴 跌' : '🔴 涨 🟢 跌'}
+                  </button>
+                </div>
+
+                {/* 3. Notification & Watermark */}
+                <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm">📧</span>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">预警提醒与水位线</div>
+                      <div className="text-[10px] text-slate-400">配置邮件警报接收箱</div>
+                    </div>
+                  </div>
+                  <EmailConfigPanel
+                    isAdmin={currentUser.toLowerCase() === 'admin'}
+                    currentUser={currentUser}
+                    onToast={showToast}
+                  />
+                </div>
+
+                {/* 4. User Info & Logout */}
+                <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-6 h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[10px]">
+                      {currentUser.substring(0, 2).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">当前账号</div>
+                      <div className="text-[10px] text-slate-400">{currentUser}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      handleLogout();
+                    }}
+                    className="text-xs font-semibold text-red-500 bg-red-50 dark:bg-red-950/30 px-3 py-1.5 rounded-full border border-red-200/50 dark:border-red-900/30 flex items-center gap-1"
+                  >
+                    <LogOut size={12} /> 退出登录
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
