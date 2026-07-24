@@ -1112,8 +1112,8 @@ function App() {
                   </button>
                 ))}
               </div>
-              <form onSubmit={handleAddFund} className="flex items-center gap-2">
-                <div ref={addBoxRef} className="relative">
+              <form onSubmit={handleAddFund} className="flex items-center gap-2 w-full">
+                <div ref={addBoxRef} className="relative flex-1 min-w-0">
                   <input
                     type="text"
                     maxLength={20}
@@ -1130,7 +1130,7 @@ function App() {
                     onFocus={() => { if (searchResults.length > 0) setDropdownOpen(true); }}
                     autoComplete="off"
                     spellCheck={false}
-                    className="apple-input pl-9 pr-3 py-2 text-xs w-64 font-medium placeholder-slate-400"
+                    className="apple-input pl-9 pr-3 py-2 text-xs w-full font-medium placeholder-slate-400"
                   />
                   <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                   {searchBusy && (
@@ -1171,7 +1171,7 @@ function App() {
                 <PressableButton
                   type="submit"
                   disabled={searchLoading}
-                  className="px-4 py-2 apple-btn-primary text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
+                  className="px-3.5 py-2 apple-btn-primary text-xs font-semibold flex items-center gap-1 disabled:opacity-50 whitespace-nowrap shrink-0"
                 >
                   <Plus size={14} strokeWidth={2.5} />
                   订阅

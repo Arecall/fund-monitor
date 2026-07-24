@@ -180,7 +180,8 @@ export function FundChart({
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
-      <div className="flex items-center justify-between mb-3 px-1 flex-wrap gap-2">
+      {/* 行1：标题 + 数据源 + 日期 badge */}
+      <div className="flex items-center justify-between mb-1.5 px-1">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
           分时走势
           <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
@@ -194,54 +195,52 @@ export function FundChart({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-slate-500">
-          <span className="flex items-center gap-1.5">
-            <motion.span
-              className={`inline-block w-1.5 h-1.5 rounded-full ${
-                refreshing
-                  ? 'bg-blue-500'
-                  : isCurrentlyOpen
-                  ? 'bg-emerald-500'
-                  : 'bg-slate-400 dark:bg-slate-500'
-              }`}
-              animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
-              transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-            />
-            {refreshing
-              ? '刷新中…'
-              : isCurrentlyOpen
-              ? '自动刷新中'
-              : '已休市 · 暂停刷新'}
-          </span>
-          <span>更新于 {formatTick(lastPointTime, range)}</span>
-          {/* 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
-              盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。 */}
-          {series.points.length > 0 && !series.preMarket && (() => {
-            const lastTs = series.points[series.points.length - 1].t;
-            const today = new Date();
-            const dataDate = new Date(lastTs);
-            const sameDay = lastTs >= new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-                            && lastTs < new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
-            const dataStr = `${dataDate.getFullYear()}-${String(dataDate.getMonth() + 1).padStart(2, '0')}-${String(dataDate.getDate()).padStart(2, '0')}`;
-            return (
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                sameDay
-                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
-                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
-              }`}>
-                {sameDay ? `今日 ${dataStr}` : `数据 ${dataStr}`}
-              </span>
-            );
-          })()}
-          <PressableButton
-            onClick={() => onRefresh?.()}
-            disabled={refreshing}
-            className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50"
-          >
-            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-            手动刷新
-          </PressableButton>
-        </div>
+        {series.points.length > 0 && !series.preMarket && (() => {
+          const lastTs = series.points[series.points.length - 1].t;
+          const today = new Date();
+          const dataDate = new Date(lastTs);
+          const sameDay = lastTs >= new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+                          && lastTs < new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+          const dataStr = `${String(dataDate.getMonth() + 1).padStart(2, '0')}/${String(dataDate.getDate()).padStart(2, '0')}`;
+          return (
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
+              sameDay
+                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
+                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+            }`}>
+              {sameDay ? `今日 ${dataStr}` : `数据 ${dataStr}`}
+            </span>
+          );
+        })()}
+      </div>
+      {/* 行2：刷新状态 + 手动刷新按钮 */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <span className="flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap">
+          <motion.span
+            className={`inline-block w-1.5 h-1.5 rounded-full ${
+              refreshing
+                ? 'bg-blue-500'
+                : isCurrentlyOpen
+                ? 'bg-emerald-500'
+                : 'bg-slate-400 dark:bg-slate-500'
+            }`}
+            animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+            transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+          />
+          {refreshing
+            ? `刷新中…`
+            : isCurrentlyOpen
+            ? `自动刷新 · ${formatTick(lastPointTime, range)}`
+            : `已休市 · ${formatTick(lastPointTime, range)}`}
+        </span>
+        <PressableButton
+          onClick={() => onRefresh?.()}
+          disabled={refreshing}
+          className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50"
+        >
+          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          手动刷新
+        </PressableButton>
       </div>
 
       {/* Data-source note (expandable) */}
@@ -584,6 +583,11 @@ export function FundChart({
     </div>
   );
 }
+
+/* ───────────────────────────────────────────────────────────────────
+   DataSourceBadge — surfaces the provenance of the curve so the user
+   always knows whether they're looking at real NAV or an interpolation.
+   ─────────────────────────────────────────────────────────────────── */
 
 /* ───────────────────────────────────────────────────────────────────
    DataSourceBadge — surfaces the provenance of the curve so the user
