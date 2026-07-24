@@ -409,10 +409,6 @@ function App() {
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
         st!.activated = true;
-        // 关键：把基线 y 设为"激活瞬间"的手指位置，而非最初的 pointerdown y
-        //   触屏在 450ms 长按期间手指可能漂移数 px，把基线漂移量扣除
-        //   否则 dy 计算有偏差，可能在边缘处误判方向
-        st!.start = { ...st!.start, y: dragLastClientYRef.current };
         setDragActiveCode(code);
         setPendingDragCode(null);  // 等待结束，由激活态接管视觉反馈
         setPendingOrder(visibleList);
@@ -431,8 +427,6 @@ function App() {
       const dx = e.clientX - st.start.x;
       const dy = e.clientY - st.start.y;
       const dist = Math.hypot(dx, dy);
-      // 持续更新 dragLastClientYRef，让 timer 激活时能拿到当前手指位置
-      dragLastClientYRef.current = e.clientY;
       if (!st.activated && dist > 8) {
         // 未激活就大距离移动 → 视为滚动意图
         if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
@@ -469,7 +463,6 @@ function App() {
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
       if (!st || !st.activated || !st.start) return;
-      const startY = st.start.y;   // 捕获给闭包用（TypeScript 推断需要）
       const clientY = dragLastClientYRef.current;
 
       // 链式 rAF：setState 后若还没到 goal，下一帧继续推一格
@@ -480,13 +473,16 @@ function App() {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
-        // 方向判定：用 dy = clientY - st.start.y（基线在 timer 激活时被设到
-        //   "激活瞬间的手指位置"），不再读 gcodeRect.mid。
-        // 原因：触屏上 gcodeRect.mid 受 motion spring transform 影响，链式 rAF
-        //   推到边界时 gcodeRect.mid 已变，触发方向误判；用 dy 完全规避时序问题。
-        const dy = clientY - startY;
-        // 触屏抖动容差 12px（一个常用图标按钮高度），低于此视为静止
-        const direction = dy < -12 ? -1 : dy > 12 ? 1 : 0;
+        const rects = rowRectMapRef.current;
+        // 方向判定：直接用 gcode 自己当前的 mid 与 clientY 比较。
+        // 原 goalIdx 算法（clientY 跨过其它行 mid）会在 gcode 已到顶/底时
+        //   错误返回"对面"方向 —— 例如 gcode 在 idx=0、clientY 在最顶时，
+        //   循环跳过 gcode 后取 idx=1 行的 mid 作落点 → direction=+1 → 反向推。
+        // 改用 gcode.mid 后方向严格对应"手指在 gcode 之上/之下"。
+        const gcodeRect = rects.get(gcode);
+        if (!gcodeRect) return curr;
+        const gcodeMid = (gcodeRect.top + gcodeRect.bottom) / 2;
+        const direction = clientY < gcodeMid ? -1 : clientY > gcodeMid ? 1 : 0;
         if (direction === 0) return curr;
         // 边界：已经在最顶/最底 → 同方向不能再推
         if (direction < 0 && fromIdx === 0) return curr;
