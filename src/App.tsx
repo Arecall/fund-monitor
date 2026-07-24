@@ -1825,6 +1825,14 @@ function App() {
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                                 transition={dragActiveCode ? SPRING.drag : SPRING.default}
+                                onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
+                                onClickCapture={(e) => {
+                                  if (dragCommittedRef.current) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    dragCommittedRef.current = false;
+                                  }
+                                }}
                                 {...(() => {
                                   const h = makeRowHandlers(code);
                                   return {
@@ -1908,12 +1916,16 @@ function App() {
 
                                 <td className="p-4 text-center pr-6" onClick={e => e.stopPropagation()}>
                                   <div className="flex items-center justify-center gap-1">
-                                    <PressableButton
-                                      onClick={() => setSelectedFundCode(code)}
-                                      className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2 py-1 rounded-full"
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedFundCode(code);
+                                      }}
+                                      className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2.5 py-1.5 rounded-full transition-colors cursor-pointer"
                                     >
                                       查看详情
-                                    </PressableButton>
+                                    </button>
                                     <PressableIconButton
                                       onClick={() => handleRemoveFund(code, fund.name)}
                                       aria-label="退订基金"
