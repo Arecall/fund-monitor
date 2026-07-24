@@ -463,31 +463,46 @@ function App() {
       if (!st || !st.activated || !st.start) return;
       const clientY = dragLastClientYRef.current;
 
+      // 链式 rAF：setState 后若还没到 goal，下一帧继续推一格
+      //   这样手指停在 goal 位置时，抬起行也会在若干帧内到位
+      let shouldReschedule = false;
+
       setPendingOrder(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
         const rects = rowRectMapRef.current;
-        let toIdx = curr.length - 1;
+        // 目标 toIdx：clientY 对应的"理想落点"
+        let goalIdx = curr.length - 1;
         for (let i = 0; i < curr.length; i++) {
           const c = curr[i];
           if (c === gcode) continue;
           const rect = rects.get(c);
           if (!rect) continue;
           const mid = (rect.top + rect.bottom) / 2;
-          if (clientY < mid) { toIdx = i; break; }
+          if (clientY < mid) { goalIdx = i; break; }
         }
-        // bail 1: 抬起行已在目标位置
-        if (toIdx === fromIdx) return curr;
-        // bail 2: 同一 toIdx 邻帧已 setState（避免每帧重复触发 motion spring）
-        if (toIdx === dragLastToIdxRef.current) return curr;
+        // 关键：单帧最多让位 1 格
+        // 原因：从最底行往上拖时如果不限制，gcode 一帧内 splice 跨越多个位置，
+        //   其它所有行同步 spring 让位 → 看起来"瞬移"且多行叠加抖动。
+        // 限制为 ±1 后，每帧只换 1 个邻居格，多帧 rAF 推到 goal。
+        const direction = goalIdx > fromIdx ? 1 : goalIdx < fromIdx ? -1 : 0;
+        if (direction === 0) return curr;
+        const toIdx = fromIdx + direction;
         dragLastToIdxRef.current = toIdx;
+        // 还没到 goal → 链式 rAF 下一帧继续推
+        if (toIdx !== goalIdx) shouldReschedule = true;
         const next = [...curr];
         next.splice(fromIdx, 1);
         next.splice(toIdx, 0, gcode);
         setDragOverIndex(toIdx);
         return next;
       });
+
+      if (shouldReschedule && !dragRafPendingRef.current) {
+        dragRafPendingRef.current = true;
+        requestAnimationFrame(tickMove);
+      }
     };
 
     const onMove = (e: PointerEvent) => {
