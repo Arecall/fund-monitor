@@ -202,9 +202,13 @@ function App() {
 
   /* ---------- Drag-to-reorder state ---------- */
   // 拖动中：dragActiveCode = 当前抬起的行；pendingOrder = 本次手势重排后的预览顺序。
+  // pendingDragCode = pointerdown 已发生、但 timer 还没到（等待 450ms 触屏 / 200ms 鼠标）。
+  //   此时需要 touch-action:none 阻止浏览器误判滚动。
+  // dragCommittedRef = 拖动已激活，下一次合成 click 必须被拦截，避免打开详情 drawer。
   // dragOverIndex 暂未深度使用（FLIP 自动补间已经给出足够视觉反馈），保留以备后续插入指示线。
   const [dragActiveCode, setDragActiveCode] = useState<string | null>(null);
-  const [, setDragOverIndex] = useState<number | null>(null);  // 保留 setter 以备后续插入指示线
+  const [pendingDragCode, setPendingDragCode] = useState<string | null>(null);
+  const [, setDragOverIndex] = useState<number | null>(null);
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const dragCommittedRef = useRef(false);
   // 行 DOM rect 缓存，给 onMove 用：客户端 Y 坐标 → 落点 index
@@ -289,6 +293,7 @@ function App() {
 
   const cancelDrag = useCallback(() => {
     setDragActiveCode(null);
+    setPendingDragCode(null);
     setDragOverIndex(null);
     setPendingOrder(null);
     dragCommittedRef.current = false;
@@ -299,8 +304,9 @@ function App() {
     const newOrder = pendingOrder;
     const previousWatchlist = watchlist;
     setPendingOrder(null);
-    dragCommittedRef.current = false;
+    // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
     setDragActiveCode(null);
+    setPendingDragCode(null);
     setDragOverIndex(null);
 
     // 顺序未变 → 不发请求
@@ -366,6 +372,10 @@ function App() {
       const el = e.currentTarget as Element | null;
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
+      // 进入等待态：CSS 给该行 touch-action:none 阻止浏览器滚动误判
+      setPendingDragCode(code);
+      // 拖动已结束的标志位在新手势开始时先重置（如果上一手势的合成 click 已经过了）
+      dragCommittedRef.current = false;
       if (el && typeof (el as any).setPointerCapture === 'function') {
         try { (el as any).setPointerCapture(e.pointerId); } catch { /* ignore */ }
       }
@@ -376,7 +386,10 @@ function App() {
         if (!st!.start) return;
         st!.activated = true;
         setDragActiveCode(code);
+        setPendingDragCode(null);  // 等待结束，由激活态接管视觉反馈
         setPendingOrder(visibleList);
+        // 标记本次手势已激活 drag —— 释放后浏览器合成的 click 必须被 onClickCapture 拦截
+        dragCommittedRef.current = true;
       }, threshold);
     };
 
@@ -390,6 +403,7 @@ function App() {
         // 未激活就大距离移动 → 视为滚动意图
         if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
         st.start = null;
+        setPendingDragCode(null);  // 退出等待态，让浏览器接管滚动
         return;
       }
       if (st.activated) {
@@ -426,6 +440,8 @@ function App() {
         try { (st.start.el as any).releasePointerCapture(st.start.pointerId); } catch { /* ignore */ }
       }
       st.start = null;
+      // 释放 pointer capture 后退出等待/激活态视觉
+      setPendingDragCode(curr => (curr === code ? null : curr));
     };
 
     const onPointerUp = () => {
@@ -1463,8 +1479,11 @@ function App() {
                               };
                             })()}
                             className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 ${
-                              dragActiveCode === code ? 'is-dragging z-50 scale-[1.02] shadow-2xl relative bg-white dark:bg-[#1d1d1f]' : ''
-                            }`}
+                              (pendingDragCode === code || dragActiveCode === code)
+                                ? 'is-dragging touch-none select-none relative bg-white dark:bg-[#1d1d1f] '
+                                : ''
+                            }${dragActiveCode === code ? 'z-50 scale-[1.02] shadow-2xl' : ''}`}
+                            style={pendingDragCode === code ? { touchAction: 'none' } : undefined}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
                             <div className="flex items-start justify-between gap-2">
@@ -1629,7 +1648,8 @@ function App() {
                                     onPointerCancel: h.onPointerCancel,
                                   };
                                 })()}
-                                className={`apple-row ${dragActiveCode === code ? 'is-dragging' : ''}`}
+                                className={`apple-row ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging touch-none select-none' : ''}`}
+                                style={pendingDragCode === code ? { touchAction: 'none' } : undefined}
                               >
                                 <td className="p-4 pl-6">
                                   <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
