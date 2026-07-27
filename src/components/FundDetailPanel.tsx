@@ -726,6 +726,7 @@ function CapitalFlowChart({
     largeNet: number;
     mediumNet: number;
     smallNet: number;
+    _source?: string;
   };
 }) {
   const yi = (v: number) => v / 1e8;   // 元 → 亿
@@ -750,7 +751,17 @@ function CapitalFlowChart({
         <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
           资金流向
         </h4>
-        <span className="text-[10px] text-slate-400 font-mono tabular-nums">当日累计</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-400 font-mono tabular-nums">当日累计</span>
+          <span
+            className="text-[9px] text-slate-400 font-mono tabular-nums"
+            title={flow._source === 'push2delay'
+              ? 'push2.eastmoney.com 不可用，已自动切换到 push2delay 备域名'
+              : '数据来自东方财富 push2 资金流向接口。新股（N股）首日数据可能漏算部分成交额，建议参考 f10 页面或同花顺等第三方源交叉验证。'}
+          >
+            {flow._source === 'push2delay' ? '东方财富·push2delay' : '东方财富'}
+          </span>
+        </div>
       </div>
 
       {/* 头部大数字：主力净流入 */}
