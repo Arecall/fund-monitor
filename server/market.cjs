@@ -349,72 +349,94 @@ async function fetchUSStockValuation(ticker) {
 }
 
 /**
- * 东方财富 push2 — 个股总市值/流通市值/换手率
- *   接口：push2.eastmoney.com/api/qt/stock/get
- *   字段：
- *     f116 = 总市值（元）
- *     f117 = 流通市值（元）
- *     f173 = 换手率（%）
- *   secid 规则：
- *     1 = 上证(sh), 0 = 深证(sz) / 北交所(bj)
- *     116 = 港股(00700 → 116.00700)
- *     105 = 美股(AAPL → 105.AAPL)
+ * 腾讯 qt.gtimg.cn — 个股总市值/流通市值/换手率
+ *   接口：http://qt.gtimg.cn/q=<symbol>
+ *     A 股: q=sh688825 / q=sz000001 / q=bj830xxx
+ *     港股: q=hk00700
+ *     美股: q=usAAPL
+ *   返回 GBK 编码 JSONP: v_<sym>="0~name~code~current~prevClose~open~volume~...~floatMC~totalMC~turnoverRate"
+ *
+ *   实测字段索引（A 股 sh688825 / 港股 hk00700 / 美股 AAPL 三者一致）：
+ *     [3]=current [4]=prevClose [5]=open
+ *     [33]=high [34]=low
+ *     [36]=volume [37]=turnover [38]=换手率(%)
+ *     [44]=流通市值(亿) [45]=总市值(亿)
+ *
+ *   港股 Tencent qt 不返回换手率（parts[38]=0），返回 null
+ *
+ *   选择腾讯而非东方财富的原因：
+ *   - 东方财富 push2.eastmoney.com 在国内网络环境 IPv6 hang up 严重，family:4 也常失败
+ *   - 腾讯 qt.gtimg.cn 同时提供 OHLCV + 总市值/换手率，单接口拿到全字段
+ *   - 数值与新浪一致（已交叉验证 688825：流通市值 2206.49亿 / 总市值 32771.63亿 / 换手率 66.40%）
  *
  *   失败时返回 null（不阻塞主流程，分时图/卡片仍可用）
  */
-const _emExtraCache = {};
-const EM_EXTRA_TTL = 60 * 1000; // 1 分钟缓存（总市值/换手率变动较慢）
+const _tencentExtraCache = {};
+const TENCENT_EXTRA_TTL = 60 * 1000; // 1 分钟缓存（总市值/换手率变动较慢）
 
-async function fetchEastMoneyExtraStockInfo(code, market) {
+async function fetchTencentExtraStockInfo(code, market) {
   const c = code.toUpperCase();
   const cacheKey = `${market}:${c}`;
   const now = Date.now();
-  const cached = _emExtraCache[cacheKey];
-  if (cached && now - cached.ts < EM_EXTRA_TTL) {
+  const cached = _tencentExtraCache[cacheKey];
+  if (cached && now - cached.ts < TENCENT_EXTRA_TTL) {
     return cached.value;
   }
 
-  let secid;
+  let sym;
   if (market === 'domestic') {
-    if (c.startsWith('60') || c.startsWith('68')) secid = `1.${c}`;
-    else if (c.startsWith('00') || c.startsWith('30') || c.startsWith('8') || c.startsWith('BJ')) secid = `0.${c.replace(/^BJ/, '')}`;
-    else secid = null;
+    if (c.startsWith('60') || c.startsWith('68')) sym = 'sh' + c;
+    else if (c.startsWith('00') || c.startsWith('30')) sym = 'sz' + c;
+    else if (c.startsWith('8')) sym = 'bj' + c;
+    else sym = null;
   } else if (market === 'hk') {
-    secid = `116.${c}`;
+    sym = 'hk' + c.padStart(5, '0');
   } else if (market === 'us') {
-    secid = `105.${c}`;
+    sym = 'us' + c;
+  } else {
+    sym = null;
   }
-  if (!secid) {
-    _emExtraCache[cacheKey] = { ts: now, value: null };
+  if (!sym) {
+    _tencentExtraCache[cacheKey] = { ts: now, value: null };
     return null;
   }
 
-  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f116,f117,f173`;
+  const url = `http://qt.gtimg.cn/q=${sym}`;
   try {
     const r = await axios.get(url, {
-      headers: {
-        'Referer': 'https://quote.eastmoney.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      },
-      // force IPv4 — East Money 的域名偶尔出现 IPv6 连接 hang up
+      responseType: 'arraybuffer',
+      headers: { 'Referer': 'https://gu.qq.com/' },
       family: 4,
       timeout: 8000,
     });
-    const d = r.data?.data;
-    if (!d || d.f116 === undefined || d.f116 === null) {
-      _emExtraCache[cacheKey] = { ts: now, value: null };
+    const text = iconv.decode(Buffer.from(r.data), 'gbk');
+    // 形如: v_sh688825="1~N长鑫~688825~49.00~...~66.40~116.23~~55.03~38.11~195.38~2206.49~32771.63~..."
+    const m = text.match(/="([^"]+)"/);
+    if (!m) {
+      _tencentExtraCache[cacheKey] = { ts: now, value: null };
       return null;
     }
+    const parts = m[1].split('~');
+    if (parts.length < 46) {
+      _tencentExtraCache[cacheKey] = { ts: now, value: null };
+      return null;
+    }
+    // [44]=流通市值(亿)  [45]=总市值(亿)  [38]=换手率(%)
+    const floatMC = parseFloat(parts[44]);
+    const totalMC = parseFloat(parts[45]);
+    const tr = parseFloat(parts[38]);
+    // 港股 Tencent 返回 parts[38]=0（不返回换手率），A 股/US 应在 0-100 之间
+    const turnoverRate = Number.isFinite(tr) && tr > 0 && tr < 100 ? tr : null;
     const value = {
-      totalMarketCap: typeof d.f116 === 'number' && d.f116 > 0 ? d.f116 : null,
-      floatMarketCap: typeof d.f117 === 'number' && d.f117 > 0 ? d.f117 : null,
-      turnoverRate: typeof d.f173 === 'number' && d.f173 >= 0 ? d.f173 : null,
+      totalMarketCap: Number.isFinite(totalMC) && totalMC > 0 ? totalMC * 1e8 : null,
+      floatMarketCap: Number.isFinite(floatMC) && floatMC > 0 ? floatMC * 1e8 : null,
+      turnoverRate,
     };
-    _emExtraCache[cacheKey] = { ts: now, value };
+    _tencentExtraCache[cacheKey] = { ts: now, value };
     return value;
   } catch (e) {
-    console.warn(`[emExtra] ${c} (${market}) 失败:`, e.message);
-    _emExtraCache[cacheKey] = { ts: now, value: null };
+    console.warn(`[tencentExtra] ${c} (${market}) 失败:`, e.message);
+    _tencentExtraCache[cacheKey] = { ts: now, value: null };
     return null;
   }
 }
@@ -914,11 +936,11 @@ async function getFundValuation(code, kindOverride) {
     }
 
     if (result) {
-      // 股票结果额外拼上东财的总市值/换手率（异步，非阻塞：失败时 result 仍可用）
+      // 股票结果额外拼上腾讯的总市值/换手率（异步，非阻塞：失败时 result 仍可用）
       // 注意：fund_a / fund_hk / fund_us 也会进来，但只有 stockSpecific 存在时才追加
       if (result.stockSpecific && result.market && result.market !== 'other') {
         try {
-          const extra = await fetchEastMoneyExtraStockInfo(code, result.market);
+          const extra = await fetchTencentExtraStockInfo(code, result.market);
           if (extra) {
             result.stockSpecific.totalMarketCap = extra.totalMarketCap;
             result.stockSpecific.floatMarketCap = extra.floatMarketCap;
