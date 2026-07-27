@@ -227,28 +227,30 @@ async function fetchHKStockValuation(code) {
   if (!m) return null;
   const parts = m[1].split(',');
   if (parts.length < 10) return null;
-  // 字段含义参考 Sina 港股接口：name(1)=中文名, open(5), last_close(3), current(6), change(8), change_pct(9), datetime(18)
+  // Sina 港股 rt_hk 接口字段顺序（实测 00700）：
+  //   parts[0]=nameEn, parts[1]=nameZh, parts[2]=prevClose,
+  //   parts[3]=open, parts[4]=high, parts[5]=low, parts[6]=current,
+  //   parts[7]=change, parts[8]=changePct, parts[9]=bid1, parts[10]=ask1,
+  //   parts[11]=turnover(元), parts[12]=volume(股), parts[17]=date, parts[18]=time
   const nameEn = parts[0];
   const nameZh = parts[1];
-  const prevClose = parseFloat(parts[3]);
+  const prevClose = parseFloat(parts[2]);
+  const openVal = parseFloat(parts[3]);
+  const highVal = parseFloat(parts[4]);
+  const lowVal  = parseFloat(parts[5]);
   const current = parseFloat(parts[6]);
   const change = parseFloat(parts[7]);
   const changePct = parseFloat(parts[8]);
+  const turnoverVal = parseFloat(parts[11]);
+  const volumeVal = parseFloat(parts[12]);
   const date = parts[17];    // YYYY/MM/DD
   const time = parts[18];    // HH:MM:SS
-  // Sina rt_hk 字段顺序实测：high(4) / open(5) / low(9) / volume(10) / turnover(11)
-  // 字段序号基于行业惯例推断，未做实测校验；>=0 守卫确保字段错位时静默 no-op
-  const openVal = parseFloat(parts[5]);
-  const highVal = parseFloat(parts[4]);
-  const lowVal  = parseFloat(parts[9]);
-  const volumeVal = parseFloat(parts[10]);
-  const turnoverVal = parseFloat(parts[11]);
   if (isNaN(current) || current <= 0) return null;
   return {
     fundcode: code.toUpperCase(),
     name: `${nameZh} (${nameEn})`,
     jzrq: date ? date.replace(/\//g, '-') : '',
-    dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),
+    dwjz: isNaN(prevClose) || prevClose <= 0 ? '0' : prevClose.toFixed(4),
     gsz: current.toFixed(4),
     gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
     gztime: date && time ? `${date.replace(/\//g, '-')} ${time}` : '',
@@ -284,9 +286,11 @@ async function fetchUSStockValuation(ticker) {
   if (!m) return null;
   const parts = m[1].split(',');
   if (parts.length < 26) return null;
-  // Sina 美股字段顺序（已实测）：
+  // Sina 美股字段顺序（已实测 AAPL）：
   //   name(0)=中文名, current(1), change_pct(2), datetime(3)="2026-07-20 17:10:01", change(4),
-  //   open(5), high(6), low(7), volume(8), turnover(9), ..., prev_close(26)
+  //   open(5), high(6), low(7), bid(8), ask(9),
+  //   volume(10), shares_outstanding(11), turnover(12) ... , prev_close(26)
+  // 注：美股 Sina 不一定返回 turnover（接口对部分美股可能为 0）
   const nameZh = parts[0];
   const current = parseFloat(parts[1]);
   const changePct = parseFloat(parts[2]);
@@ -295,8 +299,8 @@ async function fetchUSStockValuation(ticker) {
   const openVal = parseFloat(parts[5]);
   const highVal = parseFloat(parts[6]);
   const lowVal  = parseFloat(parts[7]);
-  const volumeVal = parseFloat(parts[8]);
-  const turnoverVal = parseFloat(parts[9]);
+  const volumeVal = parseFloat(parts[10]);
+  const turnoverVal = parseFloat(parts[12]);
   let prevClose = parts.length > 26 ? parseFloat(parts[26]) : NaN;
   if ((isNaN(prevClose) || prevClose <= 0) && !isNaN(current) && !isNaN(change)) {
     prevClose = current - change;
