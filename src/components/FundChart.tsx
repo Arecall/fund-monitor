@@ -423,35 +423,23 @@ export function FundChart({
           className="block touch-none select-none"
         >
           <defs>
-            {/* 面积渐变：3 stop 过渡（顶部浓 → 中段淡 → 底部 0），更柔顺 */}
-            <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.42" />
-              <stop offset="55%"  stopColor="var(--color-up)" stopOpacity="0.16" />
+            {/* 面积渐变：从下往上（底部浓 → 顶部 0），更接近传统"水域"视觉效果 */}
+            <linearGradient id="gUp" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.55" />
+              <stop offset="45%"  stopColor="var(--color-up)" stopOpacity="0.22" />
               <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0" />
             </linearGradient>
-            <linearGradient id="gDown" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.42" />
-              <stop offset="55%"  stopColor="var(--color-down)" stopOpacity="0.16" />
+            <linearGradient id="gDown" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.55" />
+              <stop offset="45%"  stopColor="var(--color-down)" stopOpacity="0.22" />
               <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0" />
             </linearGradient>
-            <linearGradient id="gFlat" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.24" />
-              <stop offset="55%"  stopColor="var(--color-flat)" stopOpacity="0.10" />
+            <linearGradient id="gFlat" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.32" />
+              <stop offset="45%"  stopColor="var(--color-flat)" stopOpacity="0.14" />
               <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0" />
             </linearGradient>
-            {/* 线条渐变：横向（左淡 → 右浓），强调最新数据 */}
-            <linearGradient id="gLineUp" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="1" />
-            </linearGradient>
-            <linearGradient id="gLineDown" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="1" />
-            </linearGradient>
-            <linearGradient id="gLineFlat" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.5" />
-              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="1" />
-            </linearGradient>
+            {/* 线条用纯色（不再用左右渐变），通过下方柔光层营造"发光"质感 */}
             {/* 趋势线渐变（淡色，强调辅助而非主线） */}
             <linearGradient id="gTrend" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%"   stopColor="currentColor" stopOpacity="0.18" />
@@ -582,12 +570,12 @@ export function FundChart({
             transition={{ ...SPRING_DRAW, duration: 0.7 }}
           />
 
-          {/* Line — 用平滑曲线（Catmull-Rom），渐变 stroke，左淡右浓 */}
+          {/* Line — 用平滑曲线（Catmull-Rom），纯色 + 下方柔光层营造发光质感 */}
           <motion.path
             key={`line-${range}`}
             d={smoothLinePath}
             fill="none"
-            stroke={`url(#gLine${isUp ? 'Up' : isDown ? 'Down' : 'Flat'})`}
+            stroke={colorVar}
             strokeWidth="1.75"
             strokeLinecap="round"
             strokeLinejoin="round"
