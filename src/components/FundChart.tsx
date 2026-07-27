@@ -85,8 +85,40 @@ export function FundChart({
   const innerW = width - padding.left - padding.right;
   const innerH = height - padding.top - padding.bottom;
 
-  const minV = useMemo(() => Math.min(...points.map(p => p.v)) * 0.999, [points]);
-  const maxV = useMemo(() => Math.max(...points.map(p => p.v)) * 1.001, [points]);
+  // Y 轴范围：
+  //  - 默认以所有点的极值为画图范围。
+  //  - 分时图特例：如果起点（昨收/发行价）与其余点的偏离极大
+  //    （例如 A 股新股上市首日：发行价 8.66，开盘 49.50，区间 38–55），
+  //    那么把发行价算进 minV 会让真实波动区间被严重挤压。
+  //    这时把 Y 轴范围聚焦在"盘中真实成交区间"（除起点外的极值），
+  //    让红绿分时曲线饱满地铺满整个图表。
+  const rangeBounds = useMemo(() => {
+    if (points.length === 0) {
+      return { lo: 0, hi: 1 };
+    }
+    const allValues = points.map(p => p.v);
+    const allLo = Math.min(...allValues);
+    const allHi = Math.max(...allValues);
+    if (range !== 'intraday' || points.length < 4) {
+      return { lo: allLo, hi: allHi };
+    }
+    const first = points[0].v;
+    const restLo = Math.min(...points.slice(1).map(p => p.v));
+    const restHi = Math.max(...points.slice(1).map(p => p.v));
+    const restSpan = restHi - restLo;
+    // 偏离判定：起点与其余点极值的相对距离超过 1.5 倍盘中波动
+    if (restSpan <= 0) return { lo: allLo, hi: allHi };
+    const deviation = Math.max(Math.abs(first - restHi), Math.abs(first - restLo));
+    if (deviation / restSpan >= 1.5) {
+      // 真实波动区间带 4% padding
+      const pad = (restHi - restLo) * 0.04 || restHi * 0.005;
+      return { lo: restLo - pad, hi: restHi + pad };
+    }
+    return { lo: allLo, hi: allHi };
+  }, [points, range]);
+
+  const minV = useMemo(() => rangeBounds.lo * 0.999, [rangeBounds]);
+  const maxV = useMemo(() => rangeBounds.hi * 1.001, [rangeBounds]);
   const range_v = maxV - minV || 1;
 
   const x = useCallback((i: number) => {
@@ -365,16 +397,20 @@ export function FundChart({
             </text>
           ))}
 
-          {/* Baseline at the open price */}
-          <line
-            x1={padding.left}
-            x2={padding.left + innerW}
-            y1={y(firstPoint.v)}
-            y2={y(firstPoint.v)}
-            stroke="currentColor"
-            strokeOpacity="0.14"
-            strokeDasharray="4 4"
-          />
+          {/* Baseline at the open price — clipped to chart so it doesn't draw outside when
+              the reference value (prev close / IPO issue price) is far outside the
+              actual trading range. */}
+          {firstPoint.v >= minV && firstPoint.v <= maxV && (
+            <line
+              x1={padding.left}
+              x2={padding.left + innerW}
+              y1={y(firstPoint.v)}
+              y2={y(firstPoint.v)}
+              stroke="currentColor"
+              strokeOpacity="0.14"
+              strokeDasharray="4 4"
+            />
+          )}
 
           {/* Area fill — mask-reveal from top (Apple Stocks "water-fills-in" effect).
               clipPath rect's `y` springs from padding.top down to padding.top + innerH,
