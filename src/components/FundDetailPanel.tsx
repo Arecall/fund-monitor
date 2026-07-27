@@ -123,8 +123,8 @@ export function FundDetailPanel({
         </div>
       </div>
 
-      {/* ── Metric row — 5 cards ─────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+      {/* ── Metric row — funds 6 / stocks 8 cards ─────────────── */}
+      <div className={`grid grid-cols-2 gap-2.5 ${kind === 'stock' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'}`}>
         <MetricCard label="当前净值" tone="neutral" title={current.toFixed(6)}>
           <span
             className="font-mono font-bold text-[1.4rem] tabular-nums text-slate-900 dark:text-slate-50 leading-none cursor-default"
@@ -161,6 +161,40 @@ export function FundDetailPanel({
             </span>
           )}
         </MetricCard>
+
+        {/* 个股专属：总市值 / 换手率（仅 stock + 东财字段就绪时显示） */}
+        {kind === 'stock' && (() => {
+          const totalMC = (fund as any).stockSpecific?.totalMarketCap;
+          const turnoverRate = (fund as any).stockSpecific?.turnoverRate;
+          if (!totalMC && turnoverRate === undefined && turnoverRate === null) return null;
+          return (
+            <>
+              <MetricCard label="总市值" tone="neutral" title={typeof totalMC === 'number' ? `${totalMC.toFixed(0)} 元` : '—'}>
+                <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+                  {typeof totalMC === 'number' && totalMC > 0 ? formatMarketCap(totalMC, fund.market) : '—'}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                  {typeof totalMC === 'number' && totalMC > 0 && current > 0 && previous > 0
+                    ? `流通 ${formatMarketCap((fund as any).stockSpecific?.floatMarketCap ?? 0, fund.market)}`
+                    : ''}
+                </span>
+              </MetricCard>
+              <MetricCard label="换手率" tone="neutral" title={typeof turnoverRate === 'number' ? `${turnoverRate.toFixed(2)}%` : '—'}>
+                <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+                  {typeof turnoverRate === 'number' && turnoverRate >= 0 ? `${turnoverRate.toFixed(2)}%` : '—'}
+                </span>
+                {(() => {
+                  const vol = (fund as any).stockSpecific?.volume;
+                  return typeof vol === 'number' && vol > 0 ? (
+                    <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                      量 {formatVolume(vol, fund.market)}
+                    </span>
+                  ) : null;
+                })()}
+              </MetricCard>
+            </>
+          );
+        })()}
 
         <MetricCard label="更新时间" tone="neutral">
           <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200" style={{ fontSize: '1rem', letterSpacing: '0.01em' }}>
@@ -657,3 +691,31 @@ const PressableButton = (props: HTMLMotionProps<'button'>) => {
 };
 
 /** Placeholder toast removed — handled by parent via onToast prop. */
+
+/**
+ * 市值格式化：自动选用 万/亿/万亿 单位
+ *   A 股/港股：人民币 / 港币，元为单位
+ *   美股：美元
+ */
+function formatMarketCap(v: number, market?: string): string {
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  const unit = market === 'us' ? '美元' : (market === 'hk' ? '港币' : '元');
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)}万亿${unit}`;
+  if (v >= 1e8)  return `${(v / 1e8).toFixed(2)}亿${unit}`;
+  if (v >= 1e4)  return `${(v / 1e4).toFixed(2)}万${unit}`;
+  return `${v.toFixed(0)}${unit}`;
+}
+
+/**
+ * 成交量格式化：
+ *   A 股单位"手"（1 手=100 股），港美股单位"股"
+ */
+function formatVolume(v: number, market?: string): string {
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  // A 股 Sina 返回的手数本身已含"/100"的换算（parts[8]）
+  // 港美股 parts[10]/[12] 是股数
+  const unit = market === 'us' || market === 'hk' ? '股' : '手';
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿${unit}`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万${unit}`;
+  return `${v.toFixed(0)}${unit}`;
+}
