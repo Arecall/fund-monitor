@@ -189,19 +189,37 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 涨跌幅副 Y 轴：每个价格点对应的累计 % 变化（相对区间起点）
-  // 用同一 Y 坐标空间（数学上等价于价格线），副 Y 轴把 y → % 翻译给用户看
-  const pctByY = useCallback((v: number) => {
-    if (points.length === 0) return 0;
+  // 涨跌幅折线：% 累计值映射到独立 Y 范围（minPct → maxPct → 图表高度），
+  // 跟价格线在视觉上分开
+  const pctSeries = useMemo(() => {
+    if (points.length < 2) return { minPct: 0, maxPct: 0, path: '' };
     const base = points[0].v;
-    if (!Number.isFinite(base) || base === 0) return 0;
-    return (v - base) / base * 100;
-  }, [points]);
-  const yToPct = useCallback((yPx: number) => {
-    // Y 像素 → 价格 → %
-    const v = minV + (1 - (yPx - padding.top) / innerH) * range_v;
-    return pctByY(v);
-  }, [minV, range_v, padding.top, innerH, pctByY]);
+    if (!Number.isFinite(base) || base === 0) return { minPct: 0, maxPct: 0, path: '' };
+    const pcts = points.map(p => (p.v - base) / base * 100);
+    const minP = Math.min(...pcts);
+    const maxP = Math.max(...pcts);
+    // 包含 0 在范围内（让 0% 落在可见区域）
+    const lo = Math.min(minP, 0);
+    const hi = Math.max(maxP, 0);
+    const padP = (hi - lo) * 0.05 || 1;
+    const yLo = lo - padP;
+    const yHi = hi + padP;
+    const yForPct = (p: number) => padding.top + (1 - (p - yLo) / (yHi - yLo)) * innerH;
+    const pts = points.map((_p, i) => ({ x: x(i), y: yForPct(pcts[i]) }));
+    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      const c1x = p1.x + (p2.x - p0.x) / 6;
+      const c1y = p1.y + (p2.y - p0.y) / 6;
+      const c2x = p2.x - (p3.x - p1.x) / 6;
+      const c2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+    }
+    return { minPct: yLo, maxPct: yHi, path: d };
+  }, [points, x, innerH, padding.top]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -430,7 +448,6 @@ export function FundChart({
 
           {/* Y-grid lines + 左轴价格标签 + 右轴 % 标签（副 Y 轴） */}
           {yTicks.map((t, i) => {
-            const pct = yToPct(t.y);
             return (
               <g key={i}>
                 <line
@@ -454,7 +471,7 @@ export function FundChart({
                 >
                   {t.v.toFixed(range === 'intraday' ? 4 : 2)}
                 </text>
-                {/* 右轴：涨跌幅 %（相对区间起点） */}
+                {/* 右轴：涨跌幅 %（独立范围 minPct → maxPct） */}
                 <text
                   x={padding.left + innerW + 8}
                   y={t.y + 3}
@@ -464,7 +481,12 @@ export function FundChart({
                   fillOpacity="0.45"
                   className="font-mono tabular-nums"
                 >
-                  {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                  {(() => {
+                    // 把 5 个 Y tick 均匀映射到 [minPct, maxPct]
+                    const frac = 1 - (t.y - padding.top) / innerH;  // 0=底 1=顶
+                    const v = pctSeries.minPct + frac * (pctSeries.maxPct - pctSeries.minPct);
+                    return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+                  })()}
                 </text>
               </g>
             );
@@ -558,6 +580,23 @@ export function FundChart({
             animate={{ pathLength: 1, opacity: 1 }}
             transition={SPRING_DRAW}
           />
+
+          {/* 涨跌幅折线（橙色，类似截图里均价线样式）— 副 Y 轴 */}
+          {pctSeries.path && (
+            <motion.path
+              key={`pct-line-${range}`}
+              d={pctSeries.path}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.85"
+              initial={prefersReducedMotion ? false : { pathLength: 0, opacity: 0 }}
+              animate={{ pathLength: 1, opacity: 0.85 }}
+              transition={{ ...SPRING_DRAW, delay: prefersReducedMotion ? 0 : 0.1 }}
+            />
+          )}
 
           {/* Real data points — visible dots only on real daily closes.
               Skipped during intraday (every interpolated minute would be
