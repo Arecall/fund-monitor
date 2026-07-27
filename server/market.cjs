@@ -534,6 +534,117 @@ async function fetchEastMoneyFlowStockInfo(code, market) {
 }
 
 /**
+ * 东方财富 push2delay — push2 备域名，资金流向稳定
+ *
+ *   背景：
+ *     push2.eastmoney.com 在国内网络环境 socket hang up 严重，family:4 也常失败
+ *     腾讯 qt.gtimg.cn `q=ff_` 接口已废弃（v_pv_none_match）
+ *     雪球 / 163 资金流向均封锁
+ *     唯一稳定可用的备选是 push2delay.eastmoney.com（同样 push2 API，不同 IP 池）
+ *   验证：5 次连续请求均 200，100~600ms 返回，数据与 push2 完全一致
+ *
+ *   字段（与 push2 同 schema）：
+ *     f43  = 现价 / 100
+ *     f103 = 主力净流入额（元）
+ *     f107 = 特大单净流入额（元）— 实测有时返回 1（与 push2 同样问题，字段失真）
+ *     f105 = 大单净流入额（元）
+ *     f104 = 中单净流入额（元）
+ *     f71  = 小单净流入量（手）→ × 当前价 × 100 = 元
+ *     f62  = 主力净流入量（手）
+ *
+ *   缓存 60 秒（与 push2 TTL 对齐）
+ */
+const _emDelayFlowCache = {};
+const EM_DELAY_FLOW_TTL = 60 * 1000;
+
+async function fetchEastMoneyDelayFlowStockInfo(code, market) {
+  if (market !== 'domestic') return null;
+  const c = code.toUpperCase();
+  const cacheKey = `${market}:${c}`;
+  const now = Date.now();
+  const cached = _emDelayFlowCache[cacheKey];
+  if (cached && now - cached.ts < EM_DELAY_FLOW_TTL) {
+    return cached.value;
+  }
+
+  let secid;
+  if (c.startsWith('60') || c.startsWith('68')) secid = `1.${c}`;
+  else if (c.startsWith('00') || c.startsWith('30') || c.startsWith('8') || c.startsWith('BJ')) secid = `0.${c.replace(/^BJ/, '')}`;
+  else {
+    _emDelayFlowCache[cacheKey] = { ts: now, value: null };
+    return null;
+  }
+
+  const url = `https://push2delay.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f103,f107,f105,f104,f71,f62`;
+  try {
+    const r = await axios.get(url, {
+      family: 4,
+      headers: {
+        'Referer': 'https://quote.eastmoney.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      },
+      timeout: 6000,
+    });
+    const d = r.data?.data;
+    if (!d) {
+      _emDelayFlowCache[cacheKey] = { ts: now, value: null };
+      return null;
+    }
+    const current = parseFloat(d.f43) / 100;
+    const mainNet = parseFloat(d.f103) || 0;
+    const superLargeNet = parseFloat(d.f107) || 0;
+    const largeNet = parseFloat(d.f105) || 0;
+    const mediumNet = parseFloat(d.f104) || 0;
+    const smallNetVolume = parseFloat(d.f71) || 0;
+    const mainNetVolume = parseFloat(d.f62) || 0;
+    const smallNet = Number.isFinite(current) && current > 0 ? smallNetVolume * 100 * current : 0;
+    const mainDerived = superLargeNet + largeNet;
+    const value = {
+      current,
+      mainNet,
+      superLargeNet,
+      largeNet,
+      mediumNet,
+      smallNet,
+      mainNetVolume,
+      smallNetVolume,
+      mainDerived,
+      _source: 'push2delay',
+    };
+    _emDelayFlowCache[cacheKey] = { ts: now, value };
+    return value;
+  } catch (e) {
+    console.warn(`[emDelayFlow] ${c} 失败:`, e.message);
+    _emDelayFlowCache[cacheKey] = { ts: now, value: null };
+    return null;
+  }
+}
+
+/**
+ * 个股资金流向统一入口：push2 优先 → push2delay 备域名兜底
+ *   push2.eastmoney.com 经常 socket hang up
+ *   push2delay.eastmoney.com 是 push2 的稳定备选域名（不同 IP 池，同 schema）
+ *   注：曾尝试用腾讯 ff_ 兜底，但该接口已废弃（v_pv_none_match）
+ */
+async function fetchStockCapitalFlow(code, market) {
+  if (market !== 'domestic') return null;
+
+  // 1. 优先 push2
+  try {
+    const em = await fetchEastMoneyFlowStockInfo(code, market);
+    if (em) return em;
+  } catch {}
+
+  // 2. push2 失败 → 切换 push2delay
+  try {
+    return await fetchEastMoneyDelayFlowStockInfo(code, market);
+  } catch (e) {
+    console.warn(`[capitalFlow] ${code} 双域名均失败:`, e.message);
+    return null;
+  }
+}
+
+/**
  * 个股分钟级 K 线（真实逐分钟数据，用于分时图 hover 显示真实成交量/额）
  *
  * A 股 — Sina CN_MarketDataService.getKLineData：
@@ -1039,10 +1150,10 @@ async function getFundValuation(code, kindOverride) {
             result.stockSpecific.turnoverRate = extra.turnoverRate;
           }
         } catch {}
-        // A 股额外追加资金流向（来自东财 push2）
+        // A 股额外追加资金流向（东财优先 → 腾讯兜底）
         if (result.market === 'domestic') {
           try {
-            const flow = await fetchEastMoneyFlowStockInfo(code, result.market);
+            const flow = await fetchStockCapitalFlow(code, result.market);
             if (flow) {
               result.stockSpecific.flow = flow;
             }
@@ -2061,6 +2172,8 @@ module.exports = {
   fetchASHareStockValuation,
   fetchStockMinuteData,
   fetchEastMoneyFlowStockInfo,
+  fetchEastMoneyDelayFlowStockInfo,
+  fetchStockCapitalFlow,
   searchByName,
   getGoldPrices,
 };
