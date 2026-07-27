@@ -1077,7 +1077,10 @@ function parsePingzhongData(jsText) {
  *   后缀：1 = 上证 sh, 0 = 深证 sz, 116 = 港股 116.00700
  * 输出: [{ code: "600519", market: "sh", name: null, exchange: "SH" }, ...]
  */
-function parseStockCodes(codes) {
+function parseStockCodes(codes, opts = {}) {
+  // opts.onlyNonAShare: 当基金被识别为 QDII / 海外基金时，禁用 A 股兜底
+  // （避免 "000660" 这种港股带 bug 后缀被错切成深证）
+  const { onlyNonAShare = false } = opts;
   if (!Array.isArray(codes)) return [];
   return codes.map(raw => {
     const s = String(raw);
@@ -1087,8 +1090,6 @@ function parseStockCodes(codes) {
     //   116 = 港股（早期/特殊格式）
     //   1   = 上证 sh
     //   0   = 深证 sz
-    // 历史 bug：只判了 116 和单字符后缀，导致 105/106 后缀只剥 1 位，
-    //   "NVDA105" 被错误切成 "NVDA10"，"00700106" 被切成 "0070010"。
     if (s.endsWith('105')) {
       // 美股: "NVDA105" → "NVDA"
       const code = s.slice(0, -3).toUpperCase();
@@ -1099,31 +1100,34 @@ function parseStockCodes(codes) {
       const code = s.slice(0, -3);
       return { code, market: 'hk', exchange: 'HK', name: null };
     }
-    if (s.length > 1 && (s.endsWith('1') || s.endsWith('0'))) {
+    if (s.length === 7 && (s.endsWith('1') || s.endsWith('0'))) {
       // A 股: "6030831" → "603083"，"3005020" → "300502"
+      // 7 字符是 pingzhongdata A 股唯一合法格式（A 股基金 + QDII 通过港股通持仓都适用）
+      // QDII 也要走这条，否则港股通的 A 股持仓显示不出来
       const suffix = s.slice(-1);
       const code = s.slice(0, -1);
       const market = suffix === '1' ? 'sh' : 'sz';
       return { code, market, exchange: market.toUpperCase(), name: null };
     }
-    // 无后缀时按代码形态推测（兼容 pingzhongdata 的非标准格式）：
-    //   全字母（"AAPL"/"ICICIBC"） → 美股
-    //   纯数字 5 位（如 00066/00700） → 港股
-    //   6 位数字（00/30/60/68 开头） → A 股
-    //   其他（异常如 "285A"/"2026Q1"） → 保持原样，exchange 留空（让前端显示 ticker）
+    // 无后缀时按代码形态推测：
     const stripped = s;
     if (/^[A-Za-z]+$/.test(stripped)) {
       return { code: stripped.toUpperCase(), market: 'us', exchange: 'US', name: null };
     }
     if (/^\d{3,5}$/.test(stripped)) {
-      // 港股代码范围 1-5 位（1/0001/0285 等老 HK + 5 位新 HK）
-      // padStart(5, '0') 保证 Sina 接口能识别
+      // 港股代码 1-5 位数字（00066/00700/0285 等），padStart 保证 Sina 识别
       return { code: stripped.padStart(5, '0'), market: 'hk', exchange: 'HK', name: null };
     }
-    if (/^\d{6}$/.test(stripped)) {
+    if (onlyNonAShare && /^\d{6}$/.test(stripped)) {
+      // QDII: 6 位纯数字 = 港股 5 位 + bug 后缀，取前 5 位
+      return { code: stripped.slice(0, 5), market: 'hk', exchange: 'HK', name: null };
+    }
+    if (!onlyNonAShare && /^\d{6}$/.test(stripped)) {
+      // A 股基金兜底：6 位数字按 A 股处理
       const market = (stripped.startsWith('60') || stripped.startsWith('68') || stripped.startsWith('8')) ? 'sh' : 'sz';
       return { code: stripped, market, exchange: market.toUpperCase(), name: null };
     }
+    // 其他异常（如 "285A"）→ 原样保留，exchange 空
     return { code: stripped, market: '', exchange: '', name: null };
   });
 }
@@ -1406,7 +1410,12 @@ async function getFundHoldings(code) {
   const basic = await getFundBasicInfo(code);
   if (!basic) return [];
 
-  const stocks = parseStockCodes(basic.raw.stockCodes);
+  // 判断是否 QDII / 海外基金：是的话持仓只可能是港股/美股，
+  // 不走 A 股兜底，避免 "000660"（港股带 bug 后缀）被错切成深证
+  const fundName = basic.name || '';
+  const isNonAShareFund = /QDII|海外|全球|港股|美股|纳斯达克|标普|恒生/i.test(fundName);
+
+  const stocks = parseStockCodes(basic.raw.stockCodes, { onlyNonAShare: isNonAShareFund });
   if (!stocks.length) {
     cache.fundHoldings[code] = { data: [], timestamp: now };
     return [];
