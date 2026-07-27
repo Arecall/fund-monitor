@@ -222,7 +222,10 @@ export function FundDetailPanel({
           kind={kind}
           current={current}
           previous={previous}
-          openPrice={fund.open ? parseFloat(fund.open) : undefined}
+          openPrice={(fund.open ? parseFloat(fund.open) : undefined) ?? (() => {
+            const ssOpen = (fund as any).stockSpecific?.open;
+            return typeof ssOpen === 'number' && ssOpen > 0 ? ssOpen : undefined;
+          })()}
           height={300}
           history={history}
           historyLoading={historyLoading}
