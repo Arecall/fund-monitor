@@ -236,6 +236,10 @@ async function fetchHKStockValuation(code) {
   const changePct = parseFloat(parts[8]);
   const date = parts[17];    // YYYY/MM/DD
   const time = parts[18];    // HH:MM:SS
+  // Sina rt_hk 字段顺序实测：high(4) / open(5) / low(9)；暴露给前端做分时图新插值
+  const openVal = parseFloat(parts[5]);
+  const highVal = parseFloat(parts[4]);
+  const lowVal  = parseFloat(parts[9]);
   if (isNaN(current) || current <= 0) return null;
   return {
     fundcode: code.toUpperCase(),
@@ -245,7 +249,14 @@ async function fetchHKStockValuation(code) {
     gsz: current.toFixed(4),
     gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
     gztime: date && time ? `${date.replace(/\//g, '-')} ${time}` : '',
-    market: 'hk'
+    market: 'hk',
+    open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
+    stockSpecific: {
+      open: isNaN(openVal) || openVal <= 0 ? null : openVal,
+      high: isNaN(highVal) || highVal <= 0 ? null : highVal,
+      low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      change: isNaN(change) ? 0 : change,
+    }
   };
 }
 
@@ -276,6 +287,9 @@ async function fetchUSStockValuation(ticker) {
   const changePct = parseFloat(parts[2]);
   const datetime = parts[3] || '';        // "2026-07-20 17:10:01"（已是 ISO-ish）
   const change = parseFloat(parts[4]);
+  const openVal = parseFloat(parts[5]);
+  const highVal = parseFloat(parts[6]);
+  const lowVal  = parseFloat(parts[7]);
   let prevClose = parts.length > 26 ? parseFloat(parts[26]) : NaN;
   if ((isNaN(prevClose) || prevClose <= 0) && !isNaN(current) && !isNaN(change)) {
     prevClose = current - change;
@@ -310,7 +324,14 @@ async function fetchUSStockValuation(ticker) {
     gsz: current.toFixed(4),
     gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
     gztime,
-    market: 'us'
+    market: 'us',
+    open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
+    stockSpecific: {
+      open: isNaN(openVal) || openVal <= 0 ? null : openVal,
+      high: isNaN(highVal) || highVal <= 0 ? null : highVal,
+      low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      change: isNaN(change) ? 0 : change,
+    }
   };
 }
 
