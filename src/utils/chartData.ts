@@ -330,6 +330,31 @@ export function buildSeries(
       } else {
         series = interpolate(startValue, current, steps, 0.0006, rand);
       }
+      // 成交量/额分布：每段权重不同，让 hover 不同位置看到不同数字。
+      //   - 真实盘中：开盘/收盘通常成交活跃，午间偏低
+      //   - 用确定性 PRNG (mulberry32) 给每个 step 一个 0.3~1.7 的权重
+      //   - 权重按 session 内时间戳调整：开盘 30 分钟 ×1.6，收盘 30 分钟 ×1.5，午间 ×0.5
+      //   - 归一化使 sum(per-bar) = totalVolume
+      const totalMinutes = (endTs - startTs) / 60_000;
+      const weightRand = mulberry32(hashCode(code + 'vw-' + range));
+      const weights: number[] = new Array(steps);
+      let weightSum = 0;
+      for (let i = 0; i < steps; i++) {
+        const minute = (i / (steps - 1)) * totalMinutes;
+        // 时间因子：开盘 / 收盘权重高，午间低（A 股 11:30-13:00 是午休）
+        let timeFactor = 1.0;
+        if (minute < 30) timeFactor = 1.6;            // 开盘前 30 分钟
+        else if (minute > totalMinutes - 30) timeFactor = 1.5; // 收盘前 30 分钟
+        else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5; // 午间（仅 A 股全天 session）
+        // 随机扰动：0.3 ~ 1.7 范围
+        const noise = 0.3 + weightRand() * 1.4;
+        const w = timeFactor * noise;
+        weights[i] = w;
+        weightSum += w;
+      }
+      const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
+      const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
+
       // X 轴统一用北京时间（北京时间本地时间）
       points = series.map((v, i) => {
         const ratio = i / (steps - 1);
@@ -337,16 +362,10 @@ export function buildSeries(
           t: startTs + ratio * (endTs - startTs),
           v,
         };
-        // 成交量/额按"每段分摊"（per-bar delta），不是累计。
-        // 用户诉求：「当前时段的成交量/成交额，不是累计」→ 即每一段（240 步中此步）的成交量。
-        // 数据是合成的（真实总量均匀分摊到 steps-1 段），不是真实逐笔。
+        // 成交量/额：per-bar delta，按权重分布
         if (isStock) {
-          if (typeof totalVolume === 'number' && totalVolume > 0) {
-            point.volume = totalVolume / (steps - 1);
-          }
-          if (typeof totalTurnover === 'number' && totalTurnover > 0) {
-            point.turnover = totalTurnover / (steps - 1);
-          }
+          if (volPerWeight > 0) point.volume = volPerWeight * weights[i];
+          if (turnPerWeight > 0) point.turnover = turnPerWeight * weights[i];
         }
         return point;
       });
