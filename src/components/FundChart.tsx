@@ -158,15 +158,69 @@ export function FundChart({
       .join(' ');
   }, [points, x, y]);
 
+  // Catmull-Rom 样条曲线：把折线（多段直线）转成平滑曲线，消除锯齿。
+  // 仅 3+ 点时有效，否则退化为单段直线。
+  const smoothLinePath = useMemo(() => {
+    if (points.length < 2) return '';
+    if (points.length === 2) return linePath;
+    const pts = points.map((p, i) => ({ x: x(i), y: y(p.v) }));
+    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      // Catmull-Rom → Cubic Bezier 转换（tension = 0.5 / 6）
+      const c1x = p1.x + (p2.x - p0.x) / 6;
+      const c1y = p1.y + (p2.y - p0.y) / 6;
+      const c2x = p2.x - (p3.x - p1.x) / 6;
+      const c2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+    }
+    return d;
+  }, [points, x, y, linePath]);
+
   const areaPath = useMemo(() => {
     if (points.length === 0) return '';
     const first = `M ${x(0).toFixed(2)} ${(padding.top + innerH).toFixed(2)}`;
-    const top = points
-      .map((p, i) => `L ${x(i).toFixed(2)} ${y(p.v).toFixed(2)}`)
-      .join(' ');
+    // 顶部跟随平滑曲线（去掉 smoothLinePath 开头的 M 换成 L）
+    const top = smoothLinePath.replace(/^M /, 'L ');
     const last = `L ${x(points.length - 1).toFixed(2)} ${(padding.top + innerH).toFixed(2)} Z`;
     return `${first} ${top} ${last}`;
-  }, [points, x, y, padding.top, innerH]);
+  }, [points, x, smoothLinePath, padding.top, innerH]);
+
+  // 趋势线：线性回归（最小二乘）拟合的首尾连线，仅股票显示
+  // slope = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
+  const trendLine = useMemo(() => {
+    if (kind !== 'stock' || points.length < 3) return null;
+    const values = points.map(p => p.v);
+    const n = values.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (let i = 0; i < n; i++) {
+      sumX += i;
+      sumY += values[i];
+      sumXY += i * values[i];
+      sumXX += i * i;
+    }
+    const denom = n * sumXX - sumX * sumX;
+    if (denom === 0) return null;
+    const slope = (n * sumXY - sumX * sumY) / denom;
+    const intercept = (sumY - slope * sumX) / n;
+    const yValStart = intercept;
+    const yValEnd = intercept + slope * (n - 1);
+    // 趋势线两端点若在视图内才画
+    const inRange = (v: number) => v >= minV && v <= maxV;
+    if (!inRange(yValStart) && !inRange(yValEnd)) return null;
+    return {
+      x1: x(0),
+      y1: y(yValStart),
+      x2: x(n - 1),
+      y2: y(yValEnd),
+      yValStart,
+      yValEnd,
+      slope,
+    };
+  }, [points, x, y, kind, minV, maxV]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -369,18 +423,44 @@ export function FundChart({
           className="block touch-none select-none"
         >
           <defs>
+            {/* 面积渐变：3 stop 过渡（顶部浓 → 中段淡 → 底部 0），更柔顺 */}
             <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.32" />
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.42" />
+              <stop offset="55%"  stopColor="var(--color-up)" stopOpacity="0.16" />
               <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0" />
             </linearGradient>
             <linearGradient id="gDown" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.32" />
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.42" />
+              <stop offset="55%"  stopColor="var(--color-down)" stopOpacity="0.16" />
               <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0" />
             </linearGradient>
             <linearGradient id="gFlat" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.18" />
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.24" />
+              <stop offset="55%"  stopColor="var(--color-flat)" stopOpacity="0.10" />
               <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0" />
             </linearGradient>
+            {/* 线条渐变：横向（左淡 → 右浓），强调最新数据 */}
+            <linearGradient id="gLineUp" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="1" />
+            </linearGradient>
+            <linearGradient id="gLineDown" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="1" />
+            </linearGradient>
+            <linearGradient id="gLineFlat" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="1" />
+            </linearGradient>
+            {/* 趋势线渐变（淡色，强调辅助而非主线） */}
+            <linearGradient id="gTrend" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="currentColor" stopOpacity="0.18" />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0.42" />
+            </linearGradient>
+            {/* 线条下方柔光（光晕） */}
+            <filter id="lineGlow" x="-5%" y="-50%" width="110%" height="200%">
+              <feGaussianBlur stdDeviation="2.4" />
+            </filter>
           </defs>
 
           {/* Y-grid lines */}
@@ -468,12 +548,46 @@ export function FundChart({
             transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
           />
 
-          {/* Line — animates on range change */}
+          {/* 趋势线（线性回归拟合，首尾连线，仅股票）。先画，在线之下 */}
+          {trendLine && (
+            <motion.line
+              key={`trend-${range}`}
+              x1={trendLine.x1}
+              y1={trendLine.y1}
+              x2={trendLine.x2}
+              y2={trendLine.y2}
+              stroke="url(#gTrend)"
+              strokeWidth="1.2"
+              strokeDasharray="4 4"
+              strokeLinecap="round"
+              initial={prefersReducedMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ ...SPRING_DRAW, delay: prefersReducedMotion ? 0 : 0.15 }}
+            />
+          )}
+
+          {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
           <motion.path
-            key={`line-${range}`}
-            d={linePath}
+            key={`line-glow-${range}`}
+            d={smoothLinePath}
             fill="none"
             stroke={colorVar}
+            strokeWidth="3.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity="0.18"
+            filter="url(#lineGlow)"
+            initial={prefersReducedMotion ? false : { pathLength: 0 }}
+            animate={{ pathLength: 1 }}
+            transition={{ ...SPRING_DRAW, duration: 0.7 }}
+          />
+
+          {/* Line — 用平滑曲线（Catmull-Rom），渐变 stroke，左淡右浓 */}
+          <motion.path
+            key={`line-${range}`}
+            d={smoothLinePath}
+            fill="none"
+            stroke={`url(#gLine${isUp ? 'Up' : isDown ? 'Down' : 'Flat'})`}
             strokeWidth="1.75"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -663,7 +777,7 @@ export function FundChart({
       </div>
 
       {/* Footer — change summary for the active range */}
-      <div className="mt-2 flex items-center gap-3 text-[11px]">
+      <div className="mt-2 flex items-center gap-3 text-[11px] flex-wrap">
         <span className="flex items-center gap-1 font-semibold" style={{ color: colorVar }}>
           {isUp ? <TrendingUp size={12} /> : isDown ? <TrendingDown size={12} /> : <Minus size={12} />}
           {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
@@ -677,6 +791,25 @@ export function FundChart({
             <span className="ml-2 text-slate-400">· {baselineLabel} {openPrice.toFixed(4)}</span>
           )}
         </span>
+        {trendLine && (() => {
+          // 趋势方向：以拟合斜率 vs 价格区间的相对值来判断
+          const span = Math.max(maxV - minV, 1e-6);
+          const normSlope = trendLine.slope * (points.length - 1) / span;
+          const trendUp = normSlope > 0.05;
+          const trendDown = normSlope < -0.05;
+          return (
+            <span
+              className="flex items-center gap-1 text-slate-500 ml-auto"
+              title={`线性回归拟合 · 斜率 ${trendLine.slope.toFixed(4)}（占区间 ${(Math.abs(normSlope) * 100).toFixed(1)}%）`}
+            >
+              <span className="inline-block w-3 h-px bg-current opacity-50" />
+              趋势
+              {trendUp ? <TrendingUp size={11} className="text-[var(--color-up)]" />
+                : trendDown ? <TrendingDown size={11} className="text-[var(--color-down)]" />
+                : <Minus size={11} className="text-slate-400" />}
+            </span>
+          );
+        })()}
       </div>
     </div>
   );
