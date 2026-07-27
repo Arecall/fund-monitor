@@ -1099,10 +1099,32 @@ function parseStockCodes(codes) {
       const code = s.slice(0, -3);
       return { code, market: 'hk', exchange: 'HK', name: null };
     }
-    const suffix = s.slice(-1);
-    const code = s.slice(0, -1);
-    const market = suffix === '1' ? 'sh' : suffix === '0' ? 'sz' : '';
-    return { code, market, exchange: market.toUpperCase(), name: null };
+    if (s.length > 1 && (s.endsWith('1') || s.endsWith('0'))) {
+      // A 股: "6030831" → "603083"，"3005020" → "300502"
+      const suffix = s.slice(-1);
+      const code = s.slice(0, -1);
+      const market = suffix === '1' ? 'sh' : 'sz';
+      return { code, market, exchange: market.toUpperCase(), name: null };
+    }
+    // 无后缀时按代码形态推测（兼容 pingzhongdata 的非标准格式）：
+    //   全字母（"AAPL"/"ICICIBC"） → 美股
+    //   纯数字 5 位（如 00066/00700） → 港股
+    //   6 位数字（00/30/60/68 开头） → A 股
+    //   其他（异常如 "285A"/"2026Q1"） → 保持原样，exchange 留空（让前端显示 ticker）
+    const stripped = s;
+    if (/^[A-Za-z]+$/.test(stripped)) {
+      return { code: stripped.toUpperCase(), market: 'us', exchange: 'US', name: null };
+    }
+    if (/^\d{3,5}$/.test(stripped)) {
+      // 港股代码范围 1-5 位（1/0001/0285 等老 HK + 5 位新 HK）
+      // padStart(5, '0') 保证 Sina 接口能识别
+      return { code: stripped.padStart(5, '0'), market: 'hk', exchange: 'HK', name: null };
+    }
+    if (/^\d{6}$/.test(stripped)) {
+      const market = (stripped.startsWith('60') || stripped.startsWith('68') || stripped.startsWith('8')) ? 'sh' : 'sz';
+      return { code: stripped, market, exchange: market.toUpperCase(), name: null };
+    }
+    return { code: stripped, market: '', exchange: '', name: null };
   });
 }
 
@@ -1115,6 +1137,9 @@ async function fetchStockQuotes(stockList) {
   const aCodes  = stockList.filter(s => s.exchange === 'SH' || s.exchange === 'SZ');
   const hkCodes = stockList.filter(s => s.exchange === 'HK');
   const usCodes = stockList.filter(s => s.exchange === 'US');
+  // 没有 exchange 标识的"野码"（如 pingzhongdata 里 285A / 印度股票 ICICIBC 等），
+  // 兜底尝试三种接口，能命中哪个算哪个。
+  const wildCodes = stockList.filter(s => !s.exchange);
 
   const out = new Map();
 
@@ -1205,6 +1230,58 @@ async function fetchStockQuotes(stockList) {
       }
     } catch (e) {
       console.warn('[holdings] sina 美股行情失败:', e.message);
+    }
+  }
+
+  // 野码（无 exchange）兜底：尝试三种接口，能命中哪个算哪个。
+  // 注：避免对每个野码单独发请求，把它们批量塞进三种接口里。
+  if (wildCodes.length > 0) {
+    const wildSyms = wildCodes.map(s => s.code);
+    // 美股（gb_<lower>）
+    const usTry = wildSyms.filter(c => /^[A-Za-z]+$/.test(c)).map(c => `gb_${c.toLowerCase()}`);
+    // 港股（rt_hk<5位>）
+    const hkTry = wildSyms.filter(c => /^\d{5}$/.test(c)).map(c => `rt_hk${c}`);
+    // A 股（6位带 sh/sz 前缀的，野码里这种情况比较少）
+    const aTry  = wildSyms.filter(c => /^\d{6}$/.test(c)).map(c => `sh${c}`);
+
+    const allTry = [...usTry, ...hkTry, ...aTry].join(',');
+    if (allTry) {
+      try {
+        const r = await axios.get(`http://hq.sinajs.cn/list=${allTry}`, {
+          responseType: 'arraybuffer',
+          headers: { 'Referer': 'http://finance.sina.com.cn' },
+          timeout: 6000
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        for (const line of text.split('\n').filter(Boolean)) {
+          const m = line.match(/var hq_str_([a-z_0-9]+)="([^"]+)"/);
+          if (!m) continue;
+          const sym = m[1];
+          const parts = m[2].split(',');
+          if (parts.length < 5) continue;
+          let name, price, changePct;
+          if (sym.startsWith('gb_')) {
+            name = parts[0];
+            price = parseFloat(parts[1]);
+            changePct = parseFloat(parts[2]);
+          } else if (sym.startsWith('rt_hk')) {
+            name = parts[1];
+            price = parseFloat(parts[6] >= 0 ? parts[6] : parts[2]);
+            // 港股用 parts[8] 直接拿涨跌幅%
+            changePct = parseFloat(parts[8]);
+          } else if (/^sh\d{6}$/.test(sym)) {
+            name = parts[0];
+            price = parseFloat(parts[1]);
+            const prevClose = parseFloat(parts[2]);
+            changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+          }
+          if (name && Number.isFinite(price)) {
+            out.set(sym, { name, price, changePct: Number.isFinite(changePct) ? changePct : null });
+          }
+        }
+      } catch (e) {
+        console.warn('[holdings] sina 野码行情失败:', e.message);
+      }
     }
   }
 
@@ -1344,14 +1421,25 @@ async function getFundHoldings(code) {
     } else if (s.exchange === 'US') {
       quoteKey = `gb_${s.code.toLowerCase()}`;
       displayCode = s.code;
-    } else {
+    } else if (s.exchange === 'SH' || s.exchange === 'SZ') {
       quoteKey = `${s.market}${s.code}`;
-      displayCode = `${s.code}`;
+      displayCode = s.code;
+    } else {
+      // 野码：尝试多种 quoteKey（fetchStockQuotes 已经塞进所有可能的接口）
+      const candidates = [
+        `gb_${s.code.toLowerCase()}`,
+        `rt_hk${s.code}`,
+        `sh${s.code}`,
+        `sz${s.code}`,
+        `bj${s.code}`,
+      ];
+      quoteKey = candidates.find(k => quotes.has(k)) || '';
+      displayCode = s.code;
     }
     const q = quotes.get(quoteKey);
     return {
       code: s.code,
-      exchange: s.exchange,
+      exchange: s.exchange || '',
       displayCode,
       name: q ? q.name : '—',
       price: q ? q.price : null,
