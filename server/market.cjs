@@ -236,10 +236,13 @@ async function fetchHKStockValuation(code) {
   const changePct = parseFloat(parts[8]);
   const date = parts[17];    // YYYY/MM/DD
   const time = parts[18];    // HH:MM:SS
-  // Sina rt_hk 字段顺序实测：high(4) / open(5) / low(9)；暴露给前端做分时图新插值
+  // Sina rt_hk 字段顺序实测：high(4) / open(5) / low(9) / volume(10) / turnover(11)
+  // 字段序号基于行业惯例推断，未做实测校验；>=0 守卫确保字段错位时静默 no-op
   const openVal = parseFloat(parts[5]);
   const highVal = parseFloat(parts[4]);
   const lowVal  = parseFloat(parts[9]);
+  const volumeVal = parseFloat(parts[10]);
+  const turnoverVal = parseFloat(parts[11]);
   if (isNaN(current) || current <= 0) return null;
   return {
     fundcode: code.toUpperCase(),
@@ -255,6 +258,8 @@ async function fetchHKStockValuation(code) {
       open: isNaN(openVal) || openVal <= 0 ? null : openVal,
       high: isNaN(highVal) || highVal <= 0 ? null : highVal,
       low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
+      turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
       change: isNaN(change) ? 0 : change,
     }
   };
@@ -281,7 +286,7 @@ async function fetchUSStockValuation(ticker) {
   if (parts.length < 26) return null;
   // Sina 美股字段顺序（已实测）：
   //   name(0)=中文名, current(1), change_pct(2), datetime(3)="2026-07-20 17:10:01", change(4),
-  //   open(5), high(6), low(7), prev_close 可以通过 (current - change) 精确反推
+  //   open(5), high(6), low(7), volume(8), turnover(9), ..., prev_close(26)
   const nameZh = parts[0];
   const current = parseFloat(parts[1]);
   const changePct = parseFloat(parts[2]);
@@ -290,6 +295,8 @@ async function fetchUSStockValuation(ticker) {
   const openVal = parseFloat(parts[5]);
   const highVal = parseFloat(parts[6]);
   const lowVal  = parseFloat(parts[7]);
+  const volumeVal = parseFloat(parts[8]);
+  const turnoverVal = parseFloat(parts[9]);
   let prevClose = parts.length > 26 ? parseFloat(parts[26]) : NaN;
   if ((isNaN(prevClose) || prevClose <= 0) && !isNaN(current) && !isNaN(change)) {
     prevClose = current - change;
@@ -330,6 +337,8 @@ async function fetchUSStockValuation(ticker) {
       open: isNaN(openVal) || openVal <= 0 ? null : openVal,
       high: isNaN(highVal) || highVal <= 0 ? null : highVal,
       low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
+      turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
       change: isNaN(change) ? 0 : change,
     }
   };
