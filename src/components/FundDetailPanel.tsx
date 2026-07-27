@@ -239,25 +239,32 @@ export function FundDetailPanel({
               {basic.scale.size!.toFixed(2)}
               <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
             </span>
-            <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
-              <span className="text-slate-400">季环比</span>
+            <span
+              className="text-[10px] mt-0.5 flex items-center gap-1 whitespace-nowrap"
+              title={`较上一季度（${basic.scale.reportDate || ''}）规模变化`}
+            >
               {basic.scale.changePct != null && (
                 <span
                   className={
-                    basic.scale.changePct > 0
+                    'inline-flex items-center gap-0.5 font-mono font-semibold tabular-nums ' +
+                    (basic.scale.changePct > 0
                       ? 'text-[var(--color-up)]'
                       : basic.scale.changePct < 0
                         ? 'text-[var(--color-down)]'
-                        : 'text-slate-400'
+                        : 'text-slate-400')
                   }
-                  title={`较上一季度（${basic.scale.reportDate ? basic.scale.reportDate : ''}）规模变化`}
                 >
+                  {basic.scale.changePct > 0 ? (
+                    <TrendingUp size={11} strokeWidth={2.5} className="shrink-0" />
+                  ) : basic.scale.changePct < 0 ? (
+                    <TrendingDown size={11} strokeWidth={2.5} className="shrink-0" />
+                  ) : null}
                   {basic.scale.changePct > 0 ? '+' : ''}
                   {basic.scale.changePct.toFixed(2)}%
                 </span>
               )}
               {basic.scale.reportDate && (
-                <span className="font-mono tabular-nums">
+                <span className="font-mono tabular-nums text-slate-400">
                   · {basic.scale.reportDate.slice(5)}
                 </span>
               )}
