@@ -189,23 +189,18 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 涨跌幅折线：% 累计值映射到独立 Y 范围（minPct → maxPct → 图表高度），
-  // 跟价格线在视觉上分开
-  const pctSeries = useMemo(() => {
-    if (points.length < 2) return { minPct: 0, maxPct: 0, path: '' };
-    const base = points[0].v;
-    if (!Number.isFinite(base) || base === 0) return { minPct: 0, maxPct: 0, path: '' };
-    const pcts = points.map(p => (p.v - base) / base * 100);
-    const minP = Math.min(...pcts);
-    const maxP = Math.max(...pcts);
-    // 包含 0 在范围内（让 0% 落在可见区域）
-    const lo = Math.min(minP, 0);
-    const hi = Math.max(maxP, 0);
-    const padP = (hi - lo) * 0.05 || 1;
-    const yLo = lo - padP;
-    const yHi = hi + padP;
-    const yForPct = (p: number) => padding.top + (1 - (p - yLo) / (yHi - yLo)) * innerH;
-    const pts = points.map((_p, i) => ({ x: x(i), y: yForPct(pcts[i]) }));
+  // 均价折线（类似截图里橙色 SMA / VWAP 风格）：用 20 周期简单移动平均
+  // 跟价格线不重合（MA 滞后、平滑），给"涨跌幅度"做参考基线
+  const maSeries = useMemo(() => {
+    if (points.length < 2) return { path: '', last: 0 };
+    const N = Math.min(20, points.length);
+    const sma = (i: number) => {
+      const start = Math.max(0, i - N + 1);
+      let sum = 0, cnt = 0;
+      for (let k = start; k <= i; k++) { sum += points[k].v; cnt++; }
+      return sum / cnt;
+    };
+    const pts = points.map((_p, i) => ({ x: x(i), y: y(sma(i)) }));
     let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[i - 1] || pts[i];
@@ -218,8 +213,20 @@ export function FundChart({
       const c2y = p2.y - (p3.y - p1.y) / 6;
       d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
     }
-    return { minPct: yLo, maxPct: yHi, path: d };
-  }, [points, x, innerH, padding.top]);
+    return { path: d, last: sma(points.length - 1) };
+  }, [points, x, y]);
+
+  // 副 Y 轴：均价相对首点的 % 偏离（用于 5 个 % 标签）
+  const pctSeries = useMemo(() => {
+    if (points.length < 2) return { minPct: 0, maxPct: 0, last: 0 };
+    const base = points[0].v;
+    if (!Number.isFinite(base) || base === 0) return { minPct: 0, maxPct: 0, last: 0 };
+    const pcts = points.map(p => (p.v - base) / base * 100);
+    const lo = Math.min(Math.min(...pcts), 0);
+    const hi = Math.max(Math.max(...pcts), 0);
+    const padP = (hi - lo) * 0.05 || 1;
+    return { minPct: lo - padP, maxPct: hi + padP, last: pcts[pcts.length - 1] };
+  }, [points]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -581,11 +588,11 @@ export function FundChart({
             transition={SPRING_DRAW}
           />
 
-          {/* 涨跌幅折线（橙色，类似截图里均价线样式）— 副 Y 轴 */}
-          {pctSeries.path && (
+          {/* 均价线（橙色 20 周期 SMA，类似截图里均价线样式）— 副 Y 轴标 % 偏离 */}
+          {maSeries.path && (
             <motion.path
-              key={`pct-line-${range}`}
-              d={pctSeries.path}
+              key={`ma-line-${range}`}
+              d={maSeries.path}
               fill="none"
               stroke="#f59e0b"
               strokeWidth="1.25"
