@@ -1289,6 +1289,91 @@ async function fetchStockQuotes(stockList) {
     }
   }
 
+  // ── 腾讯兜底 ──────────────────────────────────────────
+  // Sina 港股 rt_hk 不覆盖所有小票（如 00593 梦魇建材），美股 gb_ 对部分 OTC 不全。
+  // 找出 out 里还没命中的股票，批量打腾讯 qt.gtimg.cn（覆盖率更广）。
+  if (stockList.length > 0) {
+    const missing = stockList.filter(s => {
+      // 计算对应的 Sina quoteKey
+      let k;
+      if (s.exchange === 'SH' || s.exchange === 'SZ') k = `${s.market}${s.code}`;
+      else if (s.exchange === 'HK') k = `rt_hk${s.code}`;
+      else if (s.exchange === 'US') k = `gb_${s.code.toLowerCase()}`;
+      else {
+        // 野码：尝试的多种 key 看哪个命中
+        const wilds = [`gb_${s.code.toLowerCase()}`, `rt_hk${s.code}`, `sh${s.code}`, `sz${s.code}`, `bj${s.code}`];
+        return !wilds.some(wk => out.has(wk));
+      }
+      // 已有数据且价格有效 → 不补
+      const v = out.get(k);
+      return !(v && Number.isFinite(v.price) && v.price > 0);
+    });
+
+    if (missing.length > 0) {
+      const syms = missing.map(s => {
+        if (s.exchange === 'SH' || s.exchange === 'SZ') return `${s.market}${s.code}`;
+        if (s.exchange === 'HK') return `hk${s.code.padStart(5, '0')}`;
+        if (s.exchange === 'US') return `us${s.code.toLowerCase()}`;
+        // 野码：尝试所有形态
+        const c = s.code;
+        if (/^[A-Za-z]+$/.test(c)) return `us${c.toLowerCase()}`;
+        if (/^\d{5}$/.test(c)) return `hk${c}`;
+        if (/^\d{6}$/.test(c)) return `sh${c}`;
+        return c;
+      }).join(',');
+      try {
+        const r = await axios.get(`http://qt.gtimg.cn/q=${syms}`, {
+          responseType: 'arraybuffer',
+          headers: { 'Referer': 'https://gu.qq.com/' },
+          family: 4,
+          timeout: 8000,
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        for (const line of text.split('\n').filter(Boolean)) {
+          // v_sh600519="1~..."  v_hk00700="100~..."  v_usAAPL="200~..."
+          const m = line.match(/v_([a-z0-9]+)="([^"]+)"/);
+          if (!m || !m[2]) continue;          // 腾讯对未知代码返回空串
+          const sym = m[1];
+          const parts = m[2].split('~');
+          if (parts.length < 50) continue;
+          let name, price, changePct, quoteKey;
+          if (sym.startsWith('sh') || sym.startsWith('sz') || sym.startsWith('bj')) {
+            // A 股字段：[3]=现价 [4]=昨收 [5]=今开 [32]=涨跌 [33]=涨幅%
+            //           [34]=最高 [35]=最低 [36]=量 [37]=额
+            // 但 parts 长度随市场而异，统一按实测索引
+            name = parts[1];
+            price = parseFloat(parts[3]);
+            const prevClose = parseFloat(parts[4]);
+            changePct = parseFloat(parts[33]);
+            quoteKey = sym;
+          } else if (sym.startsWith('hk')) {
+            // 港股：[3]=现价 [4]=昨收 [5]=今开 [33]=涨幅% [34]=最高 [35]=最低
+            //       [36]=量 [37]=额 [38]=换手率
+            name = parts[1];
+            price = parseFloat(parts[3]);
+            changePct = parseFloat(parts[32]);
+            quoteKey = `rt_hk${sym.slice(2)}`;
+          } else if (sym.startsWith('us')) {
+            // 美股：[1]=现价 [2]=涨跌幅% [3]=时间 [29]=成交量
+            name = parts[0];
+            price = parseFloat(parts[1]);
+            changePct = parseFloat(parts[2]);
+            quoteKey = `gb_${sym.slice(2)}`;
+          }
+          if (name && Number.isFinite(price) && price > 0) {
+            out.set(quoteKey, {
+              name,
+              price,
+              changePct: Number.isFinite(changePct) ? changePct : null,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[holdings] tencent 兜底失败:', e.message);
+      }
+    }
+  }
+
   return out;
 }
 
