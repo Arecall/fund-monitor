@@ -1204,6 +1204,7 @@ async function getFundHistory(code, days = 30, kindOverride) {
     const kline = await fetchStockKLineHistory(code, days);
     const data = kline.map(k => ({ date: k.date, dwjz: k.close })).filter(r => r.dwjz > 0);
     if (data.length > 0) {
+      attachMa10(data);
       cache.fundHistory[code] = { data, timestamp: now, days: data.length };
       return data.slice(-days);
     }
@@ -1241,12 +1242,28 @@ async function getFundHistory(code, days = 30, kindOverride) {
       // 接口按日期倒序返回，这里升序排以便前端按时序绘图
       .sort((a, b) => a.date.localeCompare(b.date));
 
+    attachMa10(data);
     cache.fundHistory[code] = { data, timestamp: now, days: data.length };
     return data.slice(-days);
   } catch (error) {
     console.error(`[history] 抓取基金 ${code} 历史净值失败:`, error.message);
     if (cached) return cached.data.slice(-days);
     return [];
+  }
+}
+
+/**
+ * 在历史数据数组上原地补 ma10 字段：当前点 + 前 9 个交易日的 dwjz 算术平均。
+ * 少于 10 个交易日的早期点 ma10=null（前端据此隐藏 MA10 线起点）。
+ * 数据须已按日期升序排列。
+ */
+function attachMa10(rows) {
+  const N = 10;
+  for (let i = 0; i < rows.length; i++) {
+    if (i < N - 1) { rows[i].ma10 = null; continue; }
+    let sum = 0;
+    for (let k = i - N + 1; k <= i; k++) sum += rows[k].dwjz;
+    rows[i].ma10 = sum / N;
   }
 }
 

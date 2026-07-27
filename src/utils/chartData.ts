@@ -28,6 +28,8 @@ export interface ChartPoint {
   real?: boolean;
   /** Optional display time (e.g. for US chart, use NY local time) */
   displayTime?: string;
+  /** 10 周期简单移动平均（来自后端历史净值接口）。分时图不设此字段 */
+  ma10?: number | null;
   /** 累计成交量（手/股，A 股单位"手"=100股；港美股单位"股"）。仅股票分时图有 */
   volume?: number;
   /** 累计成交额（元）。仅股票分时图有 */
@@ -267,10 +269,11 @@ export function buildSeries(
     const points: ChartPoint[] = slice.map(p => ({
       t: dateToTs(p.date),
       v: p.dwjz,
+      ma10: typeof p.ma10 === 'number' ? p.ma10 : null,
       real: true,
     }));
     if (current > 0 && current !== previous) {
-      points.push({ t: now, v: current, real: false });
+      points.push({ t: now, v: current, ma10: null, real: false });
     }
     return {
       points,
@@ -286,10 +289,11 @@ export function buildSeries(
     const points: ChartPoint[] = slice.map(p => ({
       t: dateToTs(p.date),
       v: p.dwjz,
+      ma10: typeof p.ma10 === 'number' ? p.ma10 : null,
       real: true,
     }));
     if (current > 0 && current !== previous) {
-      points.push({ t: now, v: current, real: false });
+      points.push({ t: now, v: current, ma10: null, real: false });
     }
     return {
       points,

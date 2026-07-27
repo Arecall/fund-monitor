@@ -182,6 +182,8 @@ export async function fetchFundValuation(code: string, kind?: 'fund' | 'stock'):
 export interface FundHistoryPoint {
   date: string;        // YYYY-MM-DD
   dwjz: number;        // 单位净值
+  /** 10 周期简单移动平均（基于历史 dwjz 计算）。少于 10 个交易日时为 null */
+  ma10?: number | null;
 }
 
 /**

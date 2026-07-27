@@ -224,6 +224,37 @@ export function FundChart({
     return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
   }, [points, x, y]);
 
+  // MA10 均价线（10 周期简单移动平均），数据来自后端 history 接口的 ma10 字段。
+  // 仅在 1D / 1W / 1M（非分时）绘制；分时图不画。前 9 个交易日 ma10=null。
+  const maSeries = useMemo(() => {
+    if (range === 'intraday' || points.length < 2) return { path: '', last: 0, perPoint: [] as (number | null)[] };
+    const vals: (number | null)[] = points.map(p => (typeof p.ma10 === 'number' ? p.ma10 : null));
+    const firstIdx = vals.findIndex(v => typeof v === 'number');
+    if (firstIdx === -1) return { path: '', last: 0, perPoint: vals };
+
+    const segments: string[] = [];
+    let inSeg = false;
+    let lastIdx = -1;
+    for (let i = firstIdx; i < vals.length; i++) {
+      const v = vals[i];
+      if (typeof v === 'number') {
+        const px = x(i);
+        const py = y(v);
+        if (!inSeg) {
+          segments.push(`M ${px.toFixed(2)} ${py.toFixed(2)}`);
+          inSeg = true;
+        } else {
+          segments.push(`L ${px.toFixed(2)} ${py.toFixed(2)}`);
+        }
+        lastIdx = i;
+      } else {
+        inSeg = false;
+      }
+    }
+    const lastValid = lastIdx >= 0 ? vals[lastIdx] : null;
+    return { path: segments.join(' '), last: typeof lastValid === 'number' ? lastValid : 0, perPoint: vals };
+  }, [points, range, x, y]);
+
   // 副 Y 轴：均价（VWAP）相对首点的 % 偏离（5 个 % 标签与橙色均价线对齐）。
   // 没有均价线时回退到价格偏离，避免副轴空白。
   const pctSeries = useMemo(() => {
@@ -299,6 +330,10 @@ export function FundChart({
   // hover 处的均价：来自 vwapSeries.perPoint（缺 VWAP 时 undefined → 不显示均价行）
   const hoverVwap = hoverIdx !== null && vwapSeries.perPoint.length === points.length
     ? vwapSeries.perPoint[hoverIdx]
+    : undefined;
+  // hover 处的 MA10：仅 1D/1W/1M 有意义，分时图为 undefined
+  const hoverMa10 = hoverIdx !== null && range !== 'intraday' && maSeries.perPoint.length === points.length
+    ? maSeries.perPoint[hoverIdx]
     : undefined;
 
   // Auto-refresh indicator (the chart pulses subtly when refreshing)
@@ -619,6 +654,24 @@ export function FundChart({
             />
           )}
 
+          {/* MA10 均线（橙色 10 周期简单移动平均），数据来自后端 history 接口的 ma10 字段。
+              仅在 1D / 1W / 1M 区间绘制；分时图不画。前 9 个交易日 ma10=null 自动断开。 */}
+          {maSeries.path && (
+            <motion.path
+              key={`ma10-line-${range}`}
+              d={maSeries.path}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.85"
+              initial={prefersReducedMotion ? false : { pathLength: 0, opacity: 0 }}
+              animate={{ pathLength: 1, opacity: 0.85 }}
+              transition={{ ...SPRING_DRAW, delay: prefersReducedMotion ? 0 : 0.1 }}
+            />
+          )}
+
           {/* Real data points — visible dots only on real daily closes.
               Skipped during intraday (every interpolated minute would be
               a dot, which is noise). */}
@@ -684,6 +737,7 @@ export function FundChart({
                 exit={{ opacity: 0 }}
                 transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
               >
+                {/* 垂直虚线：贯穿整个图表 */}
                 <line
                   x1={hoverX}
                   x2={hoverX}
@@ -691,7 +745,117 @@ export function FundChart({
                   y2={padding.top + innerH}
                   stroke="currentColor"
                   strokeOpacity="0.18"
+                  strokeDasharray="2 3"
                 />
+                {/* 水平虚线：贯穿左右轴 */}
+                <line
+                  x1={padding.left}
+                  x2={padding.left + innerW}
+                  y1={hoverY}
+                  y2={hoverY}
+                  stroke="currentColor"
+                  strokeOpacity="0.18"
+                  strokeDasharray="2 3"
+                />
+                {/* 左轴价格跟随标签（彩色色块 + 当前价格） */}
+                <g>
+                  <rect
+                    x={padding.left - 44}
+                    y={hoverY - 8}
+                    width={40}
+                    height={16}
+                    rx={3}
+                    fill={colorVar}
+                  />
+                  <text
+                    x={padding.left - 4}
+                    y={hoverY + 3.5}
+                    textAnchor="end"
+                    fontSize="10"
+                    fontWeight="600"
+                    fill="white"
+                    className="font-mono tabular-nums"
+                  >
+                    {hoverPoint.v.toFixed(range === 'intraday' ? 4 : 2)}
+                  </text>
+                </g>
+                {/* 右轴 % 跟随标签 */}
+                {(() => {
+                  const frac = 1 - (hoverY - padding.top) / innerH;
+                  const pctVal = pctSeries.minPct + frac * (pctSeries.maxPct - pctSeries.minPct);
+                  return (
+                    <g>
+                      <rect
+                        x={padding.left + innerW + 4}
+                        y={hoverY - 8}
+                        width={40}
+                        height={16}
+                        rx={3}
+                        fill={colorVar}
+                      />
+                      <text
+                        x={padding.left + innerW + 8}
+                        y={hoverY + 3.5}
+                        textAnchor="start"
+                        fontSize="10"
+                        fontWeight="600"
+                        fill="white"
+                        className="font-mono tabular-nums"
+                      >
+                        {`${pctVal > 0 ? '+' : ''}${pctVal.toFixed(2)}%`}
+                      </text>
+                    </g>
+                  );
+                })()}
+                {/* 顶部时间跟随标签（贴 padding.top 上沿） */}
+                <g>
+                  <rect
+                    x={hoverX - 28}
+                    y={padding.top - 8}
+                    width={56}
+                    height={16}
+                    rx={3}
+                    fill="currentColor"
+                    fillOpacity="0.08"
+                    stroke="currentColor"
+                    strokeOpacity="0.2"
+                    strokeWidth="0.5"
+                  />
+                  <text
+                    x={hoverX}
+                    y={padding.top + 3.5}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="currentColor"
+                    fillOpacity="0.7"
+                    className="font-mono tabular-nums"
+                  >
+                    {formatTick(hoverPoint.t, range)}
+                  </text>
+                </g>
+                {/* 底部 X 轴时间跟随标签（贴 X 轴下沿） */}
+                <g>
+                  <rect
+                    x={hoverX - 28}
+                    y={padding.top + innerH - 8}
+                    width={56}
+                    height={16}
+                    rx={3}
+                    fill={colorVar}
+                  />
+                  <text
+                    x={hoverX}
+                    y={padding.top + innerH + 3.5}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fontWeight="600"
+                    fill="white"
+                    className="font-mono tabular-nums"
+                  >
+                    {formatTick(hoverPoint.t, range)}
+                  </text>
+                </g>
+                {/* hover 点圆环 */}
                 <motion.circle
                   cx={hoverX}
                   cy={hoverY}
@@ -775,6 +939,17 @@ export function FundChart({
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
                       {hoverVwap.toFixed(4)}
+                    </span>
+                  </div>
+                )}
+                {hoverMa10 !== undefined && hoverMa10 !== null && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      MA10
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                      {hoverMa10.toFixed(4)}
                     </span>
                   </div>
                 )}
