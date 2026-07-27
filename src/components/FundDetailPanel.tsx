@@ -151,6 +151,17 @@ export function FundDetailPanel({
           </span>
         </MetricCard>
 
+        <MetricCard label="昨收" tone="neutral" title={previous > 0 ? previous.toFixed(6) : '—'}>
+          <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+            {previous > 0 ? previous.toFixed(4) : '—'}
+          </span>
+          {fund.dwjz && (
+            <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+              {fund.jzrq || ''}
+            </span>
+          )}
+        </MetricCard>
+
         <MetricCard label="更新时间" tone="neutral">
           <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200" style={{ fontSize: '1rem', letterSpacing: '0.01em' }}>
             {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
@@ -232,6 +243,14 @@ export function FundDetailPanel({
           })()}
           lowPrice={(() => {
             const v = (fund as any).stockSpecific?.low;
+            return typeof v === 'number' && v > 0 ? v : undefined;
+          })()}
+          totalVolume={(() => {
+            const v = (fund as any).stockSpecific?.volume;
+            return typeof v === 'number' && v > 0 ? v : undefined;
+          })()}
+          totalTurnover={(() => {
+            const v = (fund as any).stockSpecific?.turnover;
             return typeof v === 'number' && v > 0 ? v : undefined;
           })()}
           height={300}

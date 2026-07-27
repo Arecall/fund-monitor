@@ -28,6 +28,10 @@ export interface ChartPoint {
   real?: boolean;
   /** Optional display time (e.g. for US chart, use NY local time) */
   displayTime?: string;
+  /** 累计成交量（手/股，A 股单位"手"=100股；港美股单位"股"）。仅股票分时图有 */
+  volume?: number;
+  /** 累计成交额（元）。仅股票分时图有 */
+  turnover?: number;
 }
 
 export type DataSource = 'real' | 'estimated' | 'mixed';
@@ -229,7 +233,9 @@ export function buildSeries(
   kind?: 'fund' | 'stock',
   openPrice?: number,
   highPrice?: number,
-  lowPrice?: number
+  lowPrice?: number,
+  totalVolume?: number,
+  totalTurnover?: number
 ): ChartSeries {
   const market = detectFundMarket(fundName, fundCode);
   const rand = mulberry32(hashCode(code + range));
@@ -325,10 +331,24 @@ export function buildSeries(
         series = interpolate(startValue, current, steps, 0.0006, rand);
       }
       // X 轴统一用北京时间（北京时间本地时间）
-      points = series.map((v, i) => ({
-        t: startTs + (i / (steps - 1)) * (endTs - startTs),
-        v,
-      }));
+      points = series.map((v, i) => {
+        const ratio = i / (steps - 1);
+        const point: ChartPoint = {
+          t: startTs + ratio * (endTs - startTs),
+          v,
+        };
+        // 累计成交量/额按时间线性分摊（仅 stock + 总量已知时填）
+        // 数据是合成的（基于真实总量 + 时间分摊），不是真实逐笔；用于 hover tooltip
+        if (isStock) {
+          if (typeof totalVolume === 'number' && totalVolume > 0) {
+            point.volume = totalVolume * ratio;
+          }
+          if (typeof totalTurnover === 'number' && totalTurnover > 0) {
+            point.turnover = totalTurnover * ratio;
+          }
+        }
+        return point;
+      });
       if (points.length > 0) {
         points[0] = { t: startTs, v: startValue, real: true };
         points[points.length - 1] = { t: endTs, v: current, real: true };

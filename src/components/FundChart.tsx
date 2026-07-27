@@ -38,6 +38,10 @@ interface FundChartProps {
   /** 个股当日最高/最低价（让分时图 Y 轴聚焦真实盘中区间，避免被昨收/发行价挤压） */
   highPrice?: number;
   lowPrice?: number;
+  /** 个股当日累计成交量（A 股单位"手"=100股；港美股单位"股"），用于 hover tooltip */
+  totalVolume?: number;
+  /** 个股当日累计成交额（元），用于 hover tooltip */
+  totalTurnover?: number;
   kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
@@ -57,6 +61,8 @@ export function FundChart({
   openPrice,
   highPrice,
   lowPrice,
+  totalVolume,
+  totalTurnover,
   kind = 'fund',
   height = 280,
   history = [],
@@ -83,8 +89,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice),
-    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover),
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover]
   );
   const points = series.points;
 
@@ -623,6 +629,28 @@ export function FundChart({
                     {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
                   </span>
                 </div>
+                {hoverPoint.volume !== undefined && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                      成交量
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                      {formatVolume(hoverPoint.volume, kind)}
+                    </span>
+                  </div>
+                )}
+                {hoverPoint.turnover !== undefined && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                      成交额
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                      {formatTurnover(hoverPoint.turnover)}
+                    </span>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -697,6 +725,32 @@ function usePointerDown() {
       onPointerCancel: useCallback(() => setPressed(false), []),
     },
   };
+}
+
+/**
+ * 成交量格式化：
+ *   - A 股单位是"手"（1 手 = 100 股），> 1万 用"万手"，> 1亿 用"亿手"
+ *   - 港美股单位是"股"，> 1万 用"万股"，> 1亿 用"亿股"
+ */
+function formatVolume(v: number, kind?: 'fund' | 'stock'): string {
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  const unit = kind === 'stock' ? '股' : '手';
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿${unit}`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万${unit}`;
+  return `${v.toFixed(0)}${unit}`;
+}
+
+/**
+ * 成交额格式化（单位：元）：
+ *   - > 1亿 用"亿元"
+ *   - > 1万 用"万元"
+ *   - 否则显示元
+ */
+function formatTurnover(v: number): string {
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿元`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万元`;
+  return `${v.toFixed(0)}元`;
 }
 
 const PressableButton = (props: HTMLMotionProps<'button'>) => {
