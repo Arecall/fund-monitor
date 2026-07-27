@@ -354,6 +354,11 @@ export function FundDetailPanel({
         />
       </section>
 
+      {/* ── Asset allocation pie chart (仅基金) ── */}
+      {kind === 'fund' && basic?.assetAllocation && (
+        <AssetAllocationPie allocation={basic.assetAllocation} />
+      )}
+
       {/* ── Footer two-column: intro + holdings summary (仅基金) ── */}
       {kind === 'fund' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -684,6 +689,191 @@ function HoldingsSummaryCard({
       </AnimatePresence>
     </div>
   );
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * 资产配置扇形图（股票 / 债券 / 现金）
+ *   - SVG 圆环图，hover 高亮某 segment 并把外部 % 标签同步放大
+ *   - 中心显示股票仓位（最大占比项）
+ *   - 右侧图例带百分比和颜色块
+ *   - 数据缺失时不渲染整张卡片
+ */
+function AssetAllocationPie({
+  allocation
+}: {
+  allocation: NonNullable<FundBasicInfo['assetAllocation']>;
+}) {
+  const { stock, bond, cash, reportDate } = allocation;
+  // 过滤有效段并按当前值降序（视觉稳定）
+  const segments = [
+    { key: 'stock', label: '股票', value: stock, color: '#ef4444' },  // 红色 = 风险资产
+    { key: 'bond',  label: '债券', value: bond,  color: '#10b981' },  // 绿色 = 稳健
+    { key: 'cash',  label: '现金', value: cash,  color: '#64748b' },  // 灰 = 现金
+  ].filter(s => typeof s.value === 'number' && s.value > 0);
+
+  if (segments.length === 0) return null;
+  // 归一化（防合计略偏离 100 导致圆环缺口）
+  const total = segments.reduce((a, s) => a + (s.value as number), 0);
+
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  const size = 140;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = 56;
+  const innerR = 36;
+
+  // 计算每个 segment 的起止角度（从 -90° 起，顺时针）
+  let acc = 0;
+  const arcs = segments.map(s => {
+    const v = s.value as number;
+    const startAngle = (acc / total) * 360 - 90;
+    acc += v;
+    const endAngle = (acc / total) * 360 - 90;
+    return { ...s, startAngle, endAngle, ratio: v / total };
+  });
+
+  // 中心数字：显示最大占比项
+  const headline = segments.reduce((a, b) => ((a.value as number) >= (b.value as number) ? a : b));
+
+  return (
+    <div className="rounded-2xl border border-[var(--hairline-border)] p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
+          资产配置
+        </h4>
+        <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+          {reportDate || '—'}
+        </span>
+      </div>
+      <div className="flex items-center gap-6 flex-wrap">
+        {/* 圆环 SVG */}
+        <div className="relative shrink-0" style={{ width: size, height: size }}>
+          <svg
+            viewBox={`0 0 ${size} ${size}`}
+            width={size}
+            height={size}
+            className="overflow-visible"
+            role="img"
+            aria-label="资产配置扇形图"
+          >
+            {arcs.length === 1 ? (
+              // 单 segment 100% 时的退化：用 circle 绘制（arc 命令不能画整圆）
+              <circle
+                cx={cx}
+                cy={cy}
+                r={(r + innerR) / 2}
+                fill="none"
+                stroke={arcs[0].color}
+                strokeWidth={r - innerR}
+              />
+            ) : (
+              arcs.map(s => {
+                const start = polarToCartesian(cx, cy, r, s.startAngle);
+                const end   = polarToCartesian(cx, cy, r, s.endAngle);
+                const startInner = polarToCartesian(cx, cy, innerR, s.startAngle);
+                const endInner   = polarToCartesian(cx, cy, innerR, s.endAngle);
+                const largeArc = s.endAngle - s.startAngle > 180 ? 1 : 0;
+                const isHover = hovered === s.key;
+                const opacity = hovered && !isHover ? 0.45 : 1;
+                const expand = isHover ? 4 : 0;
+                // 沿中线方向外推
+                const mid = (s.startAngle + s.endAngle) / 2;
+                const rad = (mid * Math.PI) / 180;
+                const dx = Math.cos(rad) * expand;
+                const dy = Math.sin(rad) * expand;
+                const path = [
+                  `M ${start.x} ${start.y}`,
+                  `A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`,
+                  `L ${endInner.x} ${endInner.y}`,
+                  `A ${innerR} ${innerR} 0 ${largeArc} 0 ${startInner.x} ${startInner.y}`,
+                  'Z',
+                ].join(' ');
+                return (
+                  <path
+                    key={s.key}
+                    d={path}
+                    fill={s.color}
+                    opacity={opacity}
+                    transform={`translate(${dx} ${dy})`}
+                    style={{ transition: 'opacity 160ms ease, transform 160ms ease' }}
+                    onMouseEnter={() => setHovered(s.key)}
+                    onMouseLeave={() => setHovered(null)}
+                  />
+                );
+              })
+            )}
+          </svg>
+          {/* 中心数字 */}
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <div
+              className="font-mono font-bold tabular-nums leading-none"
+              style={{
+                fontSize: '1.15rem',
+                color: hovered ? arcs.find(a => a.key === hovered)?.color : headline.color,
+                transition: 'color 160ms ease',
+              }}
+            >
+              {(hovered
+                ? arcs.find(a => a.key === hovered)?.value
+                : headline.value
+              )?.toFixed(2)}
+              <span className="text-[10px] font-normal text-slate-500 ml-0.5">%</span>
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              {hovered
+                ? arcs.find(a => a.key === hovered)?.label
+                : headline.label}
+            </div>
+          </div>
+        </div>
+
+        {/* 图例 */}
+        <div className="flex-1 min-w-[180px] grid grid-cols-1 gap-1.5">
+          {arcs.map(s => {
+            const isHover = hovered === s.key;
+            return (
+              <div
+                key={s.key}
+                className="flex items-center gap-2 text-xs cursor-default"
+                onMouseEnter={() => setHovered(s.key)}
+                onMouseLeave={() => setHovered(null)}
+                style={{ opacity: hovered && !isHover ? 0.5 : 1, transition: 'opacity 160ms ease' }}
+              >
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                  style={{ backgroundColor: s.color }}
+                />
+                <span className="text-slate-600 dark:text-slate-300 flex-1">{s.label}</span>
+                <span
+                  className={
+                    'font-mono font-semibold tabular-nums ' +
+                    (isHover ? 'text-slate-900 dark:text-slate-50' : 'text-slate-700 dark:text-slate-200')
+                  }
+                >
+                  {(s.value as number).toFixed(2)}%
+                </span>
+              </div>
+            );
+          })}
+          <div className="text-[10px] text-slate-400 mt-1.5 pt-1.5 border-t border-[var(--hairline-border)]">
+            合计 {(total).toFixed(2)}%（季报口径，可能不等于 100）
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 极坐标 → 直角坐标。SVG 默认 0°=3 点钟方向，我们把 -90° 校正到 12 点钟方向，
+ * 这样第一个 segment 永远从顶端起笔。
+ */
+function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
