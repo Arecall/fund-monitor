@@ -27,6 +27,7 @@ const RANGES: { key: RangeKey; label: string }[] = [
 const SPRING_TAB  = { type: 'spring' as const, bounce: 0,    duration: 0.36 };  // default UI spring (no overshoot)
 const SPRING_FLIP = { type: 'spring' as const, bounce: 0.12, duration: 0.32 };  // layoutId pill — small bounce on commit
 const SPRING_DRAW = { type: 'spring' as const, bounce: 0,    duration: 0.55 };  // line path draw
+const SPRING_FILL = { type: 'spring' as const, bounce: 0,    duration: 0.6  };  // area mask-reveal (slightly slower than line)
 const SPRING_HOVER= { type: 'spring' as const, bounce: 0.15, duration: 0.22 };  // hover dot — slight overshoot OK (momentum)
 
 interface FundChartProps {
@@ -179,6 +180,15 @@ export function FundChart({
     return d;
   }, [points, x, y, linePath]);
 
+  const areaPath = useMemo(() => {
+    if (points.length === 0) return '';
+    const first = `M ${x(0).toFixed(2)} ${(padding.top + innerH).toFixed(2)}`;
+    // 顶部跟随平滑曲线（去掉 smoothLinePath 开头的 M 换成 L）
+    const top = smoothLinePath.replace(/^M /, 'L ');
+    const last = `L ${x(points.length - 1).toFixed(2)} ${(padding.top + innerH).toFixed(2)} Z`;
+    return `${first} ${top} ${last}`;
+  }, [points, x, smoothLinePath, padding.top, innerH]);
+
   // 涨跌幅副 Y 轴：每个价格点对应的累计 % 变化（相对区间起点）
   // 用同一 Y 坐标空间（数学上等价于价格线），副 Y 轴把 y → % 翻译给用户看
   const pctByY = useCallback((v: number) => {
@@ -237,6 +247,7 @@ export function FundChart({
   const isUp = changeAmt > 0;
   const isDown = changeAmt < 0;
   const colorVar = isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)';
+  const colorId = isUp ? 'gUp' : isDown ? 'gDown' : 'gFlat';
 
   // 基准参考线取值：
   //   - 个股（kind === 'stock' 且 openPrice 有效）→ 今开（开盘价）
@@ -393,6 +404,24 @@ export function FundChart({
           className="block touch-none select-none"
         >
           <defs>
+            {/* 面积渐变：从下往上（底部浓 → 顶部 0），经典"水域"填充效果 */}
+            <linearGradient id="gUp" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.45" />
+              <stop offset="40%"  stopColor="var(--color-up)" stopOpacity="0.20" />
+              <stop offset="75%"  stopColor="var(--color-up)" stopOpacity="0.05" />
+              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="gDown" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.45" />
+              <stop offset="40%"  stopColor="var(--color-down)" stopOpacity="0.20" />
+              <stop offset="75%"  stopColor="var(--color-down)" stopOpacity="0.05" />
+              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="gFlat" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.28" />
+              <stop offset="50%"  stopColor="var(--color-flat)" stopOpacity="0.10" />
+              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0" />
+            </linearGradient>
             {/* 线条下方柔光（光晕） */}
             <filter id="lineGlow" x="-5%" y="-50%" width="110%" height="200%">
               <feGaussianBlur stdDeviation="2.4" />
@@ -472,7 +501,30 @@ export function FundChart({
             />
           )}
 
-          {/* 面积填充已移除：用户偏好纯线条视图（截图里没有 area fill） */}
+          {/* 面积填充：从下往上渐变（底浓顶淡），clipPath mask-reveal 动画 */}
+          <defs>
+            <clipPath id="fundChartAreaReveal">
+              <motion.rect
+                key={`area-reveal-${range}`}
+                x={padding.left}
+                y={padding.top}
+                width={innerW}
+                height={innerH}
+                initial={prefersReducedMotion ? false : { y: padding.top }}
+                animate={{ y: padding.top + innerH }}
+                transition={SPRING_FILL}
+              />
+            </clipPath>
+          </defs>
+          <motion.path
+            key={`area-${range}`}
+            d={areaPath}
+            fill={`url(#${colorId})`}
+            clipPath="url(#fundChartAreaReveal)"
+            initial={prefersReducedMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
+          />
 
           {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
           <motion.path
