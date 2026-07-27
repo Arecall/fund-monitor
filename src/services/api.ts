@@ -229,6 +229,12 @@ export interface FundBasicInfo {
     m6: number | null;
     y1: number | null;
   };
+  /** 基金净资产规模（亿）— 来自 Data_fluctuationScale 最新一季 */
+  scale: {
+    size: number | null;
+    changePct: number | null;
+    reportDate: string | null;
+  };
 }
 
 export async function fetchFundBasic(code: string): Promise<FundBasicInfo | null> {

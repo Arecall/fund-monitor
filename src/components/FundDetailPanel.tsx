@@ -518,6 +518,8 @@ function HoldingsSummaryCard({
   const loading = basic === undefined;
   const stockRatio = basic?.assetAllocation?.stock ?? null;
   const reportDate = basic?.assetAllocation?.reportDate ?? null;
+  const fundSizeYi = basic?.scale?.size ?? null;
+  const fundSizeChangePct = basic?.scale?.changePct ?? null;
 
   return (
     <div className="rounded-2xl border border-[var(--hairline-border)] overflow-hidden">
@@ -530,7 +532,7 @@ function HoldingsSummaryCard({
             {reportDate || '—'}
           </span>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div>
             <div className="text-[10px] text-slate-500 mb-1">股票仓位</div>
             <div className="font-mono font-bold text-lg tabular-nums text-slate-800 dark:text-slate-100">
@@ -542,6 +544,33 @@ function HoldingsSummaryCard({
             <div className="text-[10px] text-slate-500 mb-1">持仓股票数</div>
             <div className="font-mono font-bold text-lg tabular-nums text-slate-800 dark:text-slate-100">
               {holdings.length > 0 ? holdings.length : (loading ? <span className="opacity-50">--</span> : '—')}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-500 mb-1">当前规模</div>
+            <div className="font-mono font-bold text-lg tabular-nums text-slate-800 dark:text-slate-100">
+              {loading ? <span className="opacity-50">--</span> :
+                fundSizeYi !== null ? (
+                  <>
+                    {fundSizeYi.toFixed(2)}
+                    <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
+                    {fundSizeChangePct !== null && (
+                      <span
+                        className={
+                          'text-xs font-normal ml-1 ' +
+                          (fundSizeChangePct > 0
+                            ? 'text-red-500'
+                            : fundSizeChangePct < 0
+                              ? 'text-emerald-600'
+                              : 'text-slate-400')
+                        }
+                      >
+                        {fundSizeChangePct > 0 ? '+' : ''}
+                        {fundSizeChangePct.toFixed(2)}%
+                      </span>
+                    )}
+                  </>
+                ) : '—'}
             </div>
           </div>
         </div>

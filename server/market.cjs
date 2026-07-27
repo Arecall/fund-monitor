@@ -1233,6 +1233,24 @@ async function getFundBasicInfo(code) {
         m6:  parsed.syl_6y !== undefined ? parseFloat(parsed.syl_6y) : null,
         y1:  parsed.syl_1n !== undefined ? parseFloat(parsed.syl_1n) : null
       },
+      // 当前净资产规模（来自 Data_fluctuationScale，最后一条记录 = 最新季报）
+      //   series[i].y   = 规模（亿）
+      //   series[i].mom = 较上期环比（%）
+      //   categories[i]  = 报告期 YYYY-MM-DD
+      scale: (() => {
+        const fs = parsed.Data_fluctuationScale;
+        if (!fs || !Array.isArray(fs.categories) || !Array.isArray(fs.series) || fs.series.length === 0) {
+          return { size: null, changePct: null, reportDate: null };
+        }
+        const lastIdx = fs.series.length - 1;
+        const y = fs.series[lastIdx]?.y;
+        const mom = fs.series[lastIdx]?.mom;
+        return {
+          size: typeof y === 'number' ? y : null,
+          changePct: typeof mom === 'string' ? parseFloat(mom.replace('%', '')) : null,
+          reportDate: fs.categories[lastIdx] || null,
+        };
+      })(),
       raw: {
         stockCodes: parsed.stockCodes || [],
         zqCodes: parsed.zqCodes || ''
