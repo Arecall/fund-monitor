@@ -509,9 +509,8 @@ export function FundChart({
                 x={padding.left}
                 y={padding.top}
                 width={innerW}
-                height={innerH}
-                initial={prefersReducedMotion ? false : { y: padding.top }}
-                animate={{ y: padding.top + innerH }}
+                initial={prefersReducedMotion ? false : { height: 0 }}
+                animate={{ height: innerH }}
                 transition={SPRING_FILL}
               />
             </clipPath>
