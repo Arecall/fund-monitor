@@ -240,6 +240,7 @@ export function FundDetailPanel({
               <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
             </span>
             <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+              <span className="text-slate-400">季环比</span>
               {basic.scale.changePct != null && (
                 <span
                   className={
@@ -249,6 +250,7 @@ export function FundDetailPanel({
                         ? 'text-[var(--color-down)]'
                         : 'text-slate-400'
                   }
+                  title={`较上一季度（${basic.scale.reportDate ? basic.scale.reportDate : ''}）规模变化`}
                 >
                   {basic.scale.changePct > 0 ? '+' : ''}
                   {basic.scale.changePct.toFixed(2)}%
