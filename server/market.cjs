@@ -1097,7 +1097,12 @@ function parseStockCodes(codes, opts = {}) {
     }
     if (s.endsWith('106') || s.endsWith('116')) {
       // 港股: "00700106" → "00700"
+      // 但要排除 ticker 本身是纯字母的情况（东财有时把美股误标 106/116）
       const code = s.slice(0, -3);
+      if (/^[A-Za-z]+$/.test(code)) {
+        // 例："TSM106" → "TSM"，按美股处理（东财数据 bug：TSM 实际是 NYSE 美股）
+        return { code: code.toUpperCase(), market: 'us', exchange: 'US', name: null };
+      }
       return { code, market: 'hk', exchange: 'HK', name: null };
     }
     if (s.length === 7 && (s.endsWith('1') || s.endsWith('0'))) {
