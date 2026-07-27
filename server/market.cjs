@@ -185,6 +185,8 @@ async function fetchASHareStockValuation(code) {
   const change = isNaN(prevClose) ? 0 : current - prevClose;
   const changePct = isNaN(prevClose) || prevClose <= 0 ? 0 : (change / prevClose) * 100;
   // 昨收/今开/最新（数据规整为统一字段）
+  // 顶层额外平铺 open（个股今开），便于前端直接读取而无需进 stockSpecific
+  const openVal = isNaN(open) ? null : open;
   return {
     fundcode: c,
     name,
@@ -194,8 +196,9 @@ async function fetchASHareStockValuation(code) {
     gszzl: changePct.toFixed(2),               // 涨跌幅%
     gztime: date && time ? `${date} ${time}` : (date || ''),
     market: c.startsWith('BJ') || symbol.startsWith('bj') ? 'other' : 'domestic',
+    open: openVal === null ? undefined : openVal.toFixed(4),
     stockSpecific: {
-      open: isNaN(open) ? null : open,
+      open: openVal,
       high: isNaN(high) ? null : high,
       low: isNaN(low) ? null : low,
       volume: isNaN(volume) ? null : volume,

@@ -33,6 +33,8 @@ interface FundChartProps {
   fundName: string;
   current: number;            // gsz
   previous: number;           // dwjz
+  /** 个股当日开盘价（用于分时图基准线）；基金无此概念 */
+  openPrice?: number;
   kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
@@ -49,6 +51,7 @@ export function FundChart({
   fundName,
   current,
   previous,
+  openPrice,
   kind = 'fund',
   height = 280,
   history = [],
@@ -191,6 +194,12 @@ export function FundChart({
   const isDown = changeAmt < 0;
   const colorVar = isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)';
   const colorId = isUp ? 'gUp' : isDown ? 'gDown' : 'gFlat';
+
+  // 基准参考线取值：
+  //   - 个股（kind === 'stock' 且 openPrice 有效）→ 今开（开盘价）
+  //   - 基金 / 个股缺 open → 前一交易日收盘（previous）
+  const baselineValue = (kind === 'stock' && openPrice && openPrice > 0) ? openPrice : firstPoint.v;
+  const baselineLabel = (kind === 'stock' && openPrice && openPrice > 0) ? '今开' : '昨收';
 
   // Hover point value
   const hoverPoint: ChartPoint | null = hoverIdx !== null ? points[hoverIdx] : null;
@@ -397,17 +406,17 @@ export function FundChart({
             </text>
           ))}
 
-          {/* Baseline at the open price — clipped to chart so it doesn't draw outside when
-              the reference value (prev close / IPO issue price) is far outside the
-              actual trading range. */}
-          {firstPoint.v >= minV && firstPoint.v <= maxV && (
+          {/* Baseline at the open price (today's open for stocks, prev close for funds) —
+              clipped to chart so it doesn't draw outside when the reference value
+              (prev close / IPO issue price) is far outside the actual trading range. */}
+          {baselineValue >= minV && baselineValue <= maxV && (
             <line
               x1={padding.left}
               x2={padding.left + innerW}
-              y1={y(firstPoint.v)}
-              y2={y(firstPoint.v)}
+              y1={y(baselineValue)}
+              y2={y(baselineValue)}
               stroke="currentColor"
-              strokeOpacity="0.14"
+              strokeOpacity="0.18"
               strokeDasharray="4 4"
             />
           )}
@@ -623,6 +632,9 @@ export function FundChart({
         </span>
         <span className="text-slate-500">
           区间内 {points[0].v.toFixed(4)} → {lastPoint.v.toFixed(4)}
+          {kind === 'stock' && openPrice && openPrice > 0 && (
+            <span className="ml-2 text-slate-400">· {baselineLabel} {openPrice.toFixed(4)}</span>
+          )}
         </span>
       </div>
     </div>

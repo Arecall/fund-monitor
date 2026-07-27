@@ -222,6 +222,7 @@ export function FundDetailPanel({
           kind={kind}
           current={current}
           previous={previous}
+          openPrice={fund.open ? parseFloat(fund.open) : undefined}
           height={300}
           history={history}
           historyLoading={historyLoading}

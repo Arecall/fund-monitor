@@ -34,6 +34,8 @@ export interface FundValuation {
   gztime: string;    // 估算时间
   lastUpdated?: number; // 本地获取时间戳
   market?: 'domestic' | 'hk' | 'us' | 'other';  // 板块路由用
+  /** 个股当日开盘价（A股个股可用；基金无此概念） */
+  open?: string;
 }
 
 export interface MarketIndex {
