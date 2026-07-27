@@ -214,18 +214,35 @@ function App() {
   const [pendingDragCode, setPendingDragCode] = useState<string | null>(null);
   const [, setDragOverIndex] = useState<number | null>(null);
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  const pendingOrderRef = useRef<string[] | null>(null);
+  const setPendingOrderAndRef = useCallback((next: string[] | null | ((curr: string[] | null) => string[] | null)) => {
+    setPendingOrder(curr => {
+      const resolved = typeof next === 'function' ? (next as any)(curr) : next;
+      pendingOrderRef.current = resolved;
+      return resolved;
+    });
+  }, []);
   const dragCommittedRef = useRef(false);
   // 行 DOM rect 缓存，给 onMove 用：客户端 Y 坐标 → 落点 index
   const rowRectMapRef = useRef<Map<string, DOMRect>>(new Map());
   // pointermove rAF 节流：避免 60-240Hz 设备上一帧多次 setState 让 motion spring 反复被截断
   const dragRafPendingRef = useRef(false);
   const dragLastClientYRef = useRef(0);
+  const dragLastToIdxRef = useRef<number>(-1);
   // 物理插槽边界信息 (Slot 0..N-1)
   const slotBoundsRef = useRef<{ top: number; bottom: number; mid: number }[]>([]);
   // 拖拽按住瞬间的垂直 offset（相对卡片顶部）
   const dragGrabOffsetRef = useRef<number>(0);
+  // 始终跟踪最新的 visibleList，供 document 级 effect 读取（无法通过闭包访问）
+  const visibleListRef = useRef<string[]>([]);
+  // document 级 onUp 需要触发弹窗，通过 ref 传入 setter（绕开闭包）
+  const setSelectedFundCodeRef = useRef<((code: string) => void) | null>(null);
+  // onPointerDown 时记录按下的原始 target，onUp 时判断是否是短按点击
+  const pointerDownTargetRef = useRef<EventTarget | null>(null);
+  // commitDrag 通过 ref 传入 document effect，使 effect 只需注册一次（依赖数组为空）
+  const commitDragRef = useRef<(() => void) | null>(null);
 
-  // 根据当前鼠标停留的物理位置计算目标插入位置 (goalIdx)
+  // 根据当前鼠标停留 of 物理位置计算目标插入位置 (goalIdx)
   const calculateGoalIdx = useCallback((gcode: string, clientY: number, currList: string[]): number => {
     const fromIdx = currList.indexOf(gcode);
     if (fromIdx < 0) return 0;
@@ -233,16 +250,40 @@ function App() {
     const bounds = slotBoundsRef.current;
     if (bounds.length === 0) return fromIdx;
 
-    // 校准计算：以被抓取卡片的“几何中心/中点”作为实际检测点
-    // clientY 是鼠标点，clientY - grabOffset 是卡片 top，+ cardHeight/2 即为卡片中点
     const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
-    const cardMidY = clientY - dragGrabOffsetRef.current + (cardHeight / 2);
+    const cardTopY = clientY - dragGrabOffsetRef.current;
+    const cardBottomY = cardTopY + cardHeight;
 
-    let targetIdx = 0;
-    // 检测卡片中心目前停留在哪个物理 Slot 的 Bounds（或超过了哪个 Mid）
-    for (let i = 0; i < bounds.length; i++) {
-      if (cardMidY > bounds[i].mid) {
-        targetIdx = i + 1;
+    let targetIdx = fromIdx;
+
+    // 遍历插槽分割线，进行 1/5 侵入率双轨判定，并增加防抖滞后区间
+    for (let i = 0; i < bounds.length - 1; i++) {
+      // 物理分割线 i 处于插槽 i 和 i+1 的交界
+      const boundaryY = bounds[i].bottom;
+      const isCurrentlyAbove = fromIdx <= i;
+
+      // 1/5 侵入阈值，以对应插槽的高度作为基准
+      const triggerOffset = cardHeight / 5;
+
+      // 滞后区间偏置 (Hysteresis buffer) 设为 12px
+      const hysteresis = 12;
+
+      if (isCurrentlyAbove) {
+        // 卡片当前在上方插槽：当卡片下边缘向下侵入下方插槽，需要坚定地超过阈值 + hysteresis 才能向下移动
+        const neededThreshold = (targetIdx === i) ? (triggerOffset + hysteresis) : triggerOffset;
+        if (cardBottomY > boundaryY + neededThreshold) {
+          if (targetIdx <= i) {
+            targetIdx = i + 1;
+          }
+        }
+      } else {
+        // 卡片当前在下方插槽：当卡片上边缘向上侵入上方插槽，需要坚定地低于阈值 - hysteresis 才能向上移动
+        const neededThreshold = (targetIdx === i + 1) ? (triggerOffset + hysteresis) : triggerOffset;
+        if (cardTopY < boundaryY - neededThreshold) {
+          if (targetIdx >= i + 1) {
+            targetIdx = i;
+          }
+        }
       }
     }
 
@@ -314,6 +355,8 @@ function App() {
       return true;
     });
   }, [pendingOrder, watchlist, watchlistItems, selfTab]);
+  visibleListRef.current = visibleList;
+  setSelectedFundCodeRef.current = setSelectedFundCode;
 
   // 用 kindOf 把重排后的子序列塞回全局 watchlist，同时保留另一 kind 的相对位置
   function mergeKindOrder(
@@ -330,7 +373,7 @@ function App() {
     setDragActiveCode(null);
     setPendingDragCode(null);
     setDragOverIndex(null);
-    setPendingOrder(null);
+    setPendingOrderAndRef(null);
     dragCommittedRef.current = false;
     dragRafPendingRef.current = false;
     dragLastToIdxRef.current = -1;
@@ -340,7 +383,7 @@ function App() {
     if (!pendingOrder || !dragActiveCode) return;
     const newOrder = pendingOrder;
     const previousWatchlist = watchlist;
-    setPendingOrder(null);
+    setPendingOrderAndRef(null);
     // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
     setDragActiveCode(null);
     setPendingDragCode(null);
@@ -364,6 +407,7 @@ function App() {
       setTimeout(() => setToastMsg(null), 3000);
     }
   }, [pendingOrder, dragActiveCode, watchlist, watchlistItems, selfTab]);
+  commitDragRef.current = commitDrag;
 
   // 拖动中按 Esc 取消
   useEffect(() => {
@@ -408,6 +452,7 @@ function App() {
   const makeRowHandlers = useCallback((code: string) => {
     const onPointerDown = (e: React.PointerEvent) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      pointerDownTargetRef.current = e.target; // 记录原始按下位置（用于 onUp 短按检测）
       let st = rowGestureRefs.current.get(code);
       if (!st) {
         st = { timer: null, start: null, activated: false };
@@ -423,22 +468,39 @@ function App() {
       dragLastToIdxRef.current = -1;
       dragRafPendingRef.current = false;
       dragLastClientYRef.current = e.clientY;
-      // 进入等待态：CSS 给该行 touch-action:none 阻止浏览器滚动误判
-      setPendingDragCode(code);
-      // 拖动已结束的标志位在新手势开始时先重置（如果上一手势的合成 click 已经过了）
-      dragCommittedRef.current = false;
-      // pointer capture 是 best-effort：失败也无所谓，document 级 listener 会兜底
-      if (el && typeof (el as any).setPointerCapture === 'function') {
-        try { (el as any).setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      }
+      // 注意：不在 onPointerDown 里调用任何 setState（如 setPendingDragCode）！
+      // setState 触发 React 重渲染会使 button DOM 节点断开，导致 pointerup 命中 TR 而非 BUTTON，
+      // 浏览器合成的 click target 变成 TR，React onClick 从 TR 向上触发，跳过 button.onClick。
+      // 所有 state 更新推迟到拖拽真正激活（定时器或位移检测）之后。
+      // 关键修复：onPointerDown 在非激活状态下不能立刻设置 dragCommittedRef = false，
+      // 因为如果上一次手势刚激活了 drag 释放，合成的 click 还在冒泡传播中！
+      // 改为在定时器激活拖拽的瞬间才赋值 dragCommittedRef = true。
+      // 注意：不使用 setPointerCapture —— 它会把 pointerup 的 target 重定向到 TR，
+      // 导致浏览器合成的 click target = LCA(BUTTON, TR) = TR，
+      // 而 React 事件委托在 root 处理 click 时，会从 target(TR) 向上触发 onClick，
+      // 跳过了 button 的 onClick，使"查看详情"无法触发弹窗。
+      // document 级 pointer 监听器足以覆盖所有跨行拖动场景，无需 capture。
       const isTouch = e.pointerType === 'touch';
-      const threshold = isTouch ? 450 : 200;
+      // Touch: 长按 450ms 激活拖拽（手指静止按住）
+      // PC 鼠标: 定时器仅作为"按住不动也能激活"的兜底，真正的激活在 onPointerMove 里检测位移
+      const threshold = isTouch ? 450 : 600;
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
+        // PC 鼠标的定时器兜底：只有在用户按住超过 600ms 且有轻微位移时才激活
+        // 主要激活路径是 onPointerMove 里检测到位移触发
+        if (!isTouch) {
+          const curY = dragLastClientYRef.current;
+          const dy = Math.abs(curY - st!.start.y);
+          if (dy < 2) return; // 完全没动，不激活（普通慢速点击走这里）
+        }
         st!.activated = true;
 
         // 采样当前所有可见行的静态 DOM 物理 Bound (top, bottom, mid)
-        const rowElements = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'));
+        const rowElements = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'))
+          .filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
         const elementRects = rowElements.map(el => ({
           code: el.dataset.fundCode!,
           rect: el.getBoundingClientRect()
@@ -466,7 +528,7 @@ function App() {
         const activeCode = code;
         setDragActiveCode(activeCode);
         setPendingDragCode(null);  // 等待结束，由激活态接管视觉反馈
-        setPendingOrder(visibleList);
+        setPendingOrderAndRef(visibleList);
         // 标记本次手势已激活 drag —— 释放后浏览器合成的 click 必须被 onClickCapture 拦截
         dragCommittedRef.current = true;
       }, threshold);
@@ -489,8 +551,35 @@ function App() {
       const dx = e.clientX - st.start.x;
       const dy = e.clientY - st.start.y;
       const dist = Math.hypot(dx, dy);
-      if (!st.activated && dist > 8) {
-        // 未激活就大距离移动 → 视为滚动意图
+      const isMouseGesture = e.pointerType === 'mouse';
+
+      if (!st.activated && isMouseGesture && dist > 6) {
+        // PC 鼠标：按住并移动超过 6px 立即激活拖拽（不等定时器）
+        if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+        st.activated = true;
+
+        const rowElements = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'))
+          .filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+        const elementRects = rowElements.map(el => ({ code: el.dataset.fundCode!, rect: el.getBoundingClientRect() }));
+        const bounds = elementRects
+          .map(item => ({ top: item.rect.top, bottom: item.rect.bottom, mid: (item.rect.top + item.rect.bottom) / 2 }))
+          .sort((a, b) => a.top - b.top);
+        slotBoundsRef.current = bounds;
+        const activeRect = elementRects.find(item => item.code === code)?.rect;
+        dragGrabOffsetRef.current = activeRect ? (st.start.y - activeRect.top) : 0;
+
+        setDragActiveCode(code);
+        setPendingDragCode(null);
+        setPendingOrderAndRef(visibleList);
+        dragCommittedRef.current = true;
+        return;
+      }
+
+      if (!st.activated && !isMouseGesture && dist > 8) {
+        // Touch: 未激活就大距离移动 → 视为滚动意图，取消拖拽等待
         if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
         st.start = null;
         setPendingDragCode(null);
@@ -517,6 +606,8 @@ function App() {
 
   // Document 级 move/up/cancel —— 兜底：无论指针 capture 是否生效，跨行都能持续响应
   useEffect(() => {
+    (window as any).__docEffectRuns = ((window as any).__docEffectRuns || 0) + 1;
+    console.log('[docEffect] registering listeners, run #', (window as any).__docEffectRuns);
     // rAF tick：把"上一帧最新 clientY"应用到 pendingOrder，每帧最多一次 setState
     const tickMove = () => {
       dragRafPendingRef.current = false;
@@ -524,18 +615,41 @@ function App() {
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
       if (!st || !st.activated || !st.start) return;
-      const clientY = dragLastClientYRef.current;
+
+      const bounds = slotBoundsRef.current;
+      const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
+
+      // 限制 Y 轴位置，不能拖出表格物理范围（预留 6px 间距，绝对不与 thead 表头重叠）
+      let clampedClientY = dragLastClientYRef.current;
+      if (bounds.length > 0) {
+        const topBoundary = bounds[0].top + dragGrabOffsetRef.current + 6;
+        const bottomBoundary = bounds[bounds.length - 1].bottom + dragGrabOffsetRef.current - cardHeight - 6;
+        clampedClientY = Math.min(Math.max(topBoundary, clampedClientY), bottomBoundary);
+      }
+
+      const currOrder = pendingOrder || visibleList;
+      const fromIdx = currOrder.indexOf(gcode);
+      let offsetY = clampedClientY - st.start.y;
+      if (fromIdx >= 0 && bounds[fromIdx]) {
+        // 使用物理 Slot 差值来计算完美的 offset，彻底消除重排导致的卡片跳变
+        offsetY = (clampedClientY - dragGrabOffsetRef.current) - bounds[fromIdx].top;
+      }
+
+      if (st.start.el) {
+        // 直接在 DOM 上应用 translateY 位移，使被拖拽行流畅零延迟地跟着鼠标移动
+        (st.start.el as HTMLElement).style.transform = `translateY(${offsetY}px)`;
+        (st.start.el as HTMLElement).style.transition = 'none'; // 移动期间关闭 CSS 动画过渡
+      }
 
       // 链式 rAF：setState 后若还没到 goal，下一帧继续推一格
       //   这样手指停在 goal 位置时，抬起行也会在若干帧内到位
-      let shouldReschedule = false;
 
-      setPendingOrder(curr => {
+      setPendingOrderAndRef(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
 
-        const goalIdx = calculateGoalIdx(gcode, clientY, curr);
+        const goalIdx = calculateGoalIdx(gcode, clampedClientY, curr);
         if (goalIdx === fromIdx) return curr;
 
         // 直接一次性步进至当前鼠标停靠的物理 Goal Index
@@ -548,14 +662,42 @@ function App() {
       });
 
       // 直接更新至最新鼠标位置，不需要 reschedule 链式推演
-      shouldReschedule = false;
     };
 
     const onMove = (e: PointerEvent) => {
       const gcode = gestureCodeRef.current;
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
-      if (!st || !st.start || !st.activated) return;
+      if (!st || !st.start) return;
+
+      // PC 鼠标：按住移动超过 6px 立即激活拖拽（兜底 document 级，覆盖鼠标移出原行的情况）
+      if (!st.activated && e.pointerType === 'mouse') {
+        const dy = Math.abs(e.clientY - st.start.y);
+        const dx = Math.abs(e.clientX - st.start.x);
+        if (Math.hypot(dx, dy) > 6) {
+          if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
+          st.activated = true;
+          const rowElements = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'))
+            .filter(el => {
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            });
+          const elementRects = rowElements.map(el => ({ code: el.dataset.fundCode!, rect: el.getBoundingClientRect() }));
+          const bounds = elementRects
+            .map(item => ({ top: item.rect.top, bottom: item.rect.bottom, mid: (item.rect.top + item.rect.bottom) / 2 }))
+            .sort((a, b) => a.top - b.top);
+          slotBoundsRef.current = bounds;
+          const activeRect = elementRects.find(item => item.code === gcode)?.rect;
+          dragGrabOffsetRef.current = activeRect ? (st.start.y - activeRect.top) : 0;
+          // 读取当前 visibleList 快照
+          setDragActiveCode(gcode);
+          setPendingDragCode(null);
+          dragCommittedRef.current = true;
+          setPendingOrderAndRef(visibleListRef.current.slice());
+        }
+      }
+
+      if (!st.activated) return;
       e.preventDefault();
       dragLastClientYRef.current = e.clientY;
       if (dragRafPendingRef.current) return;
@@ -574,17 +716,24 @@ function App() {
     };
     const onUp = () => {
       const gcode = gestureCodeRef.current;
+      console.log('[onUp] gcode=', gcode);
+      (window as any).__onUpCalled = ((window as any).__onUpCalled || 0) + 1;
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
+      const wasActivated = !!(st && st.activated);
       // 关键: onUp 之前先同步跑一次 tickMove + flushToGoal, 并 flushSync 强制 commit
       //   避免 onUp 与 chain rAF race 导致 commitDrag 读到旧 pendingOrder
-      if (st && st.activated) {
+      if (wasActivated) {
         tickMove();
         flushToGoal(gcode);
         flushSync(() => {});   // 强制 React 立即 commit flushToGoal 的 setState
       }
-      if (st && st.activated) commitDrag();
+      if (wasActivated) commitDragRef.current?.();
       if (st) {
+        if (st.start && st.start.el) {
+          (st.start.el as HTMLElement).style.transform = '';
+          (st.start.el as HTMLElement).style.transition = '';
+        }
         if (st.timer != null) clearTimeout(st.timer);
         st.timer = null;
         st.start = null;
@@ -595,8 +744,23 @@ function App() {
       gestureCodeRef.current = null;
       setPendingDragCode(null);
       // 若没有激活过拖拽，立即复位 dragCommittedRef；若激活过，延迟 300ms 清零拦截 click
-      if (!st || !st.activated) {
+      if (!wasActivated) {
         dragCommittedRef.current = false;
+        // 短按（非拖拽）：直接在 onUp 里触发弹窗，绕开 click 事件的 LCA 问题
+        // PC 端 pointerdown 在 button，pointerup 由于 Framer Motion layout 动画落在 TR，
+        // 浏览器合成的 click.target = TR（LCA），导致 button.onClick 永远不触发。
+        // 在这里用 pointerDownTargetRef 判断意图，直接调用 setter。
+        const target = pointerDownTargetRef.current as Element | null;
+        if (target && setSelectedFundCodeRef.current) {
+          // 找到最近的 data-fund-code 祖先（或自身）
+          const row = target.closest ? target.closest('[data-fund-code]') : null;
+          if (row) {
+            const clickedCode = row.getAttribute('data-fund-code');
+            if (clickedCode) {
+              setSelectedFundCodeRef.current(clickedCode);
+            }
+          }
+        }
       } else {
         setTimeout(() => { dragCommittedRef.current = false; }, 300);
       }
@@ -606,12 +770,20 @@ function App() {
     //   拖动期间的 chain rAF 因为是 ±1 步, 可能还没推到 goal 就被 onUp 打断;
     //   onUp 时一次性 jump 到 goal, 保证最终顺序符合手指落点.
     const flushToGoal = (gcode: string) => {
-      const clientY = dragLastClientYRef.current;
-      setPendingOrder(curr => {
+      const bounds = slotBoundsRef.current;
+      const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
+      let clampedClientY = dragLastClientYRef.current;
+      if (bounds.length > 0) {
+        const topBoundary = bounds[0].top + dragGrabOffsetRef.current + 6;
+        const bottomBoundary = bounds[bounds.length - 1].bottom + dragGrabOffsetRef.current - cardHeight - 6;
+        clampedClientY = Math.min(Math.max(topBoundary, clampedClientY), bottomBoundary);
+      }
+
+      setPendingOrderAndRef(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
         if (fromIdx < 0) return curr;
-        const goalIdx = calculateGoalIdx(gcode, clientY, curr);
+        const goalIdx = calculateGoalIdx(gcode, clampedClientY, curr);
         if (goalIdx === fromIdx) return curr;
         const next = [...curr];
         next.splice(fromIdx, 1);
@@ -624,6 +796,10 @@ function App() {
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
       if (st) {
+        if (st.start && st.start.el) {
+          (st.start.el as HTMLElement).style.transform = '';
+          (st.start.el as HTMLElement).style.transition = '';
+        }
         if (st.timer != null) clearTimeout(st.timer);
         st.timer = null;
         st.start = null;
@@ -643,7 +819,7 @@ function App() {
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onCancel);
     };
-  }, [commitDrag]);
+  }, []);
 
   /* ---------- Boot ---------- */
   useEffect(() => {
@@ -1649,7 +1825,7 @@ function App() {
                             animate={{ opacity: 1, y: 0 }}
                             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                             transition={dragActiveCode ? SPRING.drag : SPRING.default}
-                            onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
+                            onClick={() => { setSelectedFundCode(code); }}
                             onClickCapture={(e) => {
                               if (dragCommittedRef.current) {
                                 e.preventDefault();
@@ -1664,11 +1840,7 @@ function App() {
                                 onPointerCancel: h.onPointerCancel,
                               };
                             })()}
-                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 touch-none select-none ${
-                              (pendingDragCode === code || dragActiveCode === code)
-                                ? 'is-dragging relative bg-white dark:bg-[#1d1d1f] '
-                                : ''
-                            }${dragActiveCode === code ? 'z-50 scale-[1.02] shadow-2xl ring-2 ring-[#0066cc]/40 dark:ring-[#2997ff]/40' : ''}`}
+                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
                             style={{ touchAction: 'none' }}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
@@ -1693,7 +1865,7 @@ function App() {
                                 </div>
                               </div>
 
-                              <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                              <div className="flex items-center gap-1" onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
                                 <PressableIconButton
                                   onClick={() => handleRemoveFund(code, fund.name)}
                                   aria-label="退订基金"
@@ -1724,7 +1896,7 @@ function App() {
                             </div>
 
                             {/* Position info bar if held or button to add */}
-                            <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onClick={e => e.stopPropagation()}>
+                            <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
                               {pos ? (
                                 <div className="flex items-center justify-between w-full">
                                   <div className="text-slate-500 text-[10px]">
@@ -1825,7 +1997,17 @@ function App() {
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                                 transition={dragActiveCode ? SPRING.drag : SPRING.default}
-                                onClick={() => { if (!dragCommittedRef.current) setSelectedFundCode(code); }}
+                                onPointerUp={() => {
+                                  // pointerup 在 TR 上可靠触发（即使 pointerdown 在子元素上）
+                                  // click 事件因为 LCA 问题无法可靠触发 onClick，改用 onPointerUp
+                                  const st = rowGestureRefs.current.get(code);
+                                  if (!st || st.activated) return; // 拖拽中不触发
+                                  if (dragCommittedRef.current) return; // 刚结束拖拽不触发
+                                  // 排除持仓列（该列 td 有 stopPropagation 阻止 pointerdown 到 TR，
+                                  // 所以 gestureCodeRef 不会被设置，这里不会走到）
+                                  setSelectedFundCode(code);
+                                }}
+                                onClick={() => { /* handled by onPointerUp */ }}
                                 onClickCapture={(e) => {
                                   if (dragCommittedRef.current) {
                                     e.preventDefault();
@@ -1840,7 +2022,7 @@ function App() {
                                     onPointerCancel: h.onPointerCancel,
                                   };
                                 })()}
-                                className={`apple-row touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''} ${dragActiveCode === code ? 'z-50 shadow-xl bg-blue-50/30 dark:bg-blue-900/20' : ''}`}
+                                className={`apple-row touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
                                 style={{ touchAction: 'none' }}
                               >
                                 <td className="p-4 pl-6">
@@ -1874,7 +2056,7 @@ function App() {
                                   {isUp ? '+' : ''}{changeVal.toFixed(2)}%
                                 </td>
 
-                                <td className="p-4 text-right">
+                                <td className="p-4 text-right" onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
                                   {pos ? (
                                     <button
                                       onClick={() => openEditPosition(code)}
@@ -1914,20 +2096,22 @@ function App() {
                                   )}
                                 </td>
 
-                                <td className="p-4 text-center pr-6" onClick={e => e.stopPropagation()}>
+                                <td className="p-4 text-center pr-6">
                                   <div className="flex items-center justify-center gap-1">
                                     <button
                                       type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSelectedFundCode(code);
-                                      }}
+                                      onClick={(e) => { e.stopPropagation(); }}
                                       className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2.5 py-1.5 rounded-full transition-colors cursor-pointer"
                                     >
                                       查看详情
                                     </button>
                                     <PressableIconButton
-                                      onClick={() => handleRemoveFund(code, fund.name)}
+                                      onPointerDown={e => e.stopPropagation()}
+                                      onPointerUp={e => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRemoveFund(code, fund.name);
+                                      }}
                                       aria-label="退订基金"
                                       className="p-1.5 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20"
                                     >

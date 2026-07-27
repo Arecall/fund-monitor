@@ -270,6 +270,23 @@ body {
   cursor: grabbing;
 }
 
+/* 正在拖拽行的特殊独立定位与层级样式，规避与 thead 穿透重叠 */
+.apple-row.is-dragging {
+  position: relative !important;
+  z-index: 100 !important;
+  background-color: var(--surface-tile) !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15) !important;
+}
+
+.dark .apple-row.is-dragging {
+  background-color: #1d1d1f !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4) !important;
+}
+
+.apple-row.is-dragging td {
+  background-color: inherit !important;
+}
+
 .apple-row:hover {
   background-color: rgba(0, 0, 0, 0.025);
 }
