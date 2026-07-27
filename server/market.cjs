@@ -1081,8 +1081,21 @@ function parseStockCodes(codes) {
   if (!Array.isArray(codes)) return [];
   return codes.map(raw => {
     const s = String(raw);
-    if (s.endsWith('116')) {
-      // 港股: e.g. "00700116" → "00700.HK"
+    // 后缀规则（来自 pingzhongdata 的 stockCodes）：
+    //   105 = 美股 / 港股（Sina 用 105 表示 gb_ 前缀）
+    //   106 = 港股（Sina 用 106 表示 rt_hk 前缀）
+    //   116 = 港股（早期/特殊格式）
+    //   1   = 上证 sh
+    //   0   = 深证 sz
+    // 历史 bug：只判了 116 和单字符后缀，导致 105/106 后缀只剥 1 位，
+    //   "NVDA105" 被错误切成 "NVDA10"，"00700106" 被切成 "0070010"。
+    if (s.endsWith('105')) {
+      // 美股: "NVDA105" → "NVDA"
+      const code = s.slice(0, -3).toUpperCase();
+      return { code, market: 'us', exchange: 'US', name: null };
+    }
+    if (s.endsWith('106') || s.endsWith('116')) {
+      // 港股: "00700106" → "00700"
       const code = s.slice(0, -3);
       return { code, market: 'hk', exchange: 'HK', name: null };
     }
@@ -1099,8 +1112,9 @@ function parseStockCodes(codes) {
  */
 async function fetchStockQuotes(stockList) {
   if (!stockList.length) return new Map();
-  const aCodes = stockList.filter(s => s.exchange === 'SH' || s.exchange === 'SZ');
+  const aCodes  = stockList.filter(s => s.exchange === 'SH' || s.exchange === 'SZ');
   const hkCodes = stockList.filter(s => s.exchange === 'HK');
+  const usCodes = stockList.filter(s => s.exchange === 'US');
 
   const out = new Map();
 
@@ -1157,6 +1171,40 @@ async function fetchStockQuotes(stockList) {
       }
     } catch (e) {
       console.warn('[holdings] sina 港股行情失败:', e.message);
+    }
+  }
+
+  // 美股：hq.sinajs.cn/list=gb_<ticker>
+  //   美股字段顺序与 A 股不同：parts[0]=中文名  parts[1]=现价  parts[2]=涨跌幅%
+  //   parts[3]=datetime "YYYY-MM-DD HH:MM:SS"  parts[4]=涨跌额  parts[26]=昨收
+  if (usCodes.length > 0) {
+    const symbols = usCodes.map(s => `gb_${s.code.toLowerCase()}`).join(',');
+    try {
+      const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
+        responseType: 'arraybuffer',
+        headers: { 'Referer': 'http://finance.sina.com.cn' },
+        timeout: 6000
+      });
+      const text = iconv.decode(Buffer.from(r.data), 'gbk');
+      const lines = text.split('\n').filter(Boolean);
+      for (const line of lines) {
+        const m = line.match(/var hq_str_(gb_[a-z]+)="([^"]+)"/);
+        if (!m) continue;
+        const sym = m[1];
+        const parts = m[2].split(',');
+        if (parts.length < 5) continue;
+        const name = parts[0];
+        const price = parseFloat(parts[1]);
+        // 美股 parts[2] 已是带符号的涨跌幅%，直接用
+        const changePct = parseFloat(parts[2]);
+        out.set(sym, {
+          name,
+          price: Number.isFinite(price) ? price : null,
+          changePct: Number.isFinite(changePct) ? changePct : null,
+        });
+      }
+    } catch (e) {
+      console.warn('[holdings] sina 美股行情失败:', e.message);
     }
   }
 
@@ -1293,6 +1341,9 @@ async function getFundHoldings(code) {
     if (s.exchange === 'HK') {
       quoteKey = `rt_hk${s.code}`;
       displayCode = `${s.code}.HK`;
+    } else if (s.exchange === 'US') {
+      quoteKey = `gb_${s.code.toLowerCase()}`;
+      displayCode = s.code;
     } else {
       quoteKey = `${s.market}${s.code}`;
       displayCode = `${s.code}`;
