@@ -154,6 +154,39 @@ export interface FundHistoryPoint {
   dwjz: number;        // 单位净值
 }
 
+/**
+ * 个股分钟级 K 线（用于分时图 hover 显示真实每分钟成交量/成交额）
+ * A 股来自 Sina / 港股来自腾讯 / 美股暂无公开接口（返回 data: null）
+ */
+export interface StockMinutePoint {
+  time: string;          // "YYYY-MM-DD HH:MM:SS"
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;        // 股（A 股 UI 显示需 /100 转"手"）
+  amount: number;        // 元
+}
+
+export interface StockMinuteResponse {
+  code: string;
+  market: string;
+  data: StockMinutePoint[] | null;
+}
+
+export async function fetchStockMinute(
+  code: string,
+  kind: 'fund' | 'stock' = 'stock'
+): Promise<StockMinuteResponse | null> {
+  try {
+    const data = await request(`/api/market/fund/${code}/minute?kind=${kind}`);
+    return data as StockMinuteResponse;
+  } catch (error) {
+    console.error(`获取分钟数据 ${code} 失败:`, error);
+    return null;
+  }
+}
+
 export async function fetchFundHistory(
   code: string,
   days: number = 30,

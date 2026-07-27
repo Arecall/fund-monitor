@@ -222,6 +222,25 @@ function getIntradayWindow(
  * @param fundName 基金名 — 用于判断市场（美股/QDII/港股/A股）
  * @param fundCode 基金代码
  */
+export interface MinuteBar {
+  /** Unix ms */
+  t: number;
+  /** 每分钟收盘价 */
+  v: number;
+  /** 该分钟的成交量（股） */
+  volume?: number;
+  /** 该分钟的成交额（元） */
+  turnover?: number;
+}
+
+/**
+ * 来自 Sina/腾讯的真实分钟 K 线。
+ * 优先用真实数据构造分时 series；缺失时 fallback 到合成插值。
+ */
+export interface MinuteFeed {
+  bars: MinuteBar[];
+}
+
 export function buildSeries(
   code: string,
   current: number,
@@ -235,7 +254,8 @@ export function buildSeries(
   highPrice?: number,
   lowPrice?: number,
   totalVolume?: number,
-  totalTurnover?: number
+  totalTurnover?: number,
+  minuteFeed?: MinuteFeed | null
 ): ChartSeries {
   const market = detectFundMarket(fundName, fundCode);
   const rand = mulberry32(hashCode(code + range));
@@ -322,56 +342,69 @@ export function buildSeries(
         { t: endTs,   v: current,   real: false },
       ];
     } else {
-      const steps = 240;
-      let series: number[];
-      if (useStockAnchor && highPrice && lowPrice && highPrice > lowPrice) {
-        // 股票 + 有 high/low：用真实区间约束的随机漫步
-        series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
-      } else {
-        series = interpolate(startValue, current, steps, 0.0006, rand);
-      }
-      // 成交量/额分布：每段权重不同，让 hover 不同位置看到不同数字。
-      //   - 真实盘中：开盘/收盘通常成交活跃，午间偏低
-      //   - 用确定性 PRNG (mulberry32) 给每个 step 一个 0.3~1.7 的权重
-      //   - 权重按 session 内时间戳调整：开盘 30 分钟 ×1.6，收盘 30 分钟 ×1.5，午间 ×0.5
-      //   - 归一化使 sum(per-bar) = totalVolume
-      const totalMinutes = (endTs - startTs) / 60_000;
-      const weightRand = mulberry32(hashCode(code + 'vw-' + range));
-      const weights: number[] = new Array(steps);
-      let weightSum = 0;
-      for (let i = 0; i < steps; i++) {
-        const minute = (i / (steps - 1)) * totalMinutes;
-        // 时间因子：开盘 / 收盘权重高，午间低（A 股 11:30-13:00 是午休）
-        let timeFactor = 1.0;
-        if (minute < 30) timeFactor = 1.6;            // 开盘前 30 分钟
-        else if (minute > totalMinutes - 30) timeFactor = 1.5; // 收盘前 30 分钟
-        else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5; // 午间（仅 A 股全天 session）
-        // 随机扰动：0.3 ~ 1.7 范围
-        const noise = 0.3 + weightRand() * 1.4;
-        const w = timeFactor * noise;
-        weights[i] = w;
-        weightSum += w;
-      }
-      const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
-      const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
-
-      // X 轴统一用北京时间（北京时间本地时间）
-      points = series.map((v, i) => {
-        const ratio = i / (steps - 1);
-        const point: ChartPoint = {
-          t: startTs + ratio * (endTs - startTs),
-          v,
-        };
-        // 成交量/额：per-bar delta，按权重分布
-        if (isStock) {
-          if (volPerWeight > 0) point.volume = volPerWeight * weights[i];
-          if (turnPerWeight > 0) point.turnover = turnPerWeight * weights[i];
+      // 优先用真实分钟数据（Sina / 腾讯），缺失则 fallback 到合成插值
+      const realBars = minuteFeed?.bars || [];
+      if (realBars.length >= 2 && isStock) {
+        // 把真实分钟数据映射到 [startTs, endTs] 窗口；当前时间之后的数据截掉
+        points = realBars
+          .filter(b => b.t >= startTs && b.t <= endTs)
+          .map(b => ({
+            t: b.t,
+            v: b.v,
+            volume: b.volume,
+            turnover: b.turnover,
+            real: true,
+          }));
+        // 末尾追加"当前实时 tick"（如最后一条分钟数据的时间戳 < endTs 且 current 更新）
+        if (points.length > 0) {
+          const last = points[points.length - 1];
+          if (last.t < endTs && current > 0 && current !== last.v) {
+            points.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
+          }
         }
-        return point;
-      });
-      if (points.length > 0) {
-        points[0] = { t: startTs, v: startValue, real: true };
-        points[points.length - 1] = { t: endTs, v: current, real: true };
+      } else {
+        const steps = 240;
+        let series: number[];
+        if (useStockAnchor && highPrice && lowPrice && highPrice > lowPrice) {
+          series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
+        } else {
+          series = interpolate(startValue, current, steps, 0.0006, rand);
+        }
+        // 合成数据时仍用权重让 hover 不同位置看到不同数字
+        const totalMinutes = (endTs - startTs) / 60_000;
+        const weightRand = mulberry32(hashCode(code + 'vw-' + range));
+        const weights: number[] = new Array(steps);
+        let weightSum = 0;
+        for (let i = 0; i < steps; i++) {
+          const minute = (i / (steps - 1)) * totalMinutes;
+          let timeFactor = 1.0;
+          if (minute < 30) timeFactor = 1.6;
+          else if (minute > totalMinutes - 30) timeFactor = 1.5;
+          else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5;
+          const noise = 0.3 + weightRand() * 1.4;
+          const w = timeFactor * noise;
+          weights[i] = w;
+          weightSum += w;
+        }
+        const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
+        const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
+
+        points = series.map((v, i) => {
+          const ratio = i / (steps - 1);
+          const point: ChartPoint = {
+            t: startTs + ratio * (endTs - startTs),
+            v,
+          };
+          if (isStock) {
+            if (volPerWeight > 0) point.volume = volPerWeight * weights[i];
+            if (turnPerWeight > 0) point.turnover = turnPerWeight * weights[i];
+          }
+          return point;
+        });
+        if (points.length > 0) {
+          points[0] = { t: startTs, v: startValue, real: true };
+          points[points.length - 1] = { t: endTs, v: current, real: true };
+        }
       }
     }
     const stockNote = market === 'us'

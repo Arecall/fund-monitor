@@ -420,6 +420,108 @@ async function fetchEastMoneyExtraStockInfo(code, market) {
 }
 
 /**
+ * 个股分钟级 K 线（真实逐分钟数据，用于分时图 hover 显示真实成交量/额）
+ *
+ * A 股 — Sina CN_MarketDataService.getKLineData：
+ *   https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData
+ *     ?symbol=sh688825&scale=1&datalen=240
+ *   返回 JSONP: =([{day,open,high,low,close,volume,amount}, ...])
+ *   volume 单位：股  amount 单位：元
+ *
+ * 港股 — 腾讯 appstock/app/minute/query：
+ *   https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=hk00700
+ *   返回 JSON: { data: { hk00700: { data: { data: ["HHMM price volume amount", ...] } } } }
+ *   volume 单位：股  amount 单位：港币元
+ *
+ * 美股 — 腾讯 / 新浪 暂无公开分钟接口 → 返回 null，让前端 fallback 到合成数据
+ *
+ * 缓存 30 秒（分钟数据实时变化，但 30s 内重读基本一致，避免打爆上游）
+ */
+const _minuteCache = {};
+const MINUTE_CACHE_TTL = 30 * 1000;
+
+async function fetchStockMinuteData(code, market) {
+  const c = code.toUpperCase();
+  const cacheKey = `${market}:${c}`;
+  const now = Date.now();
+  const cached = _minuteCache[cacheKey];
+  if (cached && now - cached.ts < MINUTE_CACHE_TTL) {
+    return cached.data;
+  }
+
+  let result = null;
+  try {
+    if (market === 'domestic') {
+      // Sina 分钟 K 线
+      let symbol;
+      if (c.startsWith('60') || c.startsWith('68')) symbol = `sh${c}`;
+      else if (c.startsWith('00') || c.startsWith('30')) symbol = `sz${c}`;
+      else if (c.startsWith('8') || c.startsWith('BJ')) symbol = `bj${c}`;
+      else return null;
+      const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&datalen=240`;
+      const r = await axios.get(url, {
+        headers: { 'Referer': 'https://finance.sina.com.cn' },
+        timeout: 8000,
+        validateStatus: s => s === 200,
+      });
+      const text = typeof r.data === 'string' ? r.data : '';
+      // Sina 响应：/*<script>...*/\n=([...]);\n（注意结尾是 `]);` 不是 `])`）
+      const m = text.match(/=\(\[([\s\S]+?)\]\)\s*;?\s*$/);
+      if (!m) return null;
+      const arr = JSON.parse(`[${m[1]}]`);
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      result = arr.map(d => ({
+        time: d.day,                              // "2026-07-27 09:31:00"
+        open: parseFloat(d.open),
+        high: parseFloat(d.high),
+        low: parseFloat(d.low),
+        close: parseFloat(d.close),
+        volume: parseFloat(d.volume) || 0,        // 股
+        amount: parseFloat(d.amount) || 0,        // 元
+      }));
+    } else if (market === 'hk') {
+      // 腾讯分钟数据
+      const sym = `hk${c.padStart(5, '0')}`;
+      const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${sym}`;
+      const r = await axios.get(url, {
+        timeout: 8000,
+        family: 4,
+      });
+      const arr = r.data?.data?.[sym]?.data?.data;
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      // 格式：["HHMM price volume amount", ...]，每分钟一行
+      result = arr.map(line => {
+        const [hm, price, volume, amount] = line.split(' ');
+        if (!hm || !price) return null;
+        // HHMM → 当日 Date
+        const hh = parseInt(hm.slice(0, 2), 10);
+        const mm = parseInt(hm.slice(2, 4), 10);
+        // 港股是上午 9:30-12:00 + 下午 13:00-16:00 (北京时间)，合到 ISO 字符串
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const M = String(today.getMonth() + 1).padStart(2, '0');
+        const d = String(today.getDate()).padStart(2, '0');
+        return {
+          time: `${yyyy}-${M}-${d} ${hm.slice(0, 2)}:${hm.slice(2, 4)}:00`,
+          open: parseFloat(price),
+          high: parseFloat(price),
+          low: parseFloat(price),
+          close: parseFloat(price),
+          volume: parseFloat(volume) || 0,
+          amount: parseFloat(amount) || 0,
+        };
+      }).filter(Boolean);
+    }
+    // 美股暂无分钟接口，跳过
+  } catch (e) {
+    console.warn(`[minute] ${c} (${market}) 失败:`, e.message);
+  }
+
+  _minuteCache[cacheKey] = { ts: now, data: result };
+  return result;
+}
+
+/**
  * 东方财富 f10/lsjz —— A 股基金（包括 QDII）的官方净值历史
  *   返回最近 1 条记录，dwjz 即"上一个交易日公布的单位净值"
  *   QDII 的官方净值在海外市场收盘后第二天上午公布，比实时估算更可靠但滞后
@@ -1578,6 +1680,7 @@ module.exports = {
   fetchUSStockValuation,
   fetchSinaFundValuation,
   fetchASHareStockValuation,
+  fetchStockMinuteData,
   searchByName,
   getGoldPrices,
 };

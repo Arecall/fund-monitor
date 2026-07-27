@@ -599,6 +599,29 @@ app.get('/api/market/fund/:code/holdings', async (req, res) => {
   }
 });
 
+// 获取个股分钟级 K 线（用于分时图 hover 显示真实成交量/成交额）
+// A 股 → Sina；港股 → 腾讯；美股暂不支持 → 返回 null
+app.get('/api/market/fund/:code/minute', async (req, res) => {
+  const { code } = req.params;
+  const kindOverride = req.query.kind;     // 'stock'
+  if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
+    return res.status(400).json({ error: '代码格式不正确' });
+  }
+  try {
+    const val = await marketHelper.getFundValuation(code, kindOverride);
+    if (!val || !val.market) {
+      return res.status(404).json({ error: '未找到该代码对应的市场' });
+    }
+    if (val.market === 'us' || val.market === 'other') {
+      return res.json({ code, market: val.market, data: null });
+    }
+    const data = await marketHelper.fetchStockMinuteData(code, val.market);
+    res.json({ code, market: val.market, data: data || null });
+  } catch (error) {
+    res.status(500).json({ error: '获取分钟数据失败' });
+  }
+});
+
 // ==========================================
 // 5. 价格提醒接口 (Alerts Routes)
 // ==========================================

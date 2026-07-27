@@ -13,6 +13,7 @@ import {
 import { detectFundMarket, isMarketOpen } from '../utils/fundMarket';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
 import type { FundHistoryPoint } from '../services/api';
+import type { MinuteFeed } from '../utils/chartData';
 
 const RANGES: { key: RangeKey; label: string }[] = [
   { key: 'intraday', label: '分时' },
@@ -43,6 +44,8 @@ interface FundChartProps {
   totalVolume?: number;
   /** 个股当日累计成交额（元），用于 hover tooltip */
   totalTurnover?: number;
+  /** 真实分钟级 K 线（来自 Sina/腾讯），用于分时图价格 + 真实每分钟成交量/成交额 */
+  minuteFeed?: MinuteFeed | null;
   kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
@@ -64,6 +67,7 @@ export function FundChart({
   lowPrice,
   totalVolume,
   totalTurnover,
+  minuteFeed,
   kind = 'fund',
   height = 280,
   history = [],
@@ -90,8 +94,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover),
-    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed),
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed]
   );
   const points = series.points;
 
@@ -634,7 +638,7 @@ export function FundChart({
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      本时段量
+                      成交量
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
                       {fmtVol(hoverPoint.volume, fundMarket)}
@@ -645,7 +649,7 @@ export function FundChart({
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      本时段额
+                      成交额
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
                       {fmtTurn(hoverPoint.turnover)}

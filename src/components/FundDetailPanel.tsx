@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -19,10 +19,12 @@ import type {
   FundBasicInfo,
   FundHoldingStock
 } from '../services/api';
+import { fetchStockMinute } from '../services/api';
 import { FundChart } from './FundChart';
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
 import { AlertPanel } from './AlertPanel';
 import { formatMarketCap, formatVolume } from '../utils/format';
+import type { MinuteFeed } from '../utils/chartData';
 
 const SPRING = {
   panel:  { type: 'spring' as const, bounce: 0.05, duration: 0.4 },
@@ -60,6 +62,31 @@ export function FundDetailPanel({
   const prefersReducedMotion = useReducedMotion();
   const [chartKey, setChartKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  // 真实分钟 K 线（仅 stock 时拉取；美股接口缺失 → null → fallback 合成）
+  const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (kind !== 'stock' || !fund.fundcode) {
+      setMinuteData(null);
+      return;
+    }
+    (async () => {
+      const res = await fetchStockMinute(fund.fundcode, 'stock');
+      if (cancelled) return;
+      if (res?.data && res.data.length > 0) {
+        const bars = res.data.map(d => ({
+          t: Date.parse(d.time.replace(' ', 'T')),
+          v: d.close,
+          volume: d.volume,
+          turnover: d.amount,
+        })).filter(b => Number.isFinite(b.t));
+        setMinuteData({ bars });
+      } else {
+        setMinuteData(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fund.fundcode, kind, chartKey]);   // chartKey 变化（手动刷新）时重拉
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
@@ -288,6 +315,7 @@ export function FundDetailPanel({
             const v = (fund as any).stockSpecific?.turnover;
             return typeof v === 'number' && v > 0 ? v : undefined;
           })()}
+          minuteFeed={minuteData}
           height={300}
           history={history}
           historyLoading={historyLoading}
