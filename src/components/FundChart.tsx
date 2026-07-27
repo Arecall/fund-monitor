@@ -404,20 +404,20 @@ export function FundChart({
           className="block touch-none select-none"
         >
           <defs>
-            {/* 面积渐变：从上往下（顶部 0 → 底部浓），用户截图风格 */}
-            <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
+            {/* 面积渐变：顶浓底淡（上面深，下面浅） */}
+            <linearGradient id="gUp" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0" />
               <stop offset="25%"  stopColor="var(--color-up)" stopOpacity="0.05" />
               <stop offset="60%"  stopColor="var(--color-up)" stopOpacity="0.20" />
               <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0.45" />
             </linearGradient>
-            <linearGradient id="gDown" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="gDown" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0" />
               <stop offset="25%"  stopColor="var(--color-down)" stopOpacity="0.05" />
               <stop offset="60%"  stopColor="var(--color-down)" stopOpacity="0.20" />
               <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0.45" />
             </linearGradient>
-            <linearGradient id="gFlat" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="gFlat" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0" />
               <stop offset="50%"  stopColor="var(--color-flat)" stopOpacity="0.10" />
               <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0.28" />
