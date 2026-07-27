@@ -189,38 +189,19 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 趋势线：线性回归（最小二乘）拟合的首尾连线，仅股票显示
-  // slope = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
-  const trendLine = useMemo(() => {
-    if (kind !== 'stock' || points.length < 3) return null;
-    const values = points.map(p => p.v);
-    const n = values.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    for (let i = 0; i < n; i++) {
-      sumX += i;
-      sumY += values[i];
-      sumXY += i * values[i];
-      sumXX += i * i;
-    }
-    const denom = n * sumXX - sumX * sumX;
-    if (denom === 0) return null;
-    const slope = (n * sumXY - sumX * sumY) / denom;
-    const intercept = (sumY - slope * sumX) / n;
-    const yValStart = intercept;
-    const yValEnd = intercept + slope * (n - 1);
-    // 趋势线两端点若在视图内才画
-    const inRange = (v: number) => v >= minV && v <= maxV;
-    if (!inRange(yValStart) && !inRange(yValEnd)) return null;
-    return {
-      x1: x(0),
-      y1: y(yValStart),
-      x2: x(n - 1),
-      y2: y(yValEnd),
-      yValStart,
-      yValEnd,
-      slope,
-    };
-  }, [points, x, y, kind, minV, maxV]);
+  // 涨跌幅副 Y 轴：每个价格点对应的累计 % 变化（相对区间起点）
+  // 用同一 Y 坐标空间（数学上等价于价格线），副 Y 轴把 y → % 翻译给用户看
+  const pctByY = useCallback((v: number) => {
+    if (points.length === 0) return 0;
+    const base = points[0].v;
+    if (!Number.isFinite(base) || base === 0) return 0;
+    return (v - base) / base * 100;
+  }, [points]);
+  const yToPct = useCallback((yPx: number) => {
+    // Y 像素 → 价格 → %
+    const v = minV + (1 - (yPx - padding.top) / innerH) * range_v;
+    return pctByY(v);
+  }, [minV, range_v, padding.top, innerH, pctByY]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -451,31 +432,47 @@ export function FundChart({
             </filter>
           </defs>
 
-          {/* Y-grid lines */}
-          {yTicks.map((t, i) => (
-            <g key={i}>
-              <line
-                x1={padding.left}
-                x2={padding.left + innerW}
-                y1={t.y}
-                y2={t.y}
-                stroke="currentColor"
-                strokeOpacity="0.06"
-                strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
-              />
-              <text
-                x={padding.left - 8}
-                y={t.y + 3}
-                textAnchor="end"
-                fontSize="10"
-                fill="currentColor"
-                fillOpacity="0.45"
-                className="font-mono tabular-nums"
-              >
-                {t.v.toFixed(range === 'intraday' ? 4 : 2)}
-              </text>
-            </g>
-          ))}
+          {/* Y-grid lines + 左轴价格标签 + 右轴 % 标签（副 Y 轴） */}
+          {yTicks.map((t, i) => {
+            const pct = yToPct(t.y);
+            return (
+              <g key={i}>
+                <line
+                  x1={padding.left}
+                  x2={padding.left + innerW}
+                  y1={t.y}
+                  y2={t.y}
+                  stroke="currentColor"
+                  strokeOpacity="0.06"
+                  strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
+                />
+                {/* 左轴：价格 */}
+                <text
+                  x={padding.left - 8}
+                  y={t.y + 3}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="currentColor"
+                  fillOpacity="0.45"
+                  className="font-mono tabular-nums"
+                >
+                  {t.v.toFixed(range === 'intraday' ? 4 : 2)}
+                </text>
+                {/* 右轴：涨跌幅 %（相对区间起点） */}
+                <text
+                  x={padding.left + innerW + 8}
+                  y={t.y + 3}
+                  textAnchor="start"
+                  fontSize="10"
+                  fill="currentColor"
+                  fillOpacity="0.45"
+                  className="font-mono tabular-nums"
+                >
+                  {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                </text>
+              </g>
+            );
+          })}
 
           {/* X-axis labels */}
           {xTicks.map((t, i) => (
@@ -535,24 +532,6 @@ export function FundChart({
             animate={{ opacity: 1 }}
             transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
           />
-
-          {/* 趋势线（线性回归拟合，首尾连线，仅股票）。先画，在线之下 */}
-          {trendLine && (
-            <motion.line
-              key={`trend-${range}`}
-              x1={trendLine.x1}
-              y1={trendLine.y1}
-              x2={trendLine.x2}
-              y2={trendLine.y2}
-              stroke="url(#gTrend)"
-              strokeWidth="1.2"
-              strokeDasharray="4 4"
-              strokeLinecap="round"
-              initial={prefersReducedMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ ...SPRING_DRAW, delay: prefersReducedMotion ? 0 : 0.15 }}
-            />
-          )}
 
           {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
           <motion.path
@@ -779,25 +758,6 @@ export function FundChart({
             <span className="ml-2 text-slate-400">· {baselineLabel} {openPrice.toFixed(4)}</span>
           )}
         </span>
-        {trendLine && (() => {
-          // 趋势方向：以拟合斜率 vs 价格区间的相对值来判断
-          const span = Math.max(maxV - minV, 1e-6);
-          const normSlope = trendLine.slope * (points.length - 1) / span;
-          const trendUp = normSlope > 0.05;
-          const trendDown = normSlope < -0.05;
-          return (
-            <span
-              className="flex items-center gap-1 text-slate-500 ml-auto"
-              title={`线性回归拟合 · 斜率 ${trendLine.slope.toFixed(4)}（占区间 ${(Math.abs(normSlope) * 100).toFixed(1)}%）`}
-            >
-              <span className="inline-block w-3 h-px bg-current opacity-50" />
-              趋势
-              {trendUp ? <TrendingUp size={11} className="text-[var(--color-up)]" />
-                : trendDown ? <TrendingDown size={11} className="text-[var(--color-down)]" />
-                : <Minus size={11} className="text-slate-400" />}
-            </span>
-          );
-        })()}
       </div>
     </div>
   );
