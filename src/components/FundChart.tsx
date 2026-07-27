@@ -11,6 +11,7 @@ import {
   type DataSource
 } from '../utils/chartData';
 import { detectFundMarket, isMarketOpen } from '../utils/fundMarket';
+import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
 import type { FundHistoryPoint } from '../services/api';
 
 const RANGES: { key: RangeKey; label: string }[] = [
@@ -633,10 +634,10 @@ export function FundChart({
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      成交量
+                      本时段量
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {formatVolume(hoverPoint.volume, kind)}
+                      {fmtVol(hoverPoint.volume, fundMarket)}
                     </span>
                   </div>
                 )}
@@ -644,10 +645,10 @@ export function FundChart({
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      成交额
+                      本时段额
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {formatTurnover(hoverPoint.turnover)}
+                      {fmtTurn(hoverPoint.turnover)}
                     </span>
                   </div>
                 )}
@@ -725,32 +726,6 @@ function usePointerDown() {
       onPointerCancel: useCallback(() => setPressed(false), []),
     },
   };
-}
-
-/**
- * 成交量格式化：
- *   - A 股单位是"手"（1 手 = 100 股），> 1万 用"万手"，> 1亿 用"亿手"
- *   - 港美股单位是"股"，> 1万 用"万股"，> 1亿 用"亿股"
- */
-function formatVolume(v: number, kind?: 'fund' | 'stock'): string {
-  if (!Number.isFinite(v) || v <= 0) return '—';
-  const unit = kind === 'stock' ? '股' : '手';
-  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿${unit}`;
-  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万${unit}`;
-  return `${v.toFixed(0)}${unit}`;
-}
-
-/**
- * 成交额格式化（单位：元）：
- *   - > 1亿 用"亿元"
- *   - > 1万 用"万元"
- *   - 否则显示元
- */
-function formatTurnover(v: number): string {
-  if (!Number.isFinite(v) || v <= 0) return '—';
-  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿元`;
-  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万元`;
-  return `${v.toFixed(0)}元`;
 }
 
 const PressableButton = (props: HTMLMotionProps<'button'>) => {

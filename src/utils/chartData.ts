@@ -337,14 +337,15 @@ export function buildSeries(
           t: startTs + ratio * (endTs - startTs),
           v,
         };
-        // 累计成交量/额按时间线性分摊（仅 stock + 总量已知时填）
-        // 数据是合成的（基于真实总量 + 时间分摊），不是真实逐笔；用于 hover tooltip
+        // 成交量/额按"每段分摊"（per-bar delta），不是累计。
+        // 用户诉求：「当前时段的成交量/成交额，不是累计」→ 即每一段（240 步中此步）的成交量。
+        // 数据是合成的（真实总量均匀分摊到 steps-1 段），不是真实逐笔。
         if (isStock) {
           if (typeof totalVolume === 'number' && totalVolume > 0) {
-            point.volume = totalVolume * ratio;
+            point.volume = totalVolume / (steps - 1);
           }
           if (typeof totalTurnover === 'number' && totalTurnover > 0) {
-            point.turnover = totalTurnover * ratio;
+            point.turnover = totalTurnover / (steps - 1);
           }
         }
         return point;
