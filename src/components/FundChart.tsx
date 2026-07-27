@@ -100,7 +100,7 @@ export function FundChart({
   const points = series.points;
 
   // ─── Geometry ─────────────────────────────────────────────────────
-  const padding = { top: 18, right: 16, bottom: 28, left: 48 };
+  const padding = { top: 18, right: 52, bottom: 28, left: 48 };
   const innerW = width - padding.left - padding.right;
   const innerH = height - padding.top - padding.bottom;
 
