@@ -233,6 +233,36 @@ export function FundDetailPanel({
           </span>
         </MetricCard>
 
+        {basic?.scale?.size != null && (
+          <MetricCard label="当前规模" tone="neutral" title={`${basic.scale.size!.toFixed(2)} 亿`}>
+            <span className="font-mono font-bold text-[1.05rem] tabular-nums text-slate-800 dark:text-slate-100 leading-none">
+              {basic.scale.size!.toFixed(2)}
+              <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
+            </span>
+            <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+              {basic.scale.changePct != null && (
+                <span
+                  className={
+                    basic.scale.changePct > 0
+                      ? 'text-[var(--color-up)]'
+                      : basic.scale.changePct < 0
+                        ? 'text-[var(--color-down)]'
+                        : 'text-slate-400'
+                  }
+                >
+                  {basic.scale.changePct > 0 ? '+' : ''}
+                  {basic.scale.changePct.toFixed(2)}%
+                </span>
+              )}
+              {basic.scale.reportDate && (
+                <span className="font-mono tabular-nums">
+                  · {basic.scale.reportDate.slice(5)}
+                </span>
+              )}
+            </span>
+          </MetricCard>
+        )}
+
         <MetricCard
           label="持有金额"
           tone={position ? (holdingProfit > 0 ? 'up' : holdingProfit < 0 ? 'down' : 'neutral') : 'muted'}
