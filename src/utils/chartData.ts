@@ -104,6 +104,51 @@ function interpolate(
   return series;
 }
 
+/**
+ * 股票分时专用插值：基于今开/最高/最低的真实区间生成有"涨跌走势"的曲线。
+ *
+ * 与 interpolate 的区别：
+ *   1. 不强制端点对齐 linear trend，避免新股首日那种 8.66 → 50.97 的"直线起飞"
+ *   2. 波动幅度按 (high − low) 缩放，能填满真实的盘中区间
+ *   3. 随机漫步被 clamp 在 [low, high] 之间，保证不会画出无意义的越界
+ *
+ * 用于 A 股/港股/美股个股的分时图（kind === 'stock' 且 open/high/low 已知）。
+ */
+function interpolateStockIntraday(
+  open: number,
+  current: number,
+  high: number,
+  low: number,
+  steps: number,
+  rand: () => number
+): number[] {
+  const series: number[] = new Array(steps);
+  // 真实区间下限取 min(low, open, current)，上限取 max(high, open, current)
+  const lo = Math.min(low, open, current);
+  const hi = Math.max(high, open, current);
+  const span = hi - lo;
+  // 波动率按区间宽度归一化：让 walk 自然在 [low, high] 区间内飘动
+  // 经验值：每步 shock 约 ±(span * 0.08)，配合 weak drift 就能看到明显涨跌
+  const jitterScale = span * 0.08;
+  const revertRate = 0.08; // 弱回拉，留出更大的随机空间
+
+  // 起点终点：open → current（线性基线）
+  series[0] = open;
+  for (let i = 1; i < steps - 1; i++) {
+    const linearHere = open + (current - open) * (i / (steps - 1));
+    const shock = (rand() - 0.5) * 2 * jitterScale;
+    const drift = (linearHere - series[i - 1]) * revertRate;
+    let v = series[i - 1] + drift + shock;
+    // clamp 到真实区间，保证高/低不被穿越
+    if (v < lo) v = lo + (lo - v) * 0.3; // 撞下沿时反弹一点
+    if (v > hi) v = hi - (v - hi) * 0.3;
+    series[i] = v;
+  }
+  series[0] = open;
+  series[steps - 1] = current;
+  return series;
+}
+
 /** Convert YYYY-MM-DD to Unix ms at local midnight. */
 function dateToTs(date: string): number {
   const parts = date.split('-').map(Number);
@@ -181,7 +226,10 @@ export function buildSeries(
   history: FundHistoryPoint[] = [],
   fundName?: string,
   fundCode?: string,
-  kind?: 'fund' | 'stock'
+  kind?: 'fund' | 'stock',
+  openPrice?: number,
+  highPrice?: number,
+  lowPrice?: number
 ): ChartSeries {
   const market = detectFundMarket(fundName, fundCode);
   const rand = mulberry32(hashCode(code + range));
@@ -254,27 +302,38 @@ export function buildSeries(
     }
 
     let points: ChartPoint[];
+    const isStock = kind === 'stock' || /^[A-Za-z]{1,5}$/.test(code.trim()) || /^\d{4,5}$/.test(code.trim()) || (/^\d{6}$/.test(code.trim()) && /^(60|68|00|30|8)/.test(code.trim()));
+    // 股票分时优先用 open 作为起点（避免发行价 8.66 那种"直线起飞"）
+    // 仅当 open 合理（>0 且接近 current 量级）时才使用，否则 fallback 到 previous
+    const useStockAnchor = isStock && openPrice && openPrice > 0 && current > 0
+      && (Math.abs(openPrice - current) / current) < 1.5; // open 偏离 current 不超过 150%
+    const startValue = useStockAnchor ? openPrice! : previous;
+
     if (preMarket) {
       // 平台线 — 两点首尾由 SVG 连成直线
       points = [
-        { t: startTs, v: previous, real: true },
-        { t: endTs,   v: current,  real: false },
+        { t: startTs, v: startValue, real: true },
+        { t: endTs,   v: current,   real: false },
       ];
     } else {
       const steps = 240;
-      const series = interpolate(previous, current, steps, 0.0006, rand);
+      let series: number[];
+      if (useStockAnchor && highPrice && lowPrice && highPrice > lowPrice) {
+        // 股票 + 有 high/low：用真实区间约束的随机漫步
+        series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
+      } else {
+        series = interpolate(startValue, current, steps, 0.0006, rand);
+      }
       // X 轴统一用北京时间（北京时间本地时间）
       points = series.map((v, i) => ({
         t: startTs + (i / (steps - 1)) * (endTs - startTs),
         v,
       }));
       if (points.length > 0) {
-        points[0] = { t: startTs, v: previous, real: true };
+        points[0] = { t: startTs, v: startValue, real: true };
         points[points.length - 1] = { t: endTs, v: current, real: true };
       }
     }
-
-    const isStock = kind === 'stock' || /^[A-Za-z]{1,5}$/.test(code.trim()) || /^\d{4,5}$/.test(code.trim()) || (/^\d{6}$/.test(code.trim()) && /^(60|68|00|30|8)/.test(code.trim()));
     const stockNote = market === 'us'
       ? `分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
       : '分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）';

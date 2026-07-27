@@ -35,6 +35,9 @@ interface FundChartProps {
   previous: number;           // dwjz
   /** 个股当日开盘价（用于分时图基准线）；基金无此概念 */
   openPrice?: number;
+  /** 个股当日最高/最低价（让分时图 Y 轴聚焦真实盘中区间，避免被昨收/发行价挤压） */
+  highPrice?: number;
+  lowPrice?: number;
   kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
@@ -52,6 +55,8 @@ export function FundChart({
   current,
   previous,
   openPrice,
+  highPrice,
+  lowPrice,
   kind = 'fund',
   height = 280,
   history = [],
@@ -78,8 +83,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind),
-    [fundCode, current, previous, range, history, fundName, kind]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice),
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice]
   );
   const points = series.points;
 
@@ -90,11 +95,10 @@ export function FundChart({
 
   // Y 轴范围：
   //  - 默认以所有点的极值为画图范围。
-  //  - 分时图特例：如果起点（昨收/发行价）与其余点的偏离极大
-  //    （例如 A 股新股上市首日：发行价 8.66，开盘 49.50，区间 38–55），
-  //    那么把发行价算进 minV 会让真实波动区间被严重挤压。
-  //    这时把 Y 轴范围聚焦在"盘中真实成交区间"（除起点外的极值），
-  //    让红绿分时曲线饱满地铺满整个图表。
+  //  - 分时图特例：
+  //      (a) 股票 + 已知今日 high/low：直接用 [low, high] 当真实盘中区间，
+  //          这样无论起点（昨收/发行价）离多远都不会被挤压。
+  //      (b) 否则用"除起点外"的极值，并判定起点是否远离，否则退回全范围。
   const rangeBounds = useMemo(() => {
     if (points.length === 0) {
       return { lo: 0, hi: 1 };
@@ -105,20 +109,24 @@ export function FundChart({
     if (range !== 'intraday' || points.length < 4) {
       return { lo: allLo, hi: allHi };
     }
+    // 路径 (a)：股票 + 已知 high/low → 强制用 [low, high] 当作真实盘中区间
+    if (kind === 'stock' && highPrice && lowPrice && highPrice > lowPrice) {
+      const pad = (highPrice - lowPrice) * 0.04 || highPrice * 0.005;
+      return { lo: lowPrice - pad, hi: highPrice + pad };
+    }
+    // 路径 (b)：通用 — 看起点是否远离其余点
     const first = points[0].v;
     const restLo = Math.min(...points.slice(1).map(p => p.v));
     const restHi = Math.max(...points.slice(1).map(p => p.v));
     const restSpan = restHi - restLo;
-    // 偏离判定：起点与其余点极值的相对距离超过 1.5 倍盘中波动
     if (restSpan <= 0) return { lo: allLo, hi: allHi };
     const deviation = Math.max(Math.abs(first - restHi), Math.abs(first - restLo));
     if (deviation / restSpan >= 1.5) {
-      // 真实波动区间带 4% padding
       const pad = (restHi - restLo) * 0.04 || restHi * 0.005;
       return { lo: restLo - pad, hi: restHi + pad };
     }
     return { lo: allLo, hi: allHi };
-  }, [points, range]);
+  }, [points, range, kind, highPrice, lowPrice]);
 
   const minV = useMemo(() => rangeBounds.lo * 0.999, [rangeBounds]);
   const maxV = useMemo(() => rangeBounds.hi * 1.001, [rangeBounds]);

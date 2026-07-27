@@ -226,6 +226,14 @@ export function FundDetailPanel({
             const ssOpen = (fund as any).stockSpecific?.open;
             return typeof ssOpen === 'number' && ssOpen > 0 ? ssOpen : undefined;
           })()}
+          highPrice={(() => {
+            const v = (fund as any).stockSpecific?.high;
+            return typeof v === 'number' && v > 0 ? v : undefined;
+          })()}
+          lowPrice={(() => {
+            const v = (fund as any).stockSpecific?.low;
+            return typeof v === 'number' && v > 0 ? v : undefined;
+          })()}
           height={300}
           history={history}
           historyLoading={historyLoading}
