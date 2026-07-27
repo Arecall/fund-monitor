@@ -47,23 +47,23 @@ export interface FundValuation {
     totalMarketCap?: number | null;
     floatMarketCap?: number | null;
     turnoverRate?: number | null;
-    /** A 股资金流向（来自东财 push2） */
+    /** A 股资金流向（东财 push2 字段 f137/f140/f143/f146/f149） */
     flow?: {
       current: number;
-      /** 主力净流入额（元） = 特大单 + 大单 */
+      /** 主力净流入额（元）= 特大单 + 大单 ≈ f137 */
       mainNet: number;
-      /** 特大单净流入额（元） */
+      /** 特大单净流入额（元）= f140 */
       superLargeNet: number;
-      /** 大单净流入额（元） */
+      /** 大单净流入额（元）= f143 */
       largeNet: number;
-      /** 中单净流入额（元） */
+      /** 中单净流入额（元）= f146 */
       mediumNet: number;
-      /** 小单净流入额（元，量×当前价估算） */
+      /** 小单净流入额（元）= f149 */
       smallNet: number;
-      /** 主力净流入量（手） */
-      mainNetVolume: number;
-      /** 小单净流入量（手） */
-      smallNetVolume: number;
+      /** 主力 = 特大 + 大 自校验值，调试用 */
+      mainDerived?: number;
+      /** 数据来源标记：'push2' | 'push2delay' */
+      _source?: string;
     };
   };
 }

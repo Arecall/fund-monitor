@@ -444,19 +444,32 @@ async function fetchTencentExtraStockInfo(code, market) {
 /**
  * 东方财富 push2 — 个股资金流向（主力 / 特大单 / 大单 / 中单 / 小单 净流入）
  *   接口：push2.eastmoney.com/api/qt/stock/get
- *   字段（实测 A 股 push2）：
+ *   字段映射：从 f10 资金流向页 stock.min.js 反推
+ *   （https://emdatah5.eastmoney.com/dc/Content/js/zjlx/stock.min.js
+ *    getSSCJData() 调用 ../ZJLX/getZJLXData，fields=f135~f149,f86）
+ *
  *     f43  = 现价 / 100
  *     f60  = 昨收 / 100
- *     f170 = 涨跌幅 / 100
- *     f103 = 主力净流入额（元）
- *     f107 = 特大单净流入额（元）
- *     f105 = 大单净流入额（元）
- *     f104 = 中单净流入额（元）
- *     f71  = 小单净流入量（手）→ × 当前价 × 100 = 元
- *     f62  = 主力净流入量（手）
+ *     f86  = 时间戳（秒）
+ *     f135 = 主力流入（元）
+ *     f136 = 主力流出（元）
+ *     f137 = 主力净流入（元）= f135 - f136
+ *     f138 = 超大单流入
+ *     f139 = 超大单流出
+ *     f140 = 超大单净流入（元）  ← 特大单
+ *     f141 = 大单流入
+ *     f142 = 大单流出
+ *     f143 = 大单净流入（元）    ← 大单
+ *     f144 = 中单流入
+ *     f145 = 中单流出
+ *     f146 = 中单净流入（元）
+ *     f147 = 小单流入
+ *     f148 = 小单流出
+ *     f149 = 小单净流入（元）
  *
- *   注：东财字段编号历史上有微调，本接口返回值按上述映射；若发现顺序不对，
- *   需要用最新的东财 f10 资金流向页源码对比修正。
+ *   自校验：f137 ≈ f140 + f143（主力 = 特大 + 大），f135 - f136 ≈ f137
+ *   历史误用：曾用 f103/f107/f105/f104（不是资金流向字段，f107 实测返回 1），
+ *   现已对照 f10 资金流向页 stock.min.js 修正
  *
  *   缓存 60 秒（资金流向盘中变化较慢）
  *
@@ -484,7 +497,7 @@ async function fetchEastMoneyFlowStockInfo(code, market) {
     return null;
   }
 
-  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f103,f107,f105,f104,f71,f62`;
+  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f60,f86,f135,f136,f137,f140,f143,f146,f149`;
   // 东财 push2 不稳定，加重试
   let d = null;
   for (let attempt = 0; attempt < 3 && !d; attempt++) {
@@ -508,15 +521,12 @@ async function fetchEastMoneyFlowStockInfo(code, market) {
     return null;
   }
   const current = parseFloat(d.f43) / 100;          // 元
-  const mainNet = parseFloat(d.f103) || 0;          // 元
-  const superLargeNet = parseFloat(d.f107) || 0;    // 元
-  const largeNet = parseFloat(d.f105) || 0;         // 元
-  const mediumNet = parseFloat(d.f104) || 0;        // 元
-  const smallNetVolume = parseFloat(d.f71) || 0;   // 手
-  const mainNetVolume = parseFloat(d.f62) || 0;    // 手
-  // 小单净额 = 小单净流入量(手) × 100 × 当前价 ≈ 元（用当前价近似）
-  const smallNet = Number.isFinite(current) && current > 0 ? smallNetVolume * 100 * current : 0;
-  // 主力 = 特大单 + 大单（自校验：应接近 f103）
+  const mainNet = parseFloat(d.f137) || 0;          // 主力净流入
+  const superLargeNet = parseFloat(d.f140) || 0;    // 特大单净流入
+  const largeNet = parseFloat(d.f143) || 0;         // 大单净流入
+  const mediumNet = parseFloat(d.f146) || 0;        // 中单净流入
+  const smallNet = parseFloat(d.f149) || 0;         // 小单净流入
+  // 自校验：主力 = 特大 + 大
   const mainDerived = superLargeNet + largeNet;
   const value = {
     current,
@@ -525,9 +535,7 @@ async function fetchEastMoneyFlowStockInfo(code, market) {
     largeNet,
     mediumNet,
     smallNet,
-    mainNetVolume,
-    smallNetVolume,
-    mainDerived,         // 用于自校验 f103 是否就是特大+大
+    mainDerived,         // ≈ mainNet，调试用
   };
   _emFlowCache[cacheKey] = { ts: now, value };
   return value;
@@ -543,14 +551,13 @@ async function fetchEastMoneyFlowStockInfo(code, market) {
  *     唯一稳定可用的备选是 push2delay.eastmoney.com（同样 push2 API，不同 IP 池）
  *   验证：5 次连续请求均 200，100~600ms 返回，数据与 push2 完全一致
  *
- *   字段（与 push2 同 schema）：
+ *   字段（与 push2 同 schema，f135~f149 系列资金流向）：
  *     f43  = 现价 / 100
- *     f103 = 主力净流入额（元）
- *     f107 = 特大单净流入额（元）— 实测有时返回 1（与 push2 同样问题，字段失真）
- *     f105 = 大单净流入额（元）
- *     f104 = 中单净流入额（元）
- *     f71  = 小单净流入量（手）→ × 当前价 × 100 = 元
- *     f62  = 主力净流入量（手）
+ *     f137 = 主力净流入
+ *     f140 = 特大单净流入
+ *     f143 = 大单净流入
+ *     f146 = 中单净流入
+ *     f149 = 小单净流入
  *
  *   缓存 60 秒（与 push2 TTL 对齐）
  */
@@ -575,7 +582,7 @@ async function fetchEastMoneyDelayFlowStockInfo(code, market) {
     return null;
   }
 
-  const url = `https://push2delay.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f103,f107,f105,f104,f71,f62`;
+  const url = `https://push2delay.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f60,f86,f137,f140,f143,f146,f149`;
   try {
     const r = await axios.get(url, {
       family: 4,
@@ -591,13 +598,11 @@ async function fetchEastMoneyDelayFlowStockInfo(code, market) {
       return null;
     }
     const current = parseFloat(d.f43) / 100;
-    const mainNet = parseFloat(d.f103) || 0;
-    const superLargeNet = parseFloat(d.f107) || 0;
-    const largeNet = parseFloat(d.f105) || 0;
-    const mediumNet = parseFloat(d.f104) || 0;
-    const smallNetVolume = parseFloat(d.f71) || 0;
-    const mainNetVolume = parseFloat(d.f62) || 0;
-    const smallNet = Number.isFinite(current) && current > 0 ? smallNetVolume * 100 * current : 0;
+    const mainNet = parseFloat(d.f137) || 0;
+    const superLargeNet = parseFloat(d.f140) || 0;
+    const largeNet = parseFloat(d.f143) || 0;
+    const mediumNet = parseFloat(d.f146) || 0;
+    const smallNet = parseFloat(d.f149) || 0;
     const mainDerived = superLargeNet + largeNet;
     const value = {
       current,
@@ -606,8 +611,6 @@ async function fetchEastMoneyDelayFlowStockInfo(code, market) {
       largeNet,
       mediumNet,
       smallNet,
-      mainNetVolume,
-      smallNetVolume,
       mainDerived,
       _source: 'push2delay',
     };
