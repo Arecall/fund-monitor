@@ -189,18 +189,26 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 均价折线（类似截图里橙色 SMA / VWAP 风格）：用 20 周期简单移动平均
-  // 跟价格线不重合（MA 滞后、平滑），给"涨跌幅度"做参考基线
-  const maSeries = useMemo(() => {
-    if (points.length < 2) return { path: '', last: 0 };
-    const N = Math.min(20, points.length);
-    const sma = (i: number) => {
-      const start = Math.max(0, i - N + 1);
-      let sum = 0, cnt = 0;
-      for (let k = start; k <= i; k++) { sum += points[k].v; cnt++; }
-      return sum / cnt;
-    };
-    const pts = points.map((_p, i) => ({ x: x(i), y: y(sma(i)) }));
+  // 均价折线（VWAP — 成交量加权均价），参考东方财富分时图：
+  //   VWAP[t] = Σ(price[i] × volume[i]) / Σ(volume[i])   for i ≤ t
+  // 只在分时图 + 真实 minuteFeed 都带逐分钟 volume 时画。
+  // 缺数据时 path=''，渲染层不绘制均价线（避免误导）。
+  const vwapSeries = useMemo(() => {
+    if (points.length < 2) return { path: '', last: 0, perPoint: [] as number[] };
+    // 防御：所有点都必须有有效 volume > 0，否则无法算 VWAP
+    const allHaveVol = points.every(p => typeof p.volume === 'number' && p.volume > 0);
+    if (!allHaveVol) return { path: '', last: 0, perPoint: [] };
+
+    const vwaps: number[] = new Array(points.length);
+    let pvSum = 0;
+    let vSum = 0;
+    for (let i = 0; i < points.length; i++) {
+      pvSum += points[i].v * points[i].volume!;
+      vSum  += points[i].volume!;
+      vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
+    }
+
+    const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));
     let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[i - 1] || pts[i];
@@ -213,20 +221,22 @@ export function FundChart({
       const c2y = p2.y - (p3.y - p1.y) / 6;
       d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
     }
-    return { path: d, last: sma(points.length - 1) };
+    return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
   }, [points, x, y]);
 
-  // 副 Y 轴：均价相对首点的 % 偏离（用于 5 个 % 标签）
+  // 副 Y 轴：均价（VWAP）相对首点的 % 偏离（5 个 % 标签与橙色均价线对齐）。
+  // 没有均价线时回退到价格偏离，避免副轴空白。
   const pctSeries = useMemo(() => {
     if (points.length < 2) return { minPct: 0, maxPct: 0, last: 0 };
     const base = points[0].v;
     if (!Number.isFinite(base) || base === 0) return { minPct: 0, maxPct: 0, last: 0 };
-    const pcts = points.map(p => (p.v - base) / base * 100);
+    const series = vwapSeries.perPoint.length === points.length ? vwapSeries.perPoint : points.map(p => p.v);
+    const pcts = series.map(v => (v - base) / base * 100);
     const lo = Math.min(Math.min(...pcts), 0);
     const hi = Math.max(Math.max(...pcts), 0);
     const padP = (hi - lo) * 0.05 || 1;
     return { minPct: lo - padP, maxPct: hi + padP, last: pcts[pcts.length - 1] };
-  }, [points]);
+  }, [points, vwapSeries.perPoint]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -286,6 +296,10 @@ export function FundChart({
   const hoverChangePct = hoverPoint ? changePct(hoverPoint.v, firstPoint.v) : 0;
   const hoverX = hoverIdx !== null ? x(hoverIdx) : 0;
   const hoverY = hoverPoint ? y(hoverPoint.v) : 0;
+  // hover 处的均价：来自 vwapSeries.perPoint（缺 VWAP 时 undefined → 不显示均价行）
+  const hoverVwap = hoverIdx !== null && vwapSeries.perPoint.length === points.length
+    ? vwapSeries.perPoint[hoverIdx]
+    : undefined;
 
   // Auto-refresh indicator (the chart pulses subtly when refreshing)
   useEffect(() => {
@@ -588,11 +602,11 @@ export function FundChart({
             transition={SPRING_DRAW}
           />
 
-          {/* 均价线（橙色 20 周期 SMA，类似截图里均价线样式）— 副 Y 轴标 % 偏离 */}
-          {maSeries.path && (
+          {/* 均价线（橙色 VWAP — 成交量加权均价），仅在分时图 + 真实逐分钟 volume 数据存在时绘制 */}
+          {vwapSeries.path && (
             <motion.path
-              key={`ma-line-${range}`}
-              d={maSeries.path}
+              key={`vwap-line-${range}`}
+              d={vwapSeries.path}
               fill="none"
               stroke="#f59e0b"
               strokeWidth="1.25"
@@ -753,6 +767,17 @@ export function FundChart({
                     {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
                   </span>
                 </div>
+                {hoverVwap !== undefined && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      均价
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                      {hoverVwap.toFixed(4)}
+                    </span>
+                  </div>
+                )}
                 {hoverPoint.volume !== undefined && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
