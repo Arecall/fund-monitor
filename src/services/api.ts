@@ -36,6 +36,36 @@ export interface FundValuation {
   market?: 'domestic' | 'hk' | 'us' | 'other';  // 板块路由用
   /** 个股当日开盘价（A股个股可用；基金无此概念） */
   open?: string;
+  /** 个股专属字段（基金不会有） */
+  stockSpecific?: {
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    volume: number | null;
+    turnover: number | null;
+    change: number | null;
+    totalMarketCap?: number | null;
+    floatMarketCap?: number | null;
+    turnoverRate?: number | null;
+    /** A 股资金流向（来自东财 push2） */
+    flow?: {
+      current: number;
+      /** 主力净流入额（元） = 特大单 + 大单 */
+      mainNet: number;
+      /** 特大单净流入额（元） */
+      superLargeNet: number;
+      /** 大单净流入额（元） */
+      largeNet: number;
+      /** 中单净流入额（元） */
+      mediumNet: number;
+      /** 小单净流入额（元，量×当前价估算） */
+      smallNet: number;
+      /** 主力净流入量（手） */
+      mainNetVolume: number;
+      /** 小单净流入量（手） */
+      smallNetVolume: number;
+    };
+  };
 }
 
 export interface MarketIndex {

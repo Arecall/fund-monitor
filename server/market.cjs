@@ -442,6 +442,98 @@ async function fetchTencentExtraStockInfo(code, market) {
 }
 
 /**
+ * 东方财富 push2 — 个股资金流向（主力 / 特大单 / 大单 / 中单 / 小单 净流入）
+ *   接口：push2.eastmoney.com/api/qt/stock/get
+ *   字段（实测 A 股 push2）：
+ *     f43  = 现价 / 100
+ *     f60  = 昨收 / 100
+ *     f170 = 涨跌幅 / 100
+ *     f103 = 主力净流入额（元）
+ *     f107 = 特大单净流入额（元）
+ *     f105 = 大单净流入额（元）
+ *     f104 = 中单净流入额（元）
+ *     f71  = 小单净流入量（手）→ × 当前价 × 100 = 元
+ *     f62  = 主力净流入量（手）
+ *
+ *   注：东财字段编号历史上有微调，本接口返回值按上述映射；若发现顺序不对，
+ *   需要用最新的东财 f10 资金流向页源码对比修正。
+ *
+ *   缓存 60 秒（资金流向盘中变化较慢）
+ *
+ *   港股/美股：东财 push2 字段稀疏且不通用 → 返回 null
+ */
+const _emFlowCache = {};
+const EM_FLOW_TTL = 60 * 1000;
+
+async function fetchEastMoneyFlowStockInfo(code, market) {
+  if (market !== 'domestic') return null;   // 仅 A 股有完整的资金流向字段
+  const c = code.toUpperCase();
+  const cacheKey = `${market}:${c}`;
+  const now = Date.now();
+  const cached = _emFlowCache[cacheKey];
+  if (cached && now - cached.ts < EM_FLOW_TTL) {
+    return cached.value;
+  }
+
+  let secid;
+  if (c.startsWith('60') || c.startsWith('68')) secid = `1.${c}`;
+  else if (c.startsWith('00') || c.startsWith('30') || c.startsWith('8') || c.startsWith('BJ')) secid = `0.${c.replace(/^BJ/, '')}`;
+  else secid = null;
+  if (!secid) {
+    _emFlowCache[cacheKey] = { ts: now, value: null };
+    return null;
+  }
+
+  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f103,f107,f105,f104,f71,f62`;
+  // 东财 push2 不稳定，加重试
+  let d = null;
+  for (let attempt = 0; attempt < 3 && !d; attempt++) {
+    try {
+      const r = await axios.get(url, {
+        family: 4,
+        headers: {
+          'Referer': 'https://quote.eastmoney.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        },
+        timeout: 6000,
+      });
+      d = r.data?.data;
+    } catch (e) {
+      console.warn(`[emFlow] ${c} attempt ${attempt + 1} 失败:`, e.message);
+      if (attempt < 2) await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  if (!d) {
+    _emFlowCache[cacheKey] = { ts: now, value: null };
+    return null;
+  }
+  const current = parseFloat(d.f43) / 100;          // 元
+  const mainNet = parseFloat(d.f103) || 0;          // 元
+  const superLargeNet = parseFloat(d.f107) || 0;    // 元
+  const largeNet = parseFloat(d.f105) || 0;         // 元
+  const mediumNet = parseFloat(d.f104) || 0;        // 元
+  const smallNetVolume = parseFloat(d.f71) || 0;   // 手
+  const mainNetVolume = parseFloat(d.f62) || 0;    // 手
+  // 小单净额 = 小单净流入量(手) × 100 × 当前价 ≈ 元（用当前价近似）
+  const smallNet = Number.isFinite(current) && current > 0 ? smallNetVolume * 100 * current : 0;
+  // 主力 = 特大单 + 大单（自校验：应接近 f103）
+  const mainDerived = superLargeNet + largeNet;
+  const value = {
+    current,
+    mainNet,
+    superLargeNet,
+    largeNet,
+    mediumNet,
+    smallNet,
+    mainNetVolume,
+    smallNetVolume,
+    mainDerived,         // 用于自校验 f103 是否就是特大+大
+  };
+  _emFlowCache[cacheKey] = { ts: now, value };
+  return value;
+}
+
+/**
  * 个股分钟级 K 线（真实逐分钟数据，用于分时图 hover 显示真实成交量/额）
  *
  * A 股 — Sina CN_MarketDataService.getKLineData：
@@ -947,6 +1039,15 @@ async function getFundValuation(code, kindOverride) {
             result.stockSpecific.turnoverRate = extra.turnoverRate;
           }
         } catch {}
+        // A 股额外追加资金流向（来自东财 push2）
+        if (result.market === 'domestic') {
+          try {
+            const flow = await fetchEastMoneyFlowStockInfo(code, result.market);
+            if (flow) {
+              result.stockSpecific.flow = flow;
+            }
+          } catch {}
+        }
       }
       cache.fund[code] = { data: result, timestamp: now };
       return result;
@@ -1959,6 +2060,7 @@ module.exports = {
   fetchSinaFundValuation,
   fetchASHareStockValuation,
   fetchStockMinuteData,
+  fetchEastMoneyFlowStockInfo,
   searchByName,
   getGoldPrices,
 };

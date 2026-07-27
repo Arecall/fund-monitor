@@ -363,6 +363,11 @@ export function FundDetailPanel({
         />
       </section>
 
+      {/* ── Capital flow bar chart (仅 A 股个股) ── */}
+      {kind === 'stock' && (fund as any).stockSpecific?.flow && (
+        <CapitalFlowChart flow={(fund as any).stockSpecific.flow} />
+      )}
+
       {/* ── Asset allocation pie chart (仅基金) ── */}
       {kind === 'fund' && basic?.assetAllocation && (
         <AssetAllocationPie allocation={basic.assetAllocation} />
@@ -696,6 +701,132 @@ function HoldingsSummaryCard({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * 资金流向条形图（A 股个股）
+ *   - 顶部大数字：主力净流入额（红涨/绿跌）
+ *   - 横向条形图：4 档分类（特大单 / 大单 / 中单 / 小单），正负方向独立绘制
+ *   - 数据缺失时不渲染
+ *
+ *   数据来自东方财富 push2（仅 A 股）。字段含义按东财 f10 资金流向页惯例：
+ *     主力 = 特大单 + 大单
+ *     散户 = 中单 + 小单
+ */
+function CapitalFlowChart({
+  flow
+}: {
+  flow: {
+    mainNet: number;
+    superLargeNet: number;
+    largeNet: number;
+    mediumNet: number;
+    smallNet: number;
+  };
+}) {
+  const yi = (v: number) => v / 1e8;   // 元 → 亿
+
+  const segments = [
+    { key: 'super', label: '特大单',  value: flow.superLargeNet, color: '#dc2626' },
+    { key: 'large',  label: '大单',    value: flow.largeNet,      color: '#f97316' },
+    { key: 'medium', label: '中单',    value: flow.mediumNet,     color: '#3b82f6' },
+    { key: 'small',  label: '小单',    value: flow.smallNet,      color: '#8b5cf6' },
+  ];
+
+  // 找出绝对值最大的作为条形图缩放基准
+  const maxAbs = Math.max(...segments.map(s => Math.abs(s.value)), 1);
+  const mainYi = yi(flow.mainNet);
+  const isMainPositive = flow.mainNet >= 0;
+  // 中单+小单 = 散户（粗略估算，不一定严格 = -(主力)）
+  const retail = flow.mediumNet + flow.smallNet;
+
+  return (
+    <div className="rounded-2xl border border-[var(--hairline-border)] p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
+          资金流向
+        </h4>
+        <span className="text-[10px] text-slate-400 font-mono tabular-nums">当日累计</span>
+      </div>
+
+      {/* 头部大数字：主力净流入 */}
+      <div className="flex items-baseline gap-2 mb-4">
+        <span
+          className={
+            'font-mono font-bold tabular-nums leading-none ' +
+            (isMainPositive ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')
+          }
+          style={{ fontSize: '1.5rem' }}
+        >
+          {isMainPositive ? '+' : ''}{mainYi.toFixed(2)}
+        </span>
+        <span className="text-sm text-slate-500">亿（主力净流入）</span>
+        <span className="ml-auto text-[10px] text-slate-400 font-mono tabular-nums">
+          散户 {(retail >= 0 ? '+' : '') + retail.toFixed(2)} 亿
+        </span>
+      </div>
+
+      {/* 条形图：4 档分类，正负方向分别从中线向两边延伸 */}
+      <div className="space-y-2.5">
+        {segments.map(s => {
+          const v = s.value;
+          const widthPct = (Math.abs(v) / maxAbs) * 50;  // 单边最大 50%
+          const isPositive = v >= 0;
+          return (
+            <div key={s.key} className="flex items-center gap-2 text-xs">
+              <div className="w-14 shrink-0 text-slate-500 font-medium">{s.label}</div>
+              <div className="flex-1 relative h-5 flex items-center">
+                {/* 中线 */}
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300/60 dark:bg-slate-600/60" />
+                {/* 条形 */}
+                {isPositive ? (
+                  <div
+                    className="absolute h-5 rounded-sm transition-all"
+                    style={{
+                      left: '50%',
+                      width: `${widthPct}%`,
+                      backgroundColor: s.color,
+                      opacity: 0.85,
+                    }}
+                    title={`${s.label} 净流入 ${yi(v).toFixed(2)} 亿`}
+                  />
+                ) : (
+                  <div
+                    className="absolute h-5 rounded-sm transition-all"
+                    style={{
+                      right: '50%',
+                      width: `${widthPct}%`,
+                      backgroundColor: s.color,
+                      opacity: 0.85,
+                    }}
+                    title={`${s.label} 净流出 ${Math.abs(yi(v)).toFixed(2)} 亿`}
+                  />
+                )}
+              </div>
+              <div
+                className={
+                  'w-20 shrink-0 text-right font-mono tabular-nums font-semibold ' +
+                  (isPositive ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')
+                }
+              >
+                {(v >= 0 ? '+' : '') + yi(v).toFixed(2)}亿
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 图例（颜色 → 含义） */}
+      <div className="mt-4 pt-3 border-t border-[var(--hairline-border)] flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
+        <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: '#dc2626' }} /> 特大单（≥100万）</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: '#f97316' }} /> 大单（20-100万）</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: '#3b82f6' }} /> 中单（4-20万）</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: '#8b5cf6' }} /> 小单（&lt;4万）</span>
+      </div>
     </div>
   );
 }
