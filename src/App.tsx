@@ -398,8 +398,14 @@ function App() {
       merged.every((c, i) => c === watchlist[i]);
     if (unchanged) return;
 
-    // 乐观合并回全局
+    // 乐观合并回全局，并同步更新本地 watchlistItems 的 kind 归属为当前 selfTab
     setWatchlist(merged);
+    setWatchlistItems(prev => prev.map(item => {
+      if (newOrder.includes(item.fund_code)) {
+        return { ...item, kind: selfTab };
+      }
+      return item;
+    }));
 
     try {
       await reorderWatchlist(selfTab, newOrder);
