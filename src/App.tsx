@@ -389,18 +389,12 @@ function App() {
       selfTab === 'stock' ? item.kind !== 'stock' : item.kind === 'stock'
     );
 
-    // 组合新的 items 列表
+    // 组合新的 items 列表并立即同步更新前端与后端
     const newItems = selfTab === 'stock'
       ? [...otherTabItems, ...reorderedCurrentTabItems]
       : [...reorderedCurrentTabItems, ...otherTabItems];
 
     const newWatchlistCodes = newItems.map(i => i.fund_code);
-
-    // 检查顺序是否改变
-    const currentTabCodes = visibleListRef.current;
-    const unchanged = currentTabCodes.length === newOrder.length &&
-      currentTabCodes.every((c, i) => c === newOrder[i]);
-    if (unchanged) return;
 
     // 乐观更新前端
     setWatchlistItems(newItems);
