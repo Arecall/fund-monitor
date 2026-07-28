@@ -492,10 +492,9 @@ function App() {
       // 跳过了 button 的 onClick，使"查看详情"无法触发弹窗。
       // document 级 pointer 监听器足以覆盖所有跨行拖动场景，无需 capture。
       const isTouch = e.pointerType === 'touch';
-      // Touch: 长按 600ms 激活拖拽（手指静止按住）—— 与 PC 鼠标阈值对齐，
-      //   避免快速操作时手指轻微停顿被误识为长按
+      // Touch: 长按 2000ms 激活拖拽（手指静止按住 2 秒）—— 用户要求必须是"明确意图"
       // PC 鼠标: 定时器仅作为"按住不动也能激活"的兜底，真正的激活在 onPointerMove 里检测位移
-      const threshold = isTouch ? 600 : 600;
+      const threshold = isTouch ? 2000 : 600;
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
         // 触屏守卫：timer 触发时若用户已经累积滑动 > 10px（缓慢滚动场景），
