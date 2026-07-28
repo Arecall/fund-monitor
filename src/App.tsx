@@ -377,6 +377,8 @@ function App() {
     dragCommittedRef.current = false;
     dragRafPendingRef.current = false;
     dragLastToIdxRef.current = -1;
+    // 清理所有行的 scrollIntent，避免下一次手势继承
+    rowGestureRefs.current.forEach(st => { st.scrollIntent = false; });
   }, []);
 
   const commitDrag = useCallback(async () => {
@@ -388,6 +390,9 @@ function App() {
     setDragActiveCode(null);
     setPendingDragCode(null);
     setDragOverIndex(null);
+    // 清理本次激活行的 scrollIntent（拖拽完成后手势结束）
+    const st = rowGestureRefs.current.get(dragActiveCode);
+    if (st) st.scrollIntent = false;
 
     // 顺序未变 → 不发请求
     const kindOf = (c: string) => watchlistItems.find(w => w.fund_code === c)?.kind || 'fund';
@@ -441,6 +446,8 @@ function App() {
     start: { x: number; y: number; pointerId: number; el: Element | null } | null;
     activated: boolean;
     scrollIntent: boolean;   // 触屏：未激活就大距离移动 → 标记为滚动意图，抑制 onClick
+    lastX: number;           // 最近一次 pointermove 的 clientX（用于 timer 触发时算当前 dist）
+    lastY: number;           // 最近一次 pointermove 的 clientY
   }>());
 
   // 关键设计：move/up 监听绑到 document 而非每行。原因：
@@ -456,7 +463,7 @@ function App() {
       pointerDownTargetRef.current = e.target; // 记录原始按下位置（用于 onUp 短按检测）
       let st = rowGestureRefs.current.get(code);
       if (!st) {
-        st = { timer: null, start: null, activated: false, scrollIntent: false };
+        st = { timer: null, start: null, activated: false, scrollIntent: false, lastX: e.clientX, lastY: e.clientY };
         rowGestureRefs.current.set(code, st);
       }
       // 清理上次未释放的资源
@@ -465,6 +472,8 @@ function App() {
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
       st.scrollIntent = false;   // 新手势开始，重置滚动意图标记
+      st.lastX = e.clientX;      // 新手势起点
+      st.lastY = e.clientY;
       gestureCodeRef.current = code;
       // 新手势开始：重置 rAF + toIdx dedup 状态
       dragLastToIdxRef.current = -1;
@@ -489,6 +498,18 @@ function App() {
       const threshold = isTouch ? 600 : 600;
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
+        // 触屏守卫：timer 触发时若用户已经累积滑动 > 10px（缓慢滚动场景），
+        //   说明用户意图是滚动而非长按拖拽，直接跳过激活。
+        //   配合 pointermove 中 dist > 15 立即标记 scrollIntent，覆盖快速滚动场景。
+        if (isTouch) {
+          const dx = st!.lastX - st!.start.x;
+          const dy = st!.lastY - st!.start.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 10) {
+            st!.scrollIntent = true;  // 标记滚动意图，交给 onClickCapture 抑制
+            return;
+          }
+        }
         // PC 鼠标的定时器兜底：只有在用户按住超过 600ms 且有轻微位移时才激活
         // 主要激活路径是 onPointerMove 里检测到位移触发
         if (!isTouch) {
@@ -544,6 +565,10 @@ function App() {
       if (gcode !== code) return;
       const st = rowGestureRefs.current.get(code);
       if (!st || !st.start) return;
+
+      // 持续更新最新坐标，供 timer 触发时计算当前 dist（防止缓慢滚动越过 600ms 误激活）
+      st.lastX = e.clientX;
+      st.lastY = e.clientY;
 
       // 如果拖拽手势已经激活，强制阻止默认滚动行为 (避免向上拖拽触发页面上滑)
       if (st.activated) {
@@ -602,7 +627,7 @@ function App() {
     const onPointerCancel = () => {
       const st = rowGestureRefs.current.get(code);
       if (st && st.timer != null) { clearTimeout(st.timer); st.timer = null; }
-      if (st) st.start = null;
+      if (st) { st.start = null; st.scrollIntent = false; }
       if (gestureCodeRef.current === code) gestureCodeRef.current = null;
       setPendingDragCode(curr => (curr === code ? null : curr));
     };
@@ -675,6 +700,10 @@ function App() {
       if (!gcode) return;
       const st = rowGestureRefs.current.get(gcode);
       if (!st || !st.start) return;
+
+      // 持续更新最新坐标（document 级兜底，覆盖用户跨行移动时 per-row handler 接收不到的情况）
+      st.lastX = e.clientX;
+      st.lastY = e.clientY;
 
       // PC 鼠标：按住移动超过 6px 立即激活拖拽（兜底 document 级，覆盖鼠标移出原行的情况）
       if (!st.activated && e.pointerType === 'mouse') {
