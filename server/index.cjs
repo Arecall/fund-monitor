@@ -10,9 +10,20 @@ const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldi
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// 禁用 ETag，防止浏览器把 API 动态数据误判定为 304 Not Modified
+app.disable('etag');
+
 app.use(cors());
 app.use(express.json());
 app.set('trust proxy', 1);
+
+// 为所有动态 API 注入防强缓存/防 304 标头
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {

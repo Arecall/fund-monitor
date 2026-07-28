@@ -92,7 +92,10 @@ async function request(url: string, options: RequestInit = {}): Promise<any> {
     'X-User-Name': username
   };
 
-  const response = await fetch(url, { ...options, headers });
+  // 拼接 _t 时间戳防 304 缓存
+  const finalUrl = url.includes('?') ? `${url}&_t=${Date.now()}` : `${url}?_t=${Date.now()}`;
+
+  const response = await fetch(finalUrl, { cache: 'no-store', ...options, headers });
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
