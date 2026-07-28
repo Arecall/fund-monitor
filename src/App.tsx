@@ -1869,7 +1869,6 @@ function App() {
                         return (
                           <motion.div
                             key={code}
-                            layout="position"
                             data-fund-code={code}
                             initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -2050,7 +2049,6 @@ function App() {
                             return (
                               <motion.tr
                                 key={code}
-                                layout="position"
                                 data-fund-code={code}
                                 initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                                 animate={{ opacity: 1, y: 0 }}
