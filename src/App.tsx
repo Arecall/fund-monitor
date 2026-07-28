@@ -346,11 +346,18 @@ function App() {
     return item?.kind === 'stock' ? 'stock' : 'fund';
   }, [watchlistItems]);
 
-  // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = filteredList。
+  // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = 按后端 SQL 已排好的顺序过滤。
   const visibleList = useMemo(() => {
     if (pendingOrder) return pendingOrder;
-    return watchlist.filter(code => getKindOfCode(code) === selfTab);
-  }, [pendingOrder, watchlist, getKindOfCode, selfTab]);
+    const itemMap = new Map(watchlistItems.map(i => [i.fund_code, i]));
+    return watchlist.filter(code => {
+      const item = itemMap.get(code);
+      if (selfTab === 'stock') {
+        return item?.kind === 'stock';
+      }
+      return !item || item.kind === 'fund';
+    });
+  }, [pendingOrder, watchlist, watchlistItems, selfTab]);
   visibleListRef.current = visibleList;
   setSelectedFundCodeRef.current = setSelectedFundCode;
 
