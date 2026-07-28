@@ -171,13 +171,10 @@ app.post('/api/watchlist', async (req, res) => {
   const { code, kind, market, sector, note } = req.body || {};
   if (!code) return res.status(400).json({ error: '代码不能为空' });
 
-  // 格式校验：基金 6 位数字；股票 1-5 位字母 OR 5 位港股数字
-  const isFund = kind === 'fund' || (!kind && /^\d{6}$/.test(code));
-  const isStock = kind === 'stock' || (!kind && /^[A-Za-z]{1,5}$/.test(code)) || (!kind && /^\d{4,5}$/.test(code) && !/^\d{6}$/.test(code));
-
-  if (!isFund && !isStock) {
-    return res.status(400).json({ error: '代码格式不正确（需为 6 位基金 / 1-5 位股票 ticker / 5 位港股）' });
-  }
+  // 代码特征推导：美股字母 / 4-5位港股 / 6位以 60/68/00/30/002 开头的 A 股股票
+  const isKnownStockCode = /^[A-Za-z]{1,5}$/.test(code) || /^\d{4,5}$/.test(code) || (/^\d{6}$/.test(code) && /^(60|68|00|30)/.test(code));
+  const isStock = kind === 'stock' || (!kind && isKnownStockCode);
+  const isFund = !isStock;
 
   // 自动推断 sector
   let finalSector = sector;
@@ -270,7 +267,7 @@ app.put('/api/watchlist/order', async (req, res) => {
     try {
       for (let i = 0; i < codes.length; i++) {
         await dbHelper.run(
-          `UPDATE watchlist SET ${col} = ?, kind = COALESCE(kind, ?) WHERE user_id = ? AND fund_code = ?`,
+          `UPDATE watchlist SET ${col} = ?, kind = ? WHERE user_id = ? AND fund_code = ?`,
           [i + 1, kind, req.userId, codes[i]]
         );
       }

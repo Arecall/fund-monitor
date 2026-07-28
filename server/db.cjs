@@ -59,18 +59,16 @@ function initTables() {
         }
       });
     }
-    // 同时回填 kind 和 market — 旧数据库里 kind 默认 'fund' 会让 6 位数字误归为基金
-    // 实际分类规则：纯字母 / 4-5 位数字 / 沪市 60xx/68xx → stock；其他 6 位 → fund
+    // 强制校准历史数据：凡符合股票特征（纯字母 / 4-5位数字 / 沪深60,68,00,30,002开头6位）者统统校准为 'stock'
     db.run(`
       UPDATE watchlist
       SET kind = CASE
-            WHEN NULLIF(kind, '') IS NULL THEN
-              CASE
-                WHEN fund_code GLOB '[A-Za-z]*' AND length(fund_code) BETWEEN 1 AND 5 THEN 'stock'
-                WHEN length(fund_code) BETWEEN 4 AND 5 AND fund_code GLOB '[0-9]*' THEN 'stock'
-                WHEN length(fund_code) = 6 AND substr(fund_code, 1, 2) IN ('60', '68') THEN 'stock'
-                ELSE 'fund'
-              END
+            WHEN fund_code GLOB '[A-Za-z]*' AND length(fund_code) BETWEEN 1 AND 5 THEN 'stock'
+            WHEN length(fund_code) BETWEEN 4 AND 5 AND fund_code GLOB '[0-9]*' THEN 'stock'
+            WHEN length(fund_code) = 6 AND (
+              substr(fund_code, 1, 2) IN ('60', '68', '00', '30') OR
+              substr(fund_code, 1, 3) = '002'
+            ) THEN 'stock'
             ELSE kind
           END,
           market = COALESCE(
