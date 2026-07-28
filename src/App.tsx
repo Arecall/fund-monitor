@@ -492,30 +492,26 @@ function App() {
       // 跳过了 button 的 onClick，使"查看详情"无法触发弹窗。
       // document 级 pointer 监听器足以覆盖所有跨行拖动场景，无需 capture。
       const isTouch = e.pointerType === 'touch';
-      // Touch: 长按 2000ms 激活拖拽（手指静止按住 2 秒）—— 用户要求必须是"明确意图"
-      // PC 鼠标: 定时器仅作为"按住不动也能激活"的兜底，真正的激活在 onPointerMove 里检测位移
-      const threshold = isTouch ? 2000 : 600;
+      // 触屏 + PC 鼠标: 长按 2000ms 激活拖拽（手指/鼠标静止按住 2 秒）—— 必须是"明确意图"
+      //   阈值同步：避免短停顿被误识为长按
+      // PC 鼠标: 主要激活路径仍在 onPointerMove 里检测位移 (>6px 立即激活)，
+      //   定时器只是"按住不动也能激活"的兜底
+      const threshold = isTouch ? 2000 : 2000;
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
-        // 触屏守卫：timer 触发时若用户已经累积滑动 > 10px（缓慢滚动场景），
-        //   说明用户意图是滚动而非长按拖拽，直接跳过激活。
+        // 拖拽激活守卫：timer 触发时若已经累积位移 > 10px，说明用户实际在拖动鼠标（>6px 已激活）
+        //   或在缓慢滚动，直接跳过激活并标记 scrollIntent。
         //   配合 pointermove 中 dist > 15 立即标记 scrollIntent，覆盖快速滚动场景。
-        if (isTouch) {
-          const dx = st!.lastX - st!.start.x;
-          const dy = st!.lastY - st!.start.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > 10) {
-            st!.scrollIntent = true;  // 标记滚动意图，交给 onClickCapture 抑制
-            return;
-          }
+        const dx = st!.lastX - st!.start.x;
+        const dy = st!.lastY - st!.start.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 10) {
+          st!.scrollIntent = true;  // 标记滚动意图，交给 onClickCapture 抑制
+          return;
         }
-        // PC 鼠标的定时器兜底：只有在用户按住超过 600ms 且有轻微位移时才激活
-        // 主要激活路径是 onPointerMove 里检测到位移触发
-        if (!isTouch) {
-          const curY = dragLastClientYRef.current;
-          const dy = Math.abs(curY - st!.start.y);
-          if (dy < 2) return; // 完全没动，不激活（普通慢速点击走这里）
-        }
+        // PC 鼠标的定时器兜底：只有"按住完全不动"且超过 2s 时才通过定时器激活
+        // 主要激活路径仍然是 onPointerMove 里检测到 >6px 位移触发
+        if (!isTouch && dist < 2) return; // 完全没动，不激活（普通慢速点击走这里）
         st!.activated = true;
 
         // 采样当前所有可见行的静态 DOM 物理 Bound (top, bottom, mid)
