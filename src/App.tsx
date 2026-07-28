@@ -340,21 +340,19 @@ function App() {
 
   /* ---------- Drag-to-reorder: state + handlers ---------- */
 
+  // 准确推导给定代码的 kind（优先查 watchlistItems，兜底按代码格式/当前 Tab）
+  const getKindOfCode = useCallback((c: string): 'fund' | 'stock' => {
+    const item = watchlistItems.find(w => w.fund_code === c);
+    if (item?.kind) return item.kind;
+    if (/^[A-Za-z]+$/.test(c) || /^\d{4,5}$/.test(c)) return 'stock';
+    return 'fund';
+  }, [watchlistItems]);
+
   // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = filteredList。
   const visibleList = useMemo(() => {
     if (pendingOrder) return pendingOrder;
-    return watchlist.filter(code => {
-      if (selfTab === 'fund') {
-        const it = watchlistItems.find(w => w.fund_code === code);
-        return !it || it.kind === 'fund';
-      }
-      if (selfTab === 'stock') {
-        const it = watchlistItems.find(w => w.fund_code === code);
-        return it?.kind === 'stock';
-      }
-      return true;
-    });
-  }, [pendingOrder, watchlist, watchlistItems, selfTab]);
+    return watchlist.filter(code => getKindOfCode(code) === selfTab);
+  }, [pendingOrder, watchlist, getKindOfCode, selfTab]);
   visibleListRef.current = visibleList;
   setSelectedFundCodeRef.current = setSelectedFundCode;
 
@@ -395,8 +393,7 @@ function App() {
     if (st) st.scrollIntent = false;
 
     // 顺序未变 → 不发请求
-    const kindOf = (c: string) => watchlistItems.find(w => w.fund_code === c)?.kind || 'fund';
-    const merged = mergeKindOrder(watchlist, newOrder, selfTab, kindOf);
+    const merged = mergeKindOrder(watchlist, newOrder, selfTab, getKindOfCode);
     const unchanged = merged.length === watchlist.length &&
       merged.every((c, i) => c === watchlist[i]);
     if (unchanged) return;
@@ -411,7 +408,7 @@ function App() {
       setToastMsg('排序保存失败：' + (err?.message || '请检查后端'));
       setTimeout(() => setToastMsg(null), 3000);
     }
-  }, [pendingOrder, dragActiveCode, watchlist, watchlistItems, selfTab]);
+  }, [pendingOrder, dragActiveCode, watchlist, getKindOfCode, selfTab]);
   commitDragRef.current = commitDrag;
 
   // 拖动中按 Esc 取消

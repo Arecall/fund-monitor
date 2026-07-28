@@ -148,13 +148,13 @@ app.get('/api/watchlist', async (req, res) => {
                FROM watchlist WHERE user_id = ?`;
     const params = [req.userId];
     if (kind) { sql += ' AND kind = ?'; params.push(kind); }
-    // 按当前激活的 kind 选排序列；不传 kind 时分别用各自 kind 的 sort_order 排序（COALESCE 防 NULL）
+    // 按当前激活的 kind 选排序列；不传 kind 时按 kind 分组，各自精确按 sort_order 排序
     if (kind === 'fund') {
       sql += ' ORDER BY COALESCE(fund_sort_order, id) ASC, id ASC';
     } else if (kind === 'stock') {
       sql += ' ORDER BY COALESCE(stock_sort_order, id) ASC, id ASC';
     } else {
-      sql += ' ORDER BY CASE WHEN kind = "stock" THEN COALESCE(stock_sort_order, id) ELSE COALESCE(fund_sort_order, id) END ASC, id ASC';
+      sql += " ORDER BY CASE WHEN kind = 'stock' THEN 1 ELSE 0 END ASC, CASE WHEN kind = 'stock' THEN COALESCE(stock_sort_order, id) ELSE COALESCE(fund_sort_order, id) END ASC, id ASC";
     }
     const rows = await dbHelper.all(sql, params);
     res.json({
