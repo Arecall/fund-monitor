@@ -340,40 +340,15 @@ function App() {
 
   /* ---------- Drag-to-reorder: state + handlers ---------- */
 
-  // 准确获取给定代码的 kind（严格查 watchlistItems 里的 kind 记录）
-  const getKindOfCode = useCallback((c: string): 'fund' | 'stock' => {
-    const item = watchlistItems.find(w => w.fund_code === c);
-    return item?.kind === 'stock' ? 'stock' : 'fund';
-  }, [watchlistItems]);
-
-  // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = 按后端 SQL 已排好的顺序过滤。
+  // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = 100% 严格按后端 SQL 已排好的顺序过滤呈现。
   const visibleList = useMemo(() => {
     if (pendingOrder) return pendingOrder;
-    const itemMap = new Map(watchlistItems.map(i => [i.fund_code, i]));
-    return watchlist.filter(code => {
-      const item = itemMap.get(code);
-      if (selfTab === 'stock') {
-        return item?.kind === 'stock';
-      }
-      return !item || item.kind === 'fund';
-    });
-  }, [pendingOrder, watchlist, watchlistItems, selfTab]);
+    return watchlistItems
+      .filter(item => (selfTab === 'stock' ? item.kind === 'stock' : item.kind === 'fund'))
+      .map(item => item.fund_code);
+  }, [pendingOrder, watchlistItems, selfTab]);
   visibleListRef.current = visibleList;
   setSelectedFundCodeRef.current = setSelectedFundCode;
-
-  // 用 kindOf 把重排后的子序列塞回全局 watchlist，同时保留另一 kind 的相对位置
-  function mergeKindOrder(
-    global: string[],
-    reorderedKind: string[],
-    activeKind: 'fund' | 'stock',
-    kindOf: (c: string) => 'fund' | 'stock'
-  ): string[] {
-    const queue = [...reorderedKind];
-    const res = global.map(code => (kindOf(code) === activeKind && queue.length > 0 ? queue.shift()! : code));
-    // 如果有未被填入的项目，补在末尾
-    if (queue.length > 0) res.push(...queue);
-    return res;
-  }
 
   const cancelDrag = useCallback(() => {
     setDragActiveCode(null);
@@ -391,6 +366,7 @@ function App() {
     const activeCode = activeCodeParam || dragActiveCode;
     const newOrder = orderParam || pendingOrderRef.current || pendingOrder;
     if (!newOrder || !activeCode) return;
+    const previousItems = watchlistItems;
     const previousWatchlist = watchlist;
     setPendingOrderAndRef(null);
     // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
@@ -403,29 +379,43 @@ function App() {
       if (st) st.scrollIntent = false;
     }
 
-    // 顺序未变 → 不发请求
-    const merged = mergeKindOrder(watchlist, newOrder, selfTab, getKindOfCode);
-    const unchanged = merged.length === watchlist.length &&
-      merged.every((c, i) => c === watchlist[i]);
+    // 重排 watchlistItems 中属于当前 selfTab 的顺序，保持其他 Tab 项目不动
+    const currentTabItemsMap = new Map(watchlistItems.map(i => [i.fund_code, i]));
+    const reorderedCurrentTabItems = newOrder
+      .map(code => currentTabItemsMap.get(code))
+      .filter((item): item is WatchlistItem => Boolean(item));
+
+    const otherTabItems = watchlistItems.filter(item =>
+      selfTab === 'stock' ? item.kind !== 'stock' : item.kind === 'stock'
+    );
+
+    // 组合新的 items 列表
+    const newItems = selfTab === 'stock'
+      ? [...otherTabItems, ...reorderedCurrentTabItems]
+      : [...reorderedCurrentTabItems, ...otherTabItems];
+
+    const newWatchlistCodes = newItems.map(i => i.fund_code);
+
+    // 检查顺序是否改变
+    const currentTabCodes = visibleListRef.current;
+    const unchanged = currentTabCodes.length === newOrder.length &&
+      currentTabCodes.every((c, i) => c === newOrder[i]);
     if (unchanged) return;
 
-    // 乐观合并回全局，并同步更新本地 watchlistItems 的 kind 归属为当前 selfTab
-    setWatchlist(merged);
-    setWatchlistItems(prev => prev.map(item => {
-      if (newOrder.includes(item.fund_code)) {
-        return { ...item, kind: selfTab };
-      }
-      return item;
-    }));
+    // 乐观更新前端
+    setWatchlistItems(newItems);
+    setWatchlist(newWatchlistCodes);
 
     try {
       await reorderWatchlist(selfTab, newOrder);
     } catch (err: any) {
-      setWatchlist(previousWatchlist);  // 回滚
+      setWatchlistItems(previousItems);  // 回滚
+      setWatchlist(previousWatchlist);
       setToastMsg('排序保存失败：' + (err?.message || '请检查后端'));
       setTimeout(() => setToastMsg(null), 3000);
     }
-  }, [pendingOrder, dragActiveCode, watchlist, getKindOfCode, selfTab]);
+  }, [pendingOrder, dragActiveCode, watchlistItems, watchlist, selfTab]);
+  commitDragRef.current = commitDrag;
   commitDragRef.current = commitDrag;
 
   // 拖动中按 Esc 取消
