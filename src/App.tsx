@@ -340,13 +340,11 @@ function App() {
 
   /* ---------- Drag-to-reorder: state + handlers ---------- */
 
-  // 准确推导给定代码的 kind（优先查 watchlistItems，兜底按 A股/港/美 股票特征代码格式）
+  // 准确获取给定代码的 kind（严格查 watchlistItems 里的 kind，无记录时返回当前 selfTab）
   const getKindOfCode = useCallback((c: string): 'fund' | 'stock' => {
     const item = watchlistItems.find(w => w.fund_code === c);
-    if (item?.kind) return item.kind;
-    if (/^[A-Za-z]+$/.test(c) || /^\d{4,5}$/.test(c) || (/^\d{6}$/.test(c) && /^(60|68|00|30)/.test(c))) return 'stock';
-    return 'fund';
-  }, [watchlistItems]);
+    return item?.kind || selfTab;
+  }, [watchlistItems, selfTab]);
 
   // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = filteredList。
   const visibleList = useMemo(() => {

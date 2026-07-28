@@ -332,7 +332,7 @@ export function buildSeries(
     }
 
     let points: ChartPoint[];
-    const isStock = kind === 'stock' || /^[A-Za-z]{1,5}$/.test(code.trim()) || /^\d{4,5}$/.test(code.trim()) || (/^\d{6}$/.test(code.trim()) && /^(60|68|00|30|8)/.test(code.trim()));
+    const isStock = kind === 'stock';
     // 股票分时优先用 open 作为起点（避免发行价 8.66 那种"直线起飞"）
     // 仅当 open 合理（>0 且接近 current 量级）时才使用，否则 fallback 到 previous
     const useStockAnchor = isStock && openPrice && openPrice > 0 && current > 0
