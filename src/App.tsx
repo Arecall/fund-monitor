@@ -364,7 +364,10 @@ function App() {
     kindOf: (c: string) => 'fund' | 'stock'
   ): string[] {
     const queue = [...reorderedKind];
-    return global.map(code => (kindOf(code) === activeKind ? queue.shift()! : code));
+    const res = global.map(code => (kindOf(code) === activeKind && queue.length > 0 ? queue.shift()! : code));
+    // 如果有未被填入的项目，补在末尾
+    if (queue.length > 0) res.push(...queue);
+    return res;
   }
 
   const cancelDrag = useCallback(() => {
@@ -813,6 +816,9 @@ function App() {
     //   拖动期间的 chain rAF 因为是 ±1 步, 可能还没推到 goal 就被 onUp 打断;
     //   onUp 时一次性 jump 到 goal, 保证最终顺序符合手指落点.
     const flushToGoal = (gcode: string): string[] | null => {
+      const curr = pendingOrderRef.current || visibleListRef.current;
+      if (!curr || curr.length === 0) return null;
+
       const bounds = slotBoundsRef.current;
       const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
       let clampedClientY = dragLastClientYRef.current;
@@ -822,20 +828,18 @@ function App() {
         clampedClientY = Math.min(Math.max(topBoundary, clampedClientY), bottomBoundary);
       }
 
-      let res: string[] | null = pendingOrderRef.current;
-      setPendingOrderAndRef(curr => {
-        if (!curr) return curr;
-        const fromIdx = curr.indexOf(gcode);
-        if (fromIdx < 0) { res = curr; return curr; }
-        const goalIdx = calculateGoalIdx(gcode, clampedClientY, curr);
-        if (goalIdx === fromIdx) { res = curr; return curr; }
-        const next = [...curr];
+      const fromIdx = curr.indexOf(gcode);
+      if (fromIdx < 0) return curr;
+
+      const goalIdx = calculateGoalIdx(gcode, clampedClientY, curr);
+      const next = [...curr];
+      if (goalIdx !== fromIdx) {
         next.splice(fromIdx, 1);
         next.splice(goalIdx, 0, gcode);
-        res = next;
-        return next;
-      });
-      return res;
+      }
+
+      setPendingOrderAndRef(next);
+      return next;
     };
     const onCancel = () => {
       const gcode = gestureCodeRef.current;
