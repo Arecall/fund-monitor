@@ -340,11 +340,11 @@ function App() {
 
   /* ---------- Drag-to-reorder: state + handlers ---------- */
 
-  // 准确获取给定代码的 kind（严格查 watchlistItems 里的 kind，无记录时返回当前 selfTab）
+  // 准确获取给定代码的 kind（严格查 watchlistItems 里的 kind 记录）
   const getKindOfCode = useCallback((c: string): 'fund' | 'stock' => {
     const item = watchlistItems.find(w => w.fund_code === c);
-    return item?.kind || selfTab;
-  }, [watchlistItems, selfTab]);
+    return item?.kind === 'stock' ? 'stock' : 'fund';
+  }, [watchlistItems]);
 
   // 当前 tab 内可见的顺序。拖动中由 pendingOrder 提供预览；非拖动态 = filteredList。
   const visibleList = useMemo(() => {
