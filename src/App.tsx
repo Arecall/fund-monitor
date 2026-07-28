@@ -602,6 +602,7 @@ function App() {
         setPendingDragCode(null);
         setPendingOrderAndRef(visibleList);
         dragCommittedRef.current = true;
+        dragLastClientYRef.current = e.clientY;
         return;
       }
 
@@ -700,9 +701,10 @@ function App() {
       const st = rowGestureRefs.current.get(gcode);
       if (!st || !st.start) return;
 
-      // 持续更新最新坐标（document 级兜底，覆盖用户跨行移动时 per-row handler 接收不到的情况）
+      // 持续更新最新坐标（必须同步 dragLastClientYRef，避免放手时解算物理插槽 Goal 读到滞后坐标）
       st.lastX = e.clientX;
       st.lastY = e.clientY;
+      dragLastClientYRef.current = e.clientY;
 
       // PC 鼠标：按住移动超过 6px 立即激活拖拽（兜底 document 级，覆盖鼠标移出原行的情况）
       if (!st.activated && e.pointerType === 'mouse') {
