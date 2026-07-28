@@ -1839,8 +1839,7 @@ function App() {
                 <>
                   {/* ── Mobile Card List ── */}
                   <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800/60">
-                    <AnimatePresence initial={false}>
-                      {visibleList.map((code) => {
+                    {visibleList.map((code) => {
                         const fund = fundsData[code];
                         const pos = positions[code];
                         if (!fund) {
@@ -1989,7 +1988,6 @@ function App() {
                           </motion.div>
                         );
                       })}
-                    </AnimatePresence>
                   </div>
 
                   {/* ── Desktop Table View ── */}
@@ -2017,8 +2015,7 @@ function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                        <AnimatePresence initial={false}>
-                          {visibleList.map((code) => {
+                        {visibleList.map((code) => {
                             const fund = fundsData[code];
                             const pos = positions[code];
 
@@ -2202,7 +2199,6 @@ function App() {
                               </motion.tr>
                             );
                           })}
-                        </AnimatePresence>
                       </tbody>
                     </table>
                   </div>
