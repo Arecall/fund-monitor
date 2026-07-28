@@ -133,6 +133,84 @@ const AnimatedNumber = React.memo(function AnimatedNumber({
 });
 
 /* ───────────────────────────────────────────────────────────────────
+   Apple Design Skeleton Loaders — 1:1 layout match with shimmer
+   ─────────────────────────────────────────────────────────────────── */
+
+function SkeletonCard({ code }: { code: string }) {
+  return (
+    <div className="p-3.5 space-y-3 animate-pulse select-none">
+      {/* Header: Name + Tag */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-1.5 flex-1 min-w-0">
+          <div className="h-4 w-32 bg-slate-200/80 dark:bg-white/10 rounded-md" />
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-mono text-slate-300 dark:text-slate-600">{code}</span>
+            <div className="h-3.5 w-10 bg-slate-200/60 dark:bg-white/5 rounded-full" />
+          </div>
+        </div>
+        <div className="h-6 w-6 rounded-full bg-slate-200/50 dark:bg-white/5" />
+      </div>
+
+      {/* Body: Price + Change pill */}
+      <div className="flex items-baseline justify-between pt-1">
+        <div className="space-y-1">
+          <div className="h-2.5 w-12 bg-slate-200/60 dark:bg-white/5 rounded" />
+          <div className="h-5 w-20 bg-slate-200/80 dark:bg-white/10 rounded-md" />
+        </div>
+        <div className="h-7 w-16 bg-slate-200/80 dark:bg-white/10 rounded-lg" />
+      </div>
+
+      {/* Footer info bar */}
+      <div className="pt-2 border-t border-slate-100/60 dark:border-slate-800/40 flex items-center justify-between">
+        <div className="h-3 w-24 bg-slate-200/50 dark:bg-white/5 rounded" />
+        <div className="h-3 w-16 bg-slate-200/50 dark:bg-white/5 rounded" />
+      </div>
+    </div>
+  );
+}
+
+function SkeletonTableRow({ code }: { code: string }) {
+  return (
+    <tr className="animate-pulse select-none">
+      {/* 名称与代码 */}
+      <td className="p-4 pl-6">
+        <div className="space-y-1.5">
+          <div className="h-4 w-36 bg-slate-200/80 dark:bg-white/10 rounded-md" />
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-mono text-slate-300 dark:text-slate-600">{code}</span>
+            <div className="h-3.5 w-9 bg-slate-200/60 dark:bg-white/5 rounded-full" />
+          </div>
+        </div>
+      </td>
+      {/* 昨收 */}
+      <td className="p-4 text-right">
+        <div className="h-4 w-16 bg-slate-200/70 dark:bg-white/10 rounded ml-auto" />
+      </td>
+      {/* 现价 */}
+      <td className="p-4 text-right">
+        <div className="h-4 w-16 bg-slate-200/80 dark:bg-white/10 rounded ml-auto" />
+      </td>
+      {/* 涨跌幅 */}
+      <td className="p-4 text-right">
+        <div className="h-5 w-14 bg-slate-200/80 dark:bg-white/10 rounded-md ml-auto" />
+      </td>
+      {/* 持仓 */}
+      <td className="p-4 text-right">
+        <div className="h-4 w-20 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
+      </td>
+      {/* 盈亏 */}
+      <td className="p-4 text-right">
+        <div className="h-4 w-14 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
+      </td>
+      {/* 操作按钮 */}
+      <td className="p-4 text-center pr-6">
+        <div className="h-6 w-16 bg-slate-200/70 dark:bg-white/10 rounded-full mx-auto" />
+      </td>
+    </tr>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────────
    Main App
    ─────────────────────────────────────────────────────────────────── */
 
@@ -1576,11 +1654,7 @@ function App() {
                         const fund = fundsData[code];
                         const pos = positions[code];
                         if (!fund) {
-                          return (
-                            <div key={code} className="p-4 text-xs text-slate-400 font-mono animate-pulse">
-                              {code} 读取中...
-                            </div>
-                          );
+                          return <SkeletonCard key={code} code={code} />;
                         }
 
                         const changeVal = parseFloat(fund.gszzl);
@@ -1754,14 +1828,7 @@ function App() {
                             const pos = positions[code];
 
                             if (!fund) {
-                              return (
-                                <tr key={code}>
-                                  <td className="p-4 pl-6 text-slate-400 font-mono font-semibold">{code}</td>
-                                  <td colSpan={6} className="p-4 text-center text-[10px] text-slate-400 animate-pulse">
-                                    读取中...
-                                  </td>
-                                </tr>
-                              );
+                              return <SkeletonTableRow key={code} code={code} />;
                             }
 
                             const changeVal = parseFloat(fund.gszzl);
