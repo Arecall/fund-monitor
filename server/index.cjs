@@ -182,9 +182,8 @@ app.post('/api/watchlist', async (req, res) => {
   const { code, kind, market, sector, note } = req.body || {};
   if (!code) return res.status(400).json({ error: '代码不能为空' });
 
-  // 代码特征推导：美股字母 / 4-5位港股 / 6位以 60/68/00/30/002 开头的 A 股股票
-  const isKnownStockCode = /^[A-Za-z]{1,5}$/.test(code) || /^\d{4,5}$/.test(code) || (/^\d{6}$/.test(code) && /^(60|68|00|30)/.test(code));
-  const isStock = kind === 'stock' || (!kind && isKnownStockCode);
+  // 若请求显式指定了 kind ('fund'|'stock')，100% 遵从用户的 Tab 归属设置（美股 ETF/基金属于 'fund'，美股个股属于 'stock'）
+  const isStock = kind ? (kind === 'stock') : (/^\d{4,5}$/.test(code) || (/^\d{6}$/.test(code) && /^(60|68|00|30)/.test(code)));
   const isFund = !isStock;
 
   // 自动推断 sector

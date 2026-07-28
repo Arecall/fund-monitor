@@ -59,18 +59,10 @@ function initTables() {
         }
       });
     }
-    // 强制校准历史数据：凡符合股票特征（纯字母 / 4-5位数字 / 沪深60,68,00,30,002开头6位）者统统校准为 'stock'
+    // 回填/校准缺失的 market 和 kind（若 kind 已存在则尊重原设置，不强制把美股基金覆盖成 stock）
     db.run(`
       UPDATE watchlist
-      SET kind = CASE
-            WHEN fund_code GLOB '[A-Za-z]*' AND length(fund_code) BETWEEN 1 AND 5 THEN 'stock'
-            WHEN length(fund_code) BETWEEN 4 AND 5 AND fund_code GLOB '[0-9]*' THEN 'stock'
-            WHEN length(fund_code) = 6 AND (
-              substr(fund_code, 1, 2) IN ('60', '68', '00', '30') OR
-              substr(fund_code, 1, 3) = '002'
-            ) THEN 'stock'
-            ELSE kind
-          END,
+      SET kind = COALESCE(NULLIF(kind, ''), 'fund'),
           market = COALESCE(
             NULLIF(market, ''),
             CASE
