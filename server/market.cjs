@@ -679,70 +679,99 @@ async function fetchStockMinuteData(code, market) {
 
   let result = null;
   try {
+    // 1. 优先使用腾讯分钟数据 API（覆盖 A 股、港股、美股，速度快且格式统一）
+    let tencentSym = null;
     if (market === 'domestic') {
-      // Sina 分钟 K 线
+      if (c.startsWith('60') || c.startsWith('68')) tencentSym = `sh${c}`;
+      else if (c.startsWith('00') || c.startsWith('30')) tencentSym = `sz${c}`;
+      else if (c.startsWith('8') || c.startsWith('4') || c.startsWith('BJ')) tencentSym = `bj${c.replace('BJ', '')}`;
+    } else if (market === 'hk') {
+      tencentSym = `hk${c.padStart(5, '0')}`;
+    } else if (market === 'us') {
+      tencentSym = `us${c}`;
+    }
+
+    if (tencentSym) {
+      try {
+        const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tencentSym}`;
+        const r = await axios.get(url, { timeout: 6000 });
+        const rawArr = r.data?.data?.[tencentSym]?.data?.data;
+        if (Array.isArray(rawArr) && rawArr.length > 0) {
+          const today = new Date();
+          const yyyy = today.getFullYear();
+          const M = String(today.getMonth() + 1).padStart(2, '0');
+          const d = String(today.getDate()).padStart(2, '0');
+
+          let prevCumVol = 0;
+          let prevCumAmt = 0;
+
+          result = rawArr.map(line => {
+            const [hm, priceStr, cumVolStr, cumAmtStr] = line.split(' ');
+            if (!hm || !priceStr) return null;
+
+            const p = parseFloat(priceStr);
+            const cumVol = parseFloat(cumVolStr) || 0;
+            const cumAmt = parseFloat(cumAmtStr) || 0;
+
+            const stepVol = Math.max(0, cumVol - prevCumVol);
+            const stepAmt = Math.max(0, cumAmt - prevCumAmt);
+
+            prevCumVol = cumVol;
+            prevCumAmt = cumAmt;
+
+            const hh = hm.slice(0, 2);
+            const mm = hm.slice(2, 4);
+
+            return {
+              time: `${yyyy}-${M}-${d} ${hh}:${mm}:00`,
+              open: p,
+              high: p,
+              low: p,
+              close: p,
+              volume: stepVol > 0 ? stepVol : (cumVol > 0 ? cumVol / rawArr.length : 100),
+              amount: stepAmt > 0 ? stepAmt : (cumAmt > 0 ? cumAmt / rawArr.length : p * 100),
+            };
+          }).filter(Boolean);
+        }
+      } catch (err) {
+        console.warn(`[minute] 腾讯 API ${tencentSym} 获取失败，准备 fallback:`, err.message);
+      }
+    }
+
+    // 2. 如果腾讯未返回数据且为 A 股，Fallback 到 Sina 分钟 K 线
+    if (!result && market === 'domestic') {
       let symbol;
       if (c.startsWith('60') || c.startsWith('68')) symbol = `sh${c}`;
       else if (c.startsWith('00') || c.startsWith('30')) symbol = `sz${c}`;
       else if (c.startsWith('8') || c.startsWith('BJ')) symbol = `bj${c}`;
-      else return null;
-      const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&datalen=240`;
-      const r = await axios.get(url, {
-        headers: { 'Referer': 'https://finance.sina.com.cn' },
-        timeout: 8000,
-        validateStatus: s => s === 200,
-      });
-      const text = typeof r.data === 'string' ? r.data : '';
-      // Sina 响应：/*<script>...*/\n=([...]);\n（注意结尾是 `]);` 不是 `])`）
-      const m = text.match(/=\(\[([\s\S]+?)\]\)\s*;?\s*$/);
-      if (!m) return null;
-      const arr = JSON.parse(`[${m[1]}]`);
-      if (!Array.isArray(arr) || arr.length === 0) return null;
-      result = arr.map(d => ({
-        time: d.day,                              // "2026-07-27 09:31:00"
-        open: parseFloat(d.open),
-        high: parseFloat(d.high),
-        low: parseFloat(d.low),
-        close: parseFloat(d.close),
-        volume: parseFloat(d.volume) || 0,        // 股
-        amount: parseFloat(d.amount) || 0,        // 元
-      }));
-    } else if (market === 'hk') {
-      // 腾讯分钟数据
-      const sym = `hk${c.padStart(5, '0')}`;
-      const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${sym}`;
-      const r = await axios.get(url, {
-        timeout: 8000,
-        family: 4,
-      });
-      const arr = r.data?.data?.[sym]?.data?.data;
-      if (!Array.isArray(arr) || arr.length === 0) return null;
-      // 格式：["HHMM price volume amount", ...]，每分钟一行
-      result = arr.map(line => {
-        const [hm, price, volume, amount] = line.split(' ');
-        if (!hm || !price) return null;
-        // HHMM → 当日 Date
-        const hh = parseInt(hm.slice(0, 2), 10);
-        const mm = parseInt(hm.slice(2, 4), 10);
-        // 港股是上午 9:30-12:00 + 下午 13:00-16:00 (北京时间)，合到 ISO 字符串
-        const today = new Date();
-        const yyyy = today.getFullYear();
-        const M = String(today.getMonth() + 1).padStart(2, '0');
-        const d = String(today.getDate()).padStart(2, '0');
-        return {
-          time: `${yyyy}-${M}-${d} ${hm.slice(0, 2)}:${hm.slice(2, 4)}:00`,
-          open: parseFloat(price),
-          high: parseFloat(price),
-          low: parseFloat(price),
-          close: parseFloat(price),
-          volume: parseFloat(volume) || 0,
-          amount: parseFloat(amount) || 0,
-        };
-      }).filter(Boolean);
+
+      if (symbol) {
+        const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&datalen=240`;
+        const r = await axios.get(url, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 6000,
+          validateStatus: s => s === 200,
+        });
+        const text = typeof r.data === 'string' ? r.data : '';
+        const m = text.match(/=\(\[([\s\S]+?)\]\)\s*;?\s*$/);
+        if (m) {
+          const arr = JSON.parse(`[${m[1]}]`);
+          if (Array.isArray(arr) && arr.length > 0) {
+            result = arr.map(d => ({
+              time: d.day,
+              open: parseFloat(d.open),
+              high: parseFloat(d.high),
+              low: parseFloat(d.low),
+              close: parseFloat(d.close),
+              volume: parseFloat(d.volume) || 0,
+              amount: parseFloat(d.amount) || 0,
+            }));
+          }
+        }
+      }
     }
-    // 美股暂无分钟接口，跳过
   } catch (e) {
-    console.warn(`[minute] ${c} (${market}) 失败:`, e.message);
+    console.warn(`[minute] ${c} (${market}) 获取异常:`, e.message);
   }
 
   _minuteCache[cacheKey] = { ts: now, data: result };
@@ -1976,7 +2005,7 @@ async function searchStocksEastMoney(q, type) {
  *   返回 JS 字符串: var suggest_type_...="code1,name1,exchange1,...;code2,name2,...";
  *   11/13/14 = 沪深基金; 12 = 港股; 15 = 美股(带前缀 gb_)
  */
-async function searchSinaSuggest(q) {
+async function searchSinaSuggest(q, targetKind = 'fund') {
   const url = `http://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=${encodeURIComponent(q)}`;
   try {
     const { data } = await axios.get(url, {
@@ -1985,7 +2014,6 @@ async function searchSinaSuggest(q) {
       headers: { Referer: 'https://finance.sina.com.cn' },
     });
     const text = iconv.decode(data, 'gbk');
-    // 形如: var suggest_value="...;...;";
     const m = text.match(/"([^"]+)"/);
     if (!m) return [];
     const rows = m[1].split(';').filter(Boolean);
@@ -1995,12 +2023,18 @@ async function searchSinaSuggest(q) {
       const code = String(cols[1] || cols[0] || '').trim().toUpperCase();
       const name = String(cols[3] || cols[2] || '').trim();
       const exchange = String(cols[2] || '').toLowerCase();
+      const type = String(cols[0] || '').toLowerCase();
       if (!code || !name) return null;
       let market = 'domestic';
       if (exchange === 'hk' || /^\d{4,5}$/.test(code)) market = 'hk';
       else if (exchange.startsWith('gb') || /^[A-Z]{1,5}$/.test(code)) market = 'us';
-      // 新浪返回的 kind 通过 type 参数决定；这里取默认 'fund'，由调用方按 kind 过滤
-      return { code, name, market, kind: 'fund' };
+
+      // 根据新浪返回的 type 或特征精确判断 kind
+      let kind = 'fund';
+      if (market === 'hk' || market === 'us' || name.includes('ETF') || name.includes('股票') || type === '11' || type === '12' || type === '15') {
+        kind = targetKind; // 尊重目标 Tab
+      }
+      return { code, name, market, kind };
     }).filter(Boolean);
   } catch (e) {
     console.error('[searchSinaSuggest] 失败:', e.message);
@@ -2032,18 +2066,16 @@ async function searchByName(query, kind = 'fund') {
       searchStocksEastMoney(q, '22')
     );
   }
-  // 双源：新浪也跑一次（kind 过滤后保留匹配项）
-  tasks.push(searchSinaSuggest(q));
+  // 双源：新浪也跑一次
+  tasks.push(searchSinaSuggest(q, kind));
 
   const settled = await Promise.allSettled(tasks);
   const all = [];
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status !== 'fulfilled') continue;
-    const isSina = i === tasks.length - 1;
     for (const item of r.value) {
-      if (isSina && item.kind !== kind) continue; // 新浪的 kind 默认为 fund，需过滤
-      all.push(item);
+      all.push({ ...item, kind }); // 强制限制为当前 Tab 的 target kind
     }
   }
 

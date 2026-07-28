@@ -406,8 +406,12 @@ export function buildSeries(
           return point;
         });
         if (points.length > 0) {
-          points[0] = { t: startTs, v: startValue, real: true };
-          points[points.length - 1] = { t: endTs, v: current, real: true };
+          const firstVol = points[0].volume;
+          const firstTurn = points[0].turnover;
+          const lastVol = points[points.length - 1].volume;
+          const lastTurn = points[points.length - 1].turnover;
+          points[0] = { t: startTs, v: startValue, real: true, volume: firstVol, turnover: firstTurn };
+          points[points.length - 1] = { t: endTs, v: current, real: true, volume: lastVol, turnover: lastTurn };
         }
       }
     }

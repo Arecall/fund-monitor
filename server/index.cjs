@@ -252,6 +252,7 @@ app.patch('/api/watchlist/:code', async (req, res) => {
 // 批量重排某个 kind 下的顺序（前端长按拖动排序落库）
 app.put('/api/watchlist/order', async (req, res) => {
   const { kind, codes } = req.body || {};
+  console.log('[PUT /api/watchlist/order] kind=', kind, 'codes=', codes);
   if (kind !== 'fund' && kind !== 'stock') {
     return res.status(400).json({ error: 'kind 必须是 fund 或 stock' });
   }
@@ -282,6 +283,7 @@ app.put('/api/watchlist/order', async (req, res) => {
         );
       }
       await dbHelper.db.exec('COMMIT');
+      console.log('[PUT /api/watchlist/order] COMMIT success, updated', codes.length, 'rows for kind=', kind);
     } catch (e) {
       await dbHelper.db.exec('ROLLBACK');
       throw e;
@@ -624,7 +626,7 @@ app.get('/api/market/fund/:code/minute', async (req, res) => {
     if (!val || !val.market) {
       return res.status(404).json({ error: '未找到该代码对应的市场' });
     }
-    if (val.market === 'us' || val.market === 'other') {
+    if (val.market === 'other') {
       return res.json({ code, market: val.market, data: null });
     }
     const data = await marketHelper.fetchStockMinuteData(code, val.market);

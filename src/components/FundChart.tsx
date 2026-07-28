@@ -189,23 +189,32 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 均价折线（VWAP — 成交量加权均价），参考东方财富分时图：
+  // 均价折线（VWAP — 成交量加权均价），参考东方财富/同花顺分时图：
   //   VWAP[t] = Σ(price[i] × volume[i]) / Σ(volume[i])   for i ≤ t
-  // 只在分时图 + 真实 minuteFeed 都带逐分钟 volume 时画。
-  // 缺数据时 path=''，渲染层不绘制均价线（避免误导）。
+  // 分时 ('intraday') 和 1日 ('1D') 维度均使用 VWAP；若缺失 volume 数据，回退为价格的算术累积均值。
   const vwapSeries = useMemo(() => {
-    if (points.length < 2) return { path: '', last: 0, perPoint: [] as number[] };
-    // 防御：所有点都必须有有效 volume > 0，否则无法算 VWAP
-    const allHaveVol = points.every(p => typeof p.volume === 'number' && p.volume > 0);
-    if (!allHaveVol) return { path: '', last: 0, perPoint: [] };
+    if ((range !== 'intraday' && range !== '1D') || points.length < 2) {
+      return { path: '', last: 0, perPoint: [] as number[] };
+    }
 
     const vwaps: number[] = new Array(points.length);
-    let pvSum = 0;
-    let vSum = 0;
-    for (let i = 0; i < points.length; i++) {
-      pvSum += points[i].v * points[i].volume!;
-      vSum  += points[i].volume!;
-      vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
+    const hasVol = points.some(p => typeof p.volume === 'number' && p.volume > 0);
+
+    if (hasVol) {
+      let pvSum = 0;
+      let vSum = 0;
+      for (let i = 0; i < points.length; i++) {
+        const vol = points[i].volume || 1;
+        pvSum += points[i].v * vol;
+        vSum += vol;
+        vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
+      }
+    } else {
+      let pSum = 0;
+      for (let i = 0; i < points.length; i++) {
+        pSum += points[i].v;
+        vwaps[i] = pSum / (i + 1);
+      }
     }
 
     const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));
@@ -222,37 +231,44 @@ export function FundChart({
       d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
     }
     return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
-  }, [points, x, y]);
+  }, [points, range, x, y]);
 
-  // MA10 均价线（10 周期简单移动平均），数据来自后端 history 接口的 ma10 字段。
-  // 仅在 1D / 1W / 1M（非分时）绘制；分时图不画。前 9 个交易日 ma10=null。
+  // MA10 均价线（10 周期简单移动平均）
+  // 周 ('1W') / 月 ('1M') 维度使用 MA10 均线；分时 ('intraday') 和 1日 ('1D') 维度使用 VWAP。
+  // 若某点缺乏后端 ma10 字段或最后一个点为当日实时 tick，则根据已知价格实时补算 MA10。
   const maSeries = useMemo(() => {
-    if (range === 'intraday' || points.length < 2) return { path: '', last: 0, perPoint: [] as (number | null)[] };
-    const vals: (number | null)[] = points.map(p => (typeof p.ma10 === 'number' ? p.ma10 : null));
-    const firstIdx = vals.findIndex(v => typeof v === 'number');
-    if (firstIdx === -1) return { path: '', last: 0, perPoint: vals };
+    if (range === 'intraday' || range === '1D' || points.length < 2) {
+      return { path: '', last: 0, perPoint: [] as number[] };
+    }
 
-    const segments: string[] = [];
-    let inSeg = false;
-    let lastIdx = -1;
-    for (let i = firstIdx; i < vals.length; i++) {
-      const v = vals[i];
-      if (typeof v === 'number') {
-        const px = x(i);
-        const py = y(v);
-        if (!inSeg) {
-          segments.push(`M ${px.toFixed(2)} ${py.toFixed(2)}`);
-          inSeg = true;
-        } else {
-          segments.push(`L ${px.toFixed(2)} ${py.toFixed(2)}`);
-        }
-        lastIdx = i;
+    const vwaps: number[] = new Array(points.length);
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (typeof p.ma10 === 'number' && p.ma10 > 0) {
+        vwaps[i] = p.ma10;
       } else {
-        inSeg = false;
+        // 取当前点及之前最多 10 个点的均值
+        const start = Math.max(0, i - 9);
+        const sub = points.slice(start, i + 1);
+        const sum = sub.reduce((acc, item) => acc + item.v, 0);
+        vwaps[i] = sum / sub.length;
       }
     }
-    const lastValid = lastIdx >= 0 ? vals[lastIdx] : null;
-    return { path: segments.join(' '), last: typeof lastValid === 'number' ? lastValid : 0, perPoint: vals };
+
+    const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));
+    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      const c1x = p1.x + (p2.x - p0.x) / 6;
+      const c1y = p1.y + (p2.y - p0.y) / 6;
+      const c2x = p2.x - (p3.x - p1.x) / 6;
+      const c2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+    }
+    return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
   }, [points, range, x, y]);
 
   // 副 Y 轴：均价（VWAP）相对首点的 % 偏离（5 个 % 标签与橙色均价线对齐）。
@@ -331,8 +347,8 @@ export function FundChart({
   const hoverVwap = hoverIdx !== null && vwapSeries.perPoint.length === points.length
     ? vwapSeries.perPoint[hoverIdx]
     : undefined;
-  // hover 处的 MA10：仅 1D/1W/1M 有意义，分时图为 undefined
-  const hoverMa10 = hoverIdx !== null && range !== 'intraday' && maSeries.perPoint.length === points.length
+  // hover 处的 MA10：仅 1W/1M 有意义，分时/1日为 undefined
+  const hoverMa10 = hoverIdx !== null && (range === '1W' || range === '1M') && maSeries.perPoint.length === points.length
     ? maSeries.perPoint[hoverIdx]
     : undefined;
 
