@@ -17,7 +17,8 @@ import {
   Target,
   Settings,
   X,
-  Loader2
+  Loader2,
+  Pencil
 } from 'lucide-react';
 import {
   loginUser,
@@ -182,6 +183,10 @@ function App() {
 
   /* ---------- Edit-position modal state ---------- */
   const [editingCode, setEditingCode] = useState<string | null>(null);
+  const [posActionTab, setPosActionTab] = useState<'buy' | 'sell' | 'set'>('buy');
+  const [buyShares, setBuyShares] = useState('');
+  const [buyCost, setBuyCost] = useState('');
+  const [sellShares, setSellShares] = useState('');
   const [editShares, setEditShares] = useState('');
   const [editCost, setEditCost] = useState('');
   const [editAmount, setEditAmount] = useState('');     // 总投入金额（"按金额"模式）
@@ -660,55 +665,124 @@ function App() {
   /* ---------- Position edit ---------- */
   const openEditPosition = (code: string) => {
     setEditingCode(code);
-    const pos = positions[code] || { shares: 0, cost: 0, fund_code: code };
-    const s = pos.shares > 0 ? pos.shares : 0;
-    const c = pos.cost > 0 ? pos.cost : 0;
+    const pos = positions[code];
+    const fund = fundsData[code];
+    const curPrice = fund ? (parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0) : 0;
+
+    const s = pos && pos.shares > 0 ? pos.shares : 0;
+    const c = pos && pos.cost > 0 ? pos.cost : 0;
+
     setEditShares(s > 0 ? s.toString() : '');
-    setEditCost(c > 0 ? c.toString() : '');
+    setEditCost(c > 0 ? c.toString() : (curPrice > 0 ? curPrice.toFixed(4) : ''));
     setEditAmount(s > 0 && c > 0 ? (s * c).toFixed(2) : '');
     setEditMode('shares');
+
+    // 默认行为：如果已有持仓，默认进入【补仓】模式；如果无持仓，默认进入【建仓/重置】模式
+    if (s > 0) {
+      setPosActionTab('buy');
+      setBuyShares('');
+      setBuyCost(curPrice > 0 ? curPrice.toFixed(4) : (c > 0 ? c.toFixed(4) : ''));
+      setSellShares('');
+    } else {
+      setPosActionTab('set');
+      setBuyShares('');
+      setBuyCost(curPrice > 0 ? curPrice.toFixed(4) : '');
+      setSellShares('');
+    }
   };
 
-  const handleSavePosition = async () => {
+  const handleActionSavePosition = async () => {
     if (!editingCode) return;
-    const shares = parseFloat(editShares);
-    const cost = parseFloat(editCost);
+    const currentPos = positions[editingCode] || { shares: 0, cost: 0, fund_code: editingCode };
 
-    // 校验：必须两个都是有效正数才保存
-    if (isNaN(shares) || shares <= 0 || isNaN(cost) || cost <= 0) {
-      showToast('请输入有效的份额和成本（都必须 > 0）');
-      return;
+    let finalShares = currentPos.shares;
+    let finalCost = currentPos.cost;
+
+    if (posActionTab === 'buy') {
+      const sBuy = parseFloat(buyShares);
+      const cBuy = parseFloat(buyCost);
+      if (isNaN(sBuy) || sBuy <= 0 || isNaN(cBuy) || cBuy <= 0) {
+        showToast('请输入有效的补仓买入份数与单价（均需 > 0）');
+        return;
+      }
+      const totalOldCost = currentPos.shares * currentPos.cost;
+      const totalBuyCost = sBuy * cBuy;
+      finalShares = currentPos.shares + sBuy;
+      finalCost = (totalOldCost + totalBuyCost) / finalShares;
+    } else if (posActionTab === 'sell') {
+      const sSell = parseFloat(sellShares);
+      if (isNaN(sSell) || sSell <= 0) {
+        showToast('请输入有效的卖出份数（必须 > 0）');
+        return;
+      }
+      if (sSell > currentPos.shares + 0.0001) {
+        showToast(`卖出份数超出持有总额 (${currentPos.shares.toFixed(2)} 份)`);
+        return;
+      }
+      finalShares = currentPos.shares - sSell;
+      if (finalShares <= 0.0001) {
+        // 全部卖出 → 清空持仓
+        await removePosition(editingCode);
+        setPositions(prev => {
+          const next = { ...prev };
+          delete next[editingCode];
+          return next;
+        });
+        showToast('已全仓卖出清空');
+        setEditingCode(null);
+        return;
+      }
+      // 减仓时持仓单价不变
+      finalCost = currentPos.cost;
+    } else {
+      // 重置/直接指定持仓
+      const sSet = parseFloat(editShares);
+      const cSet = parseFloat(editCost);
+      if (isNaN(sSet) || sSet <= 0 || isNaN(cSet) || cSet <= 0) {
+        showToast('请输入有效的总份数与单价（均需 > 0）');
+        return;
+      }
+      finalShares = sSet;
+      finalCost = cSet;
     }
 
     try {
-      await savePosition(editingCode, shares, cost);
+      await savePosition(editingCode, finalShares, finalCost);
       setPositions(prev => ({
         ...prev,
-        [editingCode]: { fund_code: editingCode, shares, cost }
+        [editingCode]: { fund_code: editingCode, shares: finalShares, cost: finalCost }
       }));
-      showToast(`已保存：${shares}份 × ¥${cost.toFixed(4)} = ¥${(shares * cost).toFixed(2)}`);
+      const actionDesc = posActionTab === 'buy' ? '补仓成功' : posActionTab === 'sell' ? '减仓成功' : '持仓更新';
+      showToast(`${actionDesc}：持仓变为 ${finalShares.toFixed(2)} 份 @ 均价 ¥${finalCost.toFixed(4)}`);
     } catch (e: any) {
       showToast('保存持仓失败：' + (e?.message || '请检查后端'));
     }
     setEditingCode(null);
   };
 
-  /** 显式清除持仓（用户主动点击"清除"按钮） */
+  /** 显式清空持仓（用户主动点击"清空持仓"按钮，立刻清空并关闭弹窗） */
   const handleClearPosition = async () => {
     if (!editingCode) return;
-    if (!confirm('确定清除该基金的持仓记录？此操作不可撤销。')) return;
-    try {
-      await removePosition(editingCode);
-      setPositions(prev => {
-        const next = { ...prev };
-        delete next[editingCode];
-        return next;
-      });
-      showToast('持仓记录已清除');
-    } catch (e: any) {
-      showToast('清除失败：' + (e?.message || '请检查后端'));
-    }
+    const code = editingCode;
+    // 1. 立即关闭弹窗
     setEditingCode(null);
+
+    // 2. 乐观更新：先清空前端持仓状态，使 UI 即刻生效
+    const prevPos = positions;
+    setPositions(prev => {
+      const next = { ...prev };
+      delete next[code];
+      return next;
+    });
+
+    // 3. 后台异步发送清除请求
+    try {
+      await removePosition(code);
+      showToast('持仓记录已清空');
+    } catch (e: any) {
+      setPositions(prevPos);
+      showToast('清空失败：' + (e?.message || '请检查后端'));
+    }
   };
 
   /* ---------- Theme toggles ---------- */
@@ -1508,30 +1582,33 @@ function App() {
                                   {isUp ? '+' : ''}{changeVal.toFixed(2)}%
                                 </td>
 
-                                <td className="p-4 text-right" onClick={e => e.stopPropagation()}>
+                                <td className="p-4 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                                   {pos ? (
                                     <button
                                       onClick={() => openEditPosition(code)}
-                                      className="cursor-pointer group text-right"
+                                      className="cursor-pointer group inline-flex flex-col items-end text-right p-1 rounded-xl hover:bg-slate-100/60 dark:hover:bg-white/5 transition-all"
                                     >
-                                      <div className="font-bold font-mono text-slate-800 dark:text-slate-100 tabular-nums">
-                                        ¥{holdingValue.toFixed(2)}
+                                      <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                        ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                       </div>
-                                      <div className="text-[9px] text-slate-400 group-hover:text-blue-500 mt-0.5 transition-colors flex items-center justify-end gap-1 tabular-nums">
-                                        {pos.shares}份 | @{pos.cost.toFixed(4)} ✏️
+                                      <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1 tabular-nums">
+                                        <span>{pos.shares.toFixed(2)}份</span>
+                                        <span className="opacity-40">·</span>
+                                        <span>@{pos.cost.toFixed(4)}</span>
+                                        <Pencil size={9} className="opacity-60 group-hover:opacity-100 transition-opacity ml-0.5" />
                                       </div>
                                     </button>
                                   ) : (
                                     <PressableButton
                                       onClick={() => openEditPosition(code)}
-                                      className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 border border-blue-100/50 dark:border-blue-900/10 font-semibold"
+                                      className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 py-1 rounded-full border border-blue-200/60 dark:border-blue-900/40 font-semibold transition-all"
                                     >
                                       + 持仓
                                     </PressableButton>
                                   )}
                                 </td>
 
-                                <td className={`p-4 text-right font-mono font-bold tabular-nums ${
+                                <td className={`p-4 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
                                   pos
                                     ? (todayProfit > 0 ? 'text-[var(--color-up)]'
                                         : todayProfit < 0 ? 'text-[var(--color-down)]'
@@ -1548,15 +1625,15 @@ function App() {
                                   )}
                                 </td>
 
-                                <td className="p-4 text-center pr-6" onClick={(e) => e.stopPropagation()}>
-                                  <div className="flex items-center justify-center gap-1">
+                                <td className="p-4 text-center pr-6 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                  <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setSelectedFundCode(code);
                                       }}
-                                      className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2.5 py-1.5 rounded-full transition-colors cursor-pointer"
+                                      className="text-[11px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-3 py-1 rounded-full transition-colors cursor-pointer whitespace-nowrap shrink-0"
                                     >
                                       查看详情
                                     </button>
@@ -1600,51 +1677,53 @@ function App() {
             key="edit-position"
             onDismiss={() => setEditingCode(null)}
             ariaLabel="编辑持仓"
+            closeOnScrimClick={false}
           >
             <motion.div
               initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, y: 12, filter: 'blur(8px)' }}
               animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
               exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 8, filter: 'blur(4px)' }}
               transition={SPRING.sheet}
-              className="bg-white dark:bg-[#1d1d1f] rounded-[28px] max-w-sm w-full p-6 border border-[var(--hairline-border)] shadow-2xl relative overflow-hidden"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-2xl rounded-[28px] max-w-sm w-full p-6 border border-[var(--hairline-border)] shadow-2xl relative overflow-hidden space-y-4"
             >
               {/* Top highlight */}
               <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-white/10" />
 
-              <h3 className="apple-display-heading text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 flex items-center gap-1.5">
-                <span aria-hidden>✏️</span>
-                <span>记持仓成本：{fundsData[editingCode]?.name || editingCode}</span>
-              </h3>
+              {/* 标题栏 — 解决过密与长文本溢出 */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="apple-eyebrow text-slate-400 text-[10px] mb-0.5 flex items-center gap-1">
+                    <span aria-hidden>💼</span> 持仓管理
+                  </div>
+                  <h3 className="apple-display-heading text-sm font-bold text-slate-900 dark:text-slate-50 truncate" title={fundsData[editingCode]?.name || editingCode}>
+                    {fundsData[editingCode]?.name || editingCode}
+                  </h3>
+                </div>
+                {positions[editingCode] && positions[editingCode].shares > 0 && (
+                  <div className="text-right shrink-0 bg-slate-50 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-xl">
+                    <div className="text-[9px] text-slate-400 font-mono">现有持仓</div>
+                    <div className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                      {positions[editingCode].shares.toFixed(2)}<span className="text-[9px] font-normal text-slate-400">份</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-              {/* 输入模式切换：按份数 / 按金额 */}
-              <div className="flex p-0.5 bg-slate-100/60 dark:bg-white/5 rounded-full mb-4 text-[11px]">
+              {/* 3 种持仓操作模式分段控制器：补仓 | 卖出 | 修正 */}
+              <div className="flex p-0.5 bg-slate-100/70 dark:bg-white/5 rounded-full text-[11px]">
                 {([
-                  { key: 'shares', label: '按份数输入' },
-                  { key: 'amount', label: '按金额输入' },
+                  { key: 'buy', label: '➕ 补仓买入' },
+                  { key: 'sell', label: '➖ 减仓卖出' },
+                  { key: 'set', label: '✏️ 直接修正' },
                 ] as const).map(opt => (
                   <button
                     key={opt.key}
                     type="button"
-                    onClick={() => {
-                      setEditMode(opt.key);
-                      // 切换到"按金额"时，把现有 shares × cost 填到 amount
-                      if (opt.key === 'amount') {
-                        const s = parseFloat(editShares);
-                        const c = parseFloat(editCost);
-                        if (!isNaN(s) && !isNaN(c) && s > 0 && c > 0) {
-                          setEditAmount((s * c).toFixed(2));
-                        }
-                      } else {
-                        // 切换到"按份数"时，把 amount/cost 推回 shares
-                        const a = parseFloat(editAmount);
-                        const c = parseFloat(editCost);
-                        if (!isNaN(a) && !isNaN(c) && c > 0 && a > 0) {
-                          setEditShares((a / c).toFixed(2));
-                        }
-                      }
-                    }}
-                    className={`flex-1 py-1.5 rounded-full font-semibold transition-colors ${
-                      editMode === opt.key
+                    onClick={() => setPosActionTab(opt.key)}
+                    className={`flex-1 py-1.5 rounded-full font-semibold transition-all ${
+                      posActionTab === opt.key
                         ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'
                         : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
                     }`}
@@ -1654,139 +1733,258 @@ function App() {
                 ))}
               </div>
 
-              <div className="space-y-4 mb-4">
-                {editMode === 'shares' ? (
+              <div className="space-y-3.5">
+                {/* 1. 补仓 / 加仓 */}
+                {posActionTab === 'buy' && (
                   <>
                     <div>
-                      <label className="apple-eyebrow block mb-1.5">持有基金份额 (份)</label>
+                      <label className="apple-eyebrow block mb-1">本次买入/补仓份数 (份)</label>
                       <input
                         type="number"
                         step="0.01"
                         min="0"
-                        placeholder="例如: 1250.50"
-                        value={editShares}
-                        onChange={(e) => setEditShares(e.target.value)}
-                        className="apple-input w-full px-4 py-2.5 text-xs placeholder-slate-400"
+                        placeholder="例如: 500"
+                        value={buyShares}
+                        onChange={(e) => setBuyShares(e.target.value)}
+                        className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
                       />
                     </div>
-
                     <div>
-                      <label className="apple-eyebrow block mb-1.5">持仓均价成本 (元/份)</label>
+                      <label className="apple-eyebrow block mb-1">买入成交单价 (元/份)</label>
                       <input
                         type="number"
                         step="0.0001"
                         min="0"
-                        placeholder="例如: 2.1350"
-                        value={editCost}
-                        onChange={(e) => setEditCost(e.target.value)}
-                        className="apple-input w-full px-4 py-2.5 text-xs placeholder-slate-400"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label className="apple-eyebrow block mb-1.5">总投入金额 (元)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="例如: 10000"
-                        value={editAmount}
-                        onChange={(e) => {
-                          setEditAmount(e.target.value);
-                          // 自动算份额 = 金额 / 单价
-                          const a = parseFloat(e.target.value);
-                          const c = parseFloat(editCost);
-                          if (!isNaN(a) && !isNaN(c) && c > 0 && a >= 0) {
-                            setEditShares((a / c).toFixed(2));
-                          }
-                        }}
-                        className="apple-input w-full px-4 py-2.5 text-sm font-mono font-semibold placeholder-slate-400"
+                        placeholder="成交单价"
+                        value={buyCost}
+                        onChange={(e) => setBuyCost(e.target.value)}
+                        className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
                       />
                     </div>
 
-                    <div>
-                      <label className="apple-eyebrow block mb-1.5">当前单价 (元/份)</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        placeholder="例如: 2.1350"
-                        value={editCost}
-                        onChange={(e) => {
-                          setEditCost(e.target.value);
-                          // 单价变化时同步重算份额
-                          const c = parseFloat(e.target.value);
-                          const a = parseFloat(editAmount);
-                          if (!isNaN(c) && !isNaN(a) && c > 0 && a >= 0) {
-                            setEditShares((a / c).toFixed(2));
-                          }
-                        }}
-                        className="apple-input w-full px-4 py-2.5 text-xs placeholder-slate-400"
-                      />
+                    {/* 补仓后成本加权预估面板 */}
+                    <div className="bg-blue-50/60 dark:bg-blue-950/20 border border-blue-100/80 dark:border-blue-900/30 rounded-2xl p-3 text-[11px] space-y-1.5">
+                      <div className="text-slate-500 flex justify-between">
+                        <span>当前持仓：</span>
+                        <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {positions[editingCode]?.shares.toFixed(2) || '0'} 份 @ ¥{positions[editingCode]?.cost.toFixed(4) || '0'}
+                        </span>
+                      </div>
+                      <div className="text-blue-600 dark:text-blue-400 font-semibold flex justify-between pt-1.5 border-t border-blue-100/60 dark:border-blue-900/40">
+                        <span>补仓后新持仓：</span>
+                        <span className="font-mono tabular-nums">
+                          {(() => {
+                            const curS = positions[editingCode]?.shares || 0;
+                            const curC = positions[editingCode]?.cost || 0;
+                            const bS = parseFloat(buyShares) || 0;
+                            const bC = parseFloat(buyCost) || 0;
+                            const nextS = curS + bS;
+                            if (nextS <= 0) return '—';
+                            const nextC = (curS * curC + bS * bC) / nextS;
+                            return `${nextS.toFixed(2)} 份 @ 新成本 ¥${nextC.toFixed(4)}`;
+                          })()}
+                        </span>
+                      </div>
                     </div>
                   </>
                 )}
 
-                {/* 实时总览 — 让用户清晰看到"份数 × 单价 = 总金额" */}
-                <div className="bg-slate-50/60 dark:bg-white/[0.03] border border-[var(--hairline-border)] rounded-xl px-3 py-2.5 grid grid-cols-2 gap-3 text-[11px]">
-                  <div>
-                    <div className="apple-eyebrow text-slate-500 mb-0.5">总投入金额</div>
-                    <div className="font-mono font-bold text-sm tabular-nums text-slate-800 dark:text-slate-100">
-                      {(() => {
-                        const s = parseFloat(editShares);
-                        const c = parseFloat(editCost);
-                        if (isNaN(s) || isNaN(c) || s <= 0 || c <= 0) return '—';
-                        return `¥ ${(s * c).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                      })()}
+                {/* 2. 减仓 / 卖出 */}
+                {posActionTab === 'sell' && (
+                  <>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="apple-eyebrow">本次卖出减仓份数 (份)</label>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          最多可卖 {positions[editingCode]?.shares.toFixed(2) || '0'} 份
+                        </span>
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max={positions[editingCode]?.shares || 0}
+                        placeholder="卖出份数"
+                        value={sellShares}
+                        onChange={(e) => setSellShares(e.target.value)}
+                        className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                      />
+                      {/* 快捷比例选框 */}
+                      <div className="flex gap-1.5 mt-2">
+                        {[
+                          { label: '25%', ratio: 0.25 },
+                          { label: '50%', ratio: 0.5 },
+                          { label: '75%', ratio: 0.75 },
+                          { label: '全仓卖出', ratio: 1 },
+                        ].map(btn => (
+                          <button
+                            key={btn.label}
+                            type="button"
+                            onClick={() => {
+                              const maxS = positions[editingCode]?.shares || 0;
+                              setSellShares((maxS * btn.ratio).toFixed(2));
+                            }}
+                            className="flex-1 py-1 text-[10px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/15 rounded-lg text-slate-600 dark:text-slate-300 transition-colors"
+                          >
+                            {btn.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="apple-eyebrow text-slate-500 mb-0.5">当前市值</div>
-                    <div className="font-mono font-bold text-sm tabular-nums text-slate-800 dark:text-slate-100">
-                      {(() => {
-                        const s = parseFloat(editShares);
-                        const cur = fundsData[editingCode]
-                          ? (parseFloat(fundsData[editingCode].gsz) || parseFloat(fundsData[editingCode].dwjz))
-                          : NaN;
-                        if (isNaN(s) || isNaN(cur) || s <= 0) return '—';
-                        return `¥ ${(s * cur).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                      })()}
+
+                    {/* 减仓预估面板 */}
+                    <div className="bg-amber-50/60 dark:bg-amber-950/20 border border-amber-100/80 dark:border-amber-900/30 rounded-2xl p-3 text-[11px] space-y-1.5">
+                      <div className="text-slate-500 flex justify-between">
+                        <span>卖出后剩余持仓：</span>
+                        <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {(() => {
+                            const curS = positions[editingCode]?.shares || 0;
+                            const sS = parseFloat(sellShares) || 0;
+                            const left = Math.max(0, curS - sS);
+                            return `${left.toFixed(2)} 份 (成本维持 ¥${(positions[editingCode]?.cost || 0).toFixed(4)})`;
+                          })()}
+                        </span>
+                      </div>
+                      <div className="text-amber-700 dark:text-amber-400 font-semibold flex justify-between pt-1.5 border-t border-amber-100/60 dark:border-amber-900/40">
+                        <span>预估回笼资金：</span>
+                        <span className="font-mono tabular-nums">
+                          {(() => {
+                            const sS = parseFloat(sellShares) || 0;
+                            const curP = fundsData[editingCode]
+                              ? (parseFloat(fundsData[editingCode].gsz) || parseFloat(fundsData[editingCode].dwjz) || 0)
+                              : (positions[editingCode]?.cost || 0);
+                            return `¥ ${(sS * curP).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                          })()}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  </>
+                )}
+
+                {/* 3. 直接修正设置 */}
+                {posActionTab === 'set' && (
+                  <>
+                    {/* 输入模式切换：按份数 / 按金额 */}
+                    <div className="flex p-0.5 bg-slate-100/50 dark:bg-white/5 rounded-full mb-3 text-[10px]">
+                      {([
+                        { key: 'shares', label: '按份数设定' },
+                        { key: 'amount', label: '按总金额设定' },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setEditMode(opt.key)}
+                          className={`flex-1 py-1 rounded-full font-semibold transition-colors ${
+                            editMode === opt.key
+                              ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'
+                              : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {editMode === 'shares' ? (
+                      <>
+                        <div>
+                          <label className="apple-eyebrow block mb-1">总持有份额 (份)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="如: 1000"
+                            value={editShares}
+                            onChange={(e) => setEditShares(e.target.value)}
+                            className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="apple-eyebrow block mb-1">持仓均价成本 (元/份)</label>
+                          <input
+                            type="number"
+                            step="0.0001"
+                            min="0"
+                            placeholder="如: 2.1350"
+                            value={editCost}
+                            onChange={(e) => setEditCost(e.target.value)}
+                            className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="apple-eyebrow block mb-1">总投入金额 (元)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="如: 10000"
+                            value={editAmount}
+                            onChange={(e) => {
+                              setEditAmount(e.target.value);
+                              const a = parseFloat(e.target.value);
+                              const c = parseFloat(editCost);
+                              if (!isNaN(a) && !isNaN(c) && c > 0 && a >= 0) setEditShares((a / c).toFixed(2));
+                            }}
+                            className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="apple-eyebrow block mb-1">成本单价 (元/份)</label>
+                          <input
+                            type="number"
+                            step="0.0001"
+                            min="0"
+                            placeholder="单价"
+                            value={editCost}
+                            onChange={(e) => {
+                              setEditCost(e.target.value);
+                              const c = parseFloat(e.target.value);
+                              const a = parseFloat(editAmount);
+                              if (!isNaN(c) && !isNaN(a) && c > 0 && a >= 0) setEditShares((a / c).toFixed(2));
+                            }}
+                            className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
               </div>
 
-              <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center justify-between gap-2 text-xs pt-1 border-t border-slate-100 dark:border-white/5">
                 {positions[editingCode] ? (
-                  <PressableButton
+                  <button
+                    type="button"
                     onClick={handleClearPosition}
-                    className="px-3 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 font-medium flex items-center gap-1"
+                    className="px-2.5 py-1.5 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 font-semibold flex items-center gap-1 text-[11px] rounded-full transition-colors cursor-pointer"
                   >
-                    <Trash2 size={11} />
-                    清除持仓
-                  </PressableButton>
+                    <Trash2 size={12} />
+                    清空持仓
+                  </button>
                 ) : (
                   <span />
                 )}
                 <div className="flex items-center gap-2">
-                  <PressableButton
+                  <button
+                    type="button"
                     onClick={() => setEditingCode(null)}
-                    className="px-4 py-2 apple-btn-ghost text-slate-600 dark:text-slate-400 font-medium"
+                    className="px-4 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors cursor-pointer"
                   >
                     取消
-                  </PressableButton>
-                  <PressableButton
-                    onClick={handleSavePosition}
-                    className="px-4 py-2 apple-btn-primary font-medium"
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleActionSavePosition}
+                    className="px-4 py-1.5 text-xs font-semibold rounded-full bg-[#0066cc] hover:bg-[#0055b3] dark:bg-[#2997ff] dark:hover:bg-[#47a4ff] text-white shadow-sm transition-all cursor-pointer"
                   >
-                    保存持仓
-                  </PressableButton>
+                    {posActionTab === 'buy' ? '确认补仓' : posActionTab === 'sell' ? '确认卖出' : '保存设置'}
+                  </button>
                 </div>
               </div>
-            </motion.div>
-          </ModalShell>
+            </motion.div>          </ModalShell>
         )}
       </AnimatePresence>
 
@@ -1920,6 +2118,7 @@ function App() {
           <ModalShell
             onDismiss={() => setDeletingItem(null)}
             ariaLabel="确认删除"
+            closeOnScrimClick={false}
           >
             <motion.div
               initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 8 }}
@@ -1999,18 +2198,19 @@ function App() {
 function ModalShell({
   children,
   onDismiss,
-  ariaLabel
+  ariaLabel,
+  closeOnScrimClick = true
 }: {
   children: React.ReactNode;
   onDismiss: () => void;
   ariaLabel: string;
+  closeOnScrimClick?: boolean;
 }) {
   const prefersReducedMotion = useReducedMotion();
-  const mountedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss();
+      if (e.key === 'Escape' && closeOnScrimClick) onDismiss();
     };
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
@@ -2018,7 +2218,7 @@ function ModalShell({
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
     };
-  }, [onDismiss]);
+  }, [onDismiss, closeOnScrimClick]);
 
   return (
     <motion.div
@@ -2030,13 +2230,10 @@ function ModalShell({
       exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
       transition={{ duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
       onMouseDown={(e) => {
-        if (Date.now() - mountedAtRef.current < 350) return;
-        // Click-out dismiss (§7 wayfinding: every screen has a way out)
-        if (e.target === e.currentTarget) onDismiss();
+        if (closeOnScrimClick && e.target === e.currentTarget) onDismiss();
       }}
       onClick={(e) => {
-        if (Date.now() - mountedAtRef.current < 350) return;
-        if (e.target === e.currentTarget) onDismiss();
+        if (closeOnScrimClick && e.target === e.currentTarget) onDismiss();
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40"
       style={{
