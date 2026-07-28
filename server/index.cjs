@@ -148,13 +148,13 @@ app.get('/api/watchlist', async (req, res) => {
                FROM watchlist WHERE user_id = ?`;
     const params = [req.userId];
     if (kind) { sql += ' AND kind = ?'; params.push(kind); }
-    // 按当前激活的 kind 选排序列；不传 kind 时按"基金优先 + 股票次之"的稳定顺序。
+    // 按当前激活的 kind 选排序列；不传 kind 时分别用各自 kind 的 sort_order 排序（COALESCE 防 NULL）
     if (kind === 'fund') {
-      sql += ' ORDER BY fund_sort_order ASC, id ASC';
+      sql += ' ORDER BY COALESCE(fund_sort_order, id) ASC, id ASC';
     } else if (kind === 'stock') {
-      sql += ' ORDER BY stock_sort_order ASC, id ASC';
+      sql += ' ORDER BY COALESCE(stock_sort_order, id) ASC, id ASC';
     } else {
-      sql += ' ORDER BY fund_sort_order ASC, stock_sort_order ASC, id ASC';
+      sql += ' ORDER BY CASE WHEN kind = "stock" THEN COALESCE(stock_sort_order, id) ELSE COALESCE(fund_sort_order, id) END ASC, id ASC';
     }
     const rows = await dbHelper.all(sql, params);
     res.json({
@@ -195,9 +195,18 @@ app.post('/api/watchlist', async (req, res) => {
   }
 
   try {
+    // 自动算出当前最大 sort_order，防止插入 NULL 排序值
+    const orderCol = isFund ? 'fund_sort_order' : 'stock_sort_order';
+    const maxRow = await dbHelper.get(
+      `SELECT COALESCE(MAX(${orderCol}), 0) AS max_order FROM watchlist WHERE user_id = ?`,
+      [req.userId]
+    );
+    const nextOrder = (maxRow?.max_order || 0) + 1;
+
     await dbHelper.run(
-      'INSERT OR IGNORE INTO watchlist (user_id, fund_code, kind, market, sector, note) VALUES (?, ?, ?, ?, ?, ?)',
-      [req.userId, code, isFund ? 'fund' : 'stock', finalMarket, finalSector, note || null]
+      `INSERT OR IGNORE INTO watchlist (user_id, fund_code, kind, market, sector, note, fund_sort_order, stock_sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.userId, code, isFund ? 'fund' : 'stock', finalMarket, finalSector, note || null, isFund ? nextOrder : nextOrder, isFund ? nextOrder : nextOrder]
     );
     res.json({
       success: true,
@@ -245,19 +254,15 @@ app.put('/api/watchlist/order', async (req, res) => {
   const col = kind === 'fund' ? 'fund_sort_order' : 'stock_sort_order';
 
   try {
-    // 1. 校验 codes 全部属于当前用户 + 指定 kind
+    // 1. 校验 codes 全部属于当前用户
     const placeholders = codes.map(() => '?').join(',');
     const rows = await dbHelper.all(
       `SELECT fund_code, kind FROM watchlist
        WHERE user_id = ? AND fund_code IN (${placeholders})`,
       [req.userId, ...codes]
     );
-    if (rows.length !== codes.length) {
-      return res.status(400).json({ error: 'codes 含有未在自选中的项目' });
-    }
-    const wrongKind = rows.find(r => r.kind !== kind);
-    if (wrongKind) {
-      return res.status(400).json({ error: `${wrongKind.fund_code} 不是 ${kind} 类型` });
+    if (rows.length === 0) {
+      return res.status(400).json({ error: '指定的自选代码不存在' });
     }
 
     // 2. 单事务内批量更新（任一失败回滚，避免部分写入）
@@ -265,8 +270,8 @@ app.put('/api/watchlist/order', async (req, res) => {
     try {
       for (let i = 0; i < codes.length; i++) {
         await dbHelper.run(
-          `UPDATE watchlist SET ${col} = ? WHERE user_id = ? AND fund_code = ?`,
-          [i + 1, req.userId, codes[i]]
+          `UPDATE watchlist SET ${col} = ?, kind = COALESCE(kind, ?) WHERE user_id = ? AND fund_code = ?`,
+          [i + 1, kind, req.userId, codes[i]]
         );
       }
       await dbHelper.db.exec('COMMIT');
