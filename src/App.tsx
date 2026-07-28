@@ -244,6 +244,7 @@ function App() {
   /* ---------- Drag-to-reorder（股票 tab，HTML5 原生 drag & drop）---------- */
   const [dragOverCode, setDragOverCode] = useState<string | null>(null);
   const dragSrcCodeRef = useRef<string | null>(null);
+  const nativeDragInProgressRef = useRef(false); // 标记 HTML5 原生 drag 是否已激活（用于与长按 timer 互斥）
 
   const prefersReducedMotion = useReducedMotion();
 
@@ -254,6 +255,24 @@ function App() {
   }, [watchlistItems, selfTab]);
 
   const handleDragStart = useCallback((code: string) => (e: React.DragEvent) => {
+    // 0) 若自定义拖动已激活，绝对禁止原生 drag（防止拖动过程中被原生系统接管）
+    if (pressDragRef.current.activeCode) {
+      e.preventDefault();
+      return;
+    }
+    // 1) 若自定义计时还在挂起（pending）状态 — 阻止原生 drag，避免双系统同时触发
+    if (pressDragRef.current.pendingCode === code) {
+      e.preventDefault();
+      return;
+    }
+    // 2) 若指针按下已超过 200ms 才触发 dragstart（用户明显在长按）— 禁止原生 drag
+    const elapsed = pressStartTimeRef.current ? Date.now() - pressStartTimeRef.current : 0;
+    if (elapsed > 200) {
+      e.preventDefault();
+      return;
+    }
+    // 3) 200ms 内的快速 dragstart，让原生 drag 处理
+    nativeDragInProgressRef.current = true;
     dragSrcCodeRef.current = code;
     e.dataTransfer.effectAllowed = 'move';
   }, []);
@@ -273,28 +292,236 @@ function App() {
     dragSrcCodeRef.current = null;
     if (!src || src === code) return;
 
-    const stockList = watchlistItems.filter(i => i.kind === 'stock');
-    const fromIdx = stockList.findIndex(i => i.fund_code === src);
-    const toIdx = stockList.findIndex(i => i.fund_code === code);
+    const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
+    const list = watchlistItems.filter(i => i.kind === kind);
+    const fromIdx = list.findIndex(i => i.fund_code === src);
+    const toIdx = list.findIndex(i => i.fund_code === code);
     if (fromIdx < 0 || toIdx < 0) return;
 
-    const newStock = [...stockList];
-    newStock.splice(fromIdx, 1);
-    newStock.splice(toIdx, 0, stockList[fromIdx]);
-    const newOrder = newStock.map(i => i.fund_code);
+    const newList = [...list];
+    newList.splice(fromIdx, 1);
+    newList.splice(toIdx, 0, list[fromIdx]);
+    const newOrder = newList.map(i => i.fund_code);
 
-    const otherItems = watchlistItems.filter(i => i.kind !== 'stock');
+    const otherItems = watchlistItems.filter(i => i.kind !== kind);
     const prevItems = watchlistItems;
-    setWatchlistItems([...otherItems, ...newStock]);
+    setWatchlistItems([...otherItems, ...newList]);
 
     try {
-      await reorderWatchlist('stock', newOrder);
+      await reorderWatchlist(kind, newOrder);
     } catch (err: any) {
       setWatchlistItems(prevItems);
       setToastMsg('排序保存失败：' + (err?.message || '请检查后端'));
       setTimeout(() => setToastMsg(null), 3000);
     }
-  }, [watchlistItems]);
+  }, [watchlistItems, selfTab]);
+
+
+  /* ---------- Long-press 2s 拖动排序（PC + 移动通用，与 HTML5 drag 并存）---------- */
+  const LONG_PRESS_MS = 2000;
+  // 鼠标微抖动（~1-3px/s）易在 2s 内累计超过 10px，导致 timer 被误取消。鼠标放宽到 50px。
+  // 触屏保留 10px：滚动 / 滑动越早取消越好，避免误激活拖动模式。
+  const MOUSE_MOVE_THRESHOLD = 50;
+  const TOUCH_MOVE_THRESHOLD = 10;
+
+  const [pressDrag, setPressDrag] = useState<{
+    pendingCode: string | null;     // 2s 计时正在进行的行
+    activeCode: string | null;     // 已激活自定义拖动模式的行
+    ghostY: number;                // 浮卡 Y（窗口坐标）
+    startY: number;                // 激活瞬间的起始 Y 坐标（用于计算相对位移，保证原位浮起）
+    grabOffsetY: number;           // 手指到行顶的偏移
+    targetIdx: number;             // 当前落点槽位下标
+  }>({ pendingCode: null, activeCode: null, ghostY: 0, startY: 0, grabOffsetY: 0, targetIdx: -1 });
+
+  const pressDragRef = useRef(pressDrag);
+  useEffect(() => { pressDragRef.current = pressDrag; }, [pressDrag]);
+
+  const watchlistItemsRef = useRef(watchlistItems);
+  useEffect(() => { watchlistItemsRef.current = watchlistItems; }, [watchlistItems]);
+
+  const pressTimerRef = useRef<number | null>(null);
+  const pressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const pressStartTimeRef = useRef<number | null>(null); // 按下时刻（毫秒），用于 handleDragStart 判断是否进入"长按窗口"
+  const slotBoundsRef = useRef<Array<{ code: string; top: number; bottom: number; mid: number; left: number; width: number; height: number }>>([]);
+  const dragJustEndedRef = useRef(false); // 释放后 300ms 内吞掉浏览器合成的 click
+
+  const clearPressTimer = useCallback(() => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  }, []);
+
+  const activatePressDrag = useCallback((code: string) => {
+    // 采样当前所有可见行的物理 Rect（按 Y 升序）
+    // 关键：过滤掉 display:none 的隐藏副本（移动端卡片和桌面行在 DOM 中并存但仅一侧可见，
+    //        getBoundingClientRect 对隐藏元素返回 0，会让 ghost 卡渲染到左上角宽 0 的位置）
+    const rowEls = Array.from(document.querySelectorAll<HTMLElement>('[data-fund-code]'))
+      .filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+    const stockCodes = new Set(visibleList);
+    const bounds = rowEls
+      .filter(el => stockCodes.has(el.dataset.fundCode!))
+      .map(el => {
+        const r = el.getBoundingClientRect();
+        return {
+          code: el.dataset.fundCode!,
+          top: r.top, bottom: r.bottom, mid: (r.top + r.bottom) / 2,
+          left: r.left, width: r.width, height: r.height,
+        };
+      })
+      .sort((a, b) => a.top - b.top);
+    slotBoundsRef.current = bounds;
+
+    const activeEl = rowEls.find(el => el.dataset.fundCode === code);
+    const startY = pressStartRef.current?.y ?? 0;
+    const grabOffsetY = activeEl ? startY - activeEl.getBoundingClientRect().top : 0;
+
+    setPressDrag({
+      pendingCode: null,
+      activeCode: code,
+      ghostY: startY,
+      startY,
+      grabOffsetY,
+      targetIdx: bounds.findIndex(b => b.code === code),
+    });
+
+    // 触觉反馈（移动端）
+    try { navigator.vibrate?.(40); } catch { /* ignore */ }
+  }, [visibleList]);
+
+  const onRowPointerDown = useCallback((code: string) => (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // 跳过按钮/输入框/链接 — 让它们的原生点击行为继续工作
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, a, [role="button"]')) return;
+    // HTML5 drag 已在进行时不参与
+    if (nativeDragInProgressRef.current) return;
+
+    pressStartRef.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+    pressStartTimeRef.current = Date.now();
+    clearPressTimer();
+    setPressDrag(prev => ({ ...prev, pendingCode: code, activeCode: null }));
+
+    pressTimerRef.current = window.setTimeout(() => {
+      if (nativeDragInProgressRef.current) return;
+      if (!pressStartRef.current) return;
+      activatePressDrag(code);
+    }, LONG_PRESS_MS);
+  }, [clearPressTimer, activatePressDrag]);
+
+  // 全局 pointermove — pending 阶段位移过大则取消，active 阶段无条件 100% 实时跟随指针 + 实时重排
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const state = pressDragRef.current;
+
+      // 1) 【已激活拖动模式】：无条件跟进指针 e.clientY，不受 pressStartRef 是否被浏览器置空的影响
+      if (state.activeCode) {
+        if (e.cancelable) e.preventDefault();
+        const bounds = slotBoundsRef.current;
+        if (!bounds.length) return;
+        const rowH = bounds[0].height;
+        // ghost 中心 = 指针位置 - grabOffset + 半行高
+        const ghostCenterY = e.clientY - state.grabOffsetY + rowH / 2;
+        const encroachment = rowH / 5;
+        let targetIdx = 0;
+        for (let i = 0; i < bounds.length; i++) {
+          if (ghostCenterY >= bounds[i].top + encroachment) {
+            targetIdx = i;
+          } else {
+            break;
+          }
+        }
+        targetIdx = Math.max(0, Math.min(targetIdx, bounds.length - 1));
+
+        // 【实时渲染】：若计算出的目标槽位与当前列表中 activeCode 的位置不同，立即实时重排前端数组
+        const items = watchlistItemsRef.current;
+        const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
+        const currentSubList = items.filter(i => i.kind === kind);
+        const fromIdx = currentSubList.findIndex(i => i.fund_code === state.activeCode);
+
+        if (fromIdx >= 0 && fromIdx !== targetIdx) {
+          const newSubList = [...currentSubList];
+          const [movedItem] = newSubList.splice(fromIdx, 1);
+          newSubList.splice(targetIdx, 0, movedItem);
+
+          const otherItems = items.filter(i => i.kind !== kind);
+          setWatchlistItems([...otherItems, ...newSubList]);
+        }
+
+        setPressDrag(prev => ({ ...prev, ghostY: e.clientY, targetIdx }));
+        return;
+      }
+
+      // 2) 【2s 计时等待 pending 阶段】：位移过大则取消长按
+      const start = pressStartRef.current;
+      if (!start) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      const dist = Math.hypot(dx, dy);
+
+      const isMouseMove = e.pointerType === 'mouse';
+      const moveThreshold = isMouseMove ? MOUSE_MOVE_THRESHOLD : TOUCH_MOVE_THRESHOLD;
+      if (state.pendingCode && dist > moveThreshold) {
+        clearPressTimer();
+        pressStartRef.current = null;
+        setPressDrag({ pendingCode: null, activeCode: null, ghostY: 0, startY: 0, grabOffsetY: 0, targetIdx: -1 });
+      }
+    };
+    document.addEventListener('pointermove', onMove, { passive: false });
+    return () => document.removeEventListener('pointermove', onMove);
+  }, [clearPressTimer, selfTab]);
+
+  // 全局 pointerup / cancel — 提交排序
+  useEffect(() => {
+    const onUp = () => {
+      const state = pressDragRef.current;
+      clearPressTimer();
+
+      // HTML5 原生 drag 正在收尾，则让原生 drop 处理
+      if (nativeDragInProgressRef.current) {
+        pressStartRef.current = null;
+        setPressDrag({ pendingCode: null, activeCode: null, ghostY: 0, startY: 0, grabOffsetY: 0, targetIdx: -1 });
+        return;
+      }
+
+      if (state.activeCode) {
+        const items = watchlistItemsRef.current;
+        const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
+        const list = items.filter(i => i.kind === kind);
+        const finalOrder = list.map(i => i.fund_code);
+
+        // 提交最终持久化排序
+        reorderWatchlist(kind, finalOrder).catch((err: any) => {
+          setToastMsg('排序保存失败：' + (err?.message || '请检查后端'));
+          setTimeout(() => setToastMsg(null), 3000);
+        });
+
+        // 长按激活后无论是否发生位移都吞掉 click，避免误开详情面板
+        dragJustEndedRef.current = true;
+        setTimeout(() => { dragJustEndedRef.current = false; }, 300);
+      }
+
+      pressStartRef.current = null;
+      setPressDrag({ pendingCode: null, activeCode: null, ghostY: 0, startY: 0, grabOffsetY: 0, targetIdx: -1 });
+    };
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+    return () => {
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+    };
+  }, [clearPressTimer, setToastMsg, selfTab]);
+
+  // 拦截浏览器在长按拖动抬起后合成的 click
+  const suppressClickAfterDrag = useCallback((e: React.MouseEvent) => {
+    if (dragJustEndedRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, []);
 
 
   /* ---------- Boot ---------- */
@@ -1380,12 +1607,30 @@ function App() {
                           <motion.div
                             key={code}
                             data-fund-code={code}
+                            layout="position"
                             initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                            transition={SPRING.default}
-                            onClick={() => { setSelectedFundCode(code); }}
-                            className="p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 select-none"
+                            transition={SPRING.snap}
+                            onPointerDown={onRowPointerDown(code)}
+                            onClickCapture={suppressClickAfterDrag}
+                            onClick={() => {
+                              if (dragJustEndedRef.current) return;
+                              setSelectedFundCode(code);
+                            }}
+                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-all duration-200 ease-out cursor-pointer space-y-2 select-none relative ${
+                              pressDrag.pendingCode === code
+                                ? 'scale-[1.015] bg-white dark:bg-[#1c1c1e] shadow-[0_10px_28px_-10px_rgba(59,130,246,0.4),0_0_0_1px_rgba(59,130,246,0.18)] z-10'
+                                : ''
+                            } ${
+                              pressDrag.activeCode === code
+                                ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
+                                : ''
+                            } ${
+                              pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code)
+                                ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]'
+                                : ''
+                            }`}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
                             <div className="flex items-start justify-between gap-2">
@@ -1541,12 +1786,28 @@ function App() {
                               <tr
                                 key={code}
                                 data-fund-code={code}
-                                draggable={selfTab === 'stock'}
-                                onDragStart={selfTab === 'stock' ? handleDragStart(code) : undefined}
-                                onDragOver={selfTab === 'stock' ? handleDragOver(code) : undefined}
-                                onDrop={selfTab === 'stock' ? handleDrop(code) : undefined}
-                                onDragEnd={selfTab === 'stock' ? () => setDragOverCode(null) : undefined}
-                                className={`apple-row select-none cursor-grab active:cursor-grabbing ${dragOverCode === code ? 'border-b-2 border-blue-500 bg-blue-50/50 dark:bg-blue-950/20' : ''}`}
+                                draggable={!pressDrag.activeCode}
+                                onDragStart={handleDragStart(code)}
+                                onDragOver={handleDragOver(code)}
+                                onDrop={handleDrop(code)}
+                                onDragEnd={() => { setDragOverCode(null); nativeDragInProgressRef.current = false; }}
+                                onPointerDown={onRowPointerDown(code)}
+                                onClickCapture={suppressClickAfterDrag}
+                                className={`apple-row select-none cursor-grab active:cursor-grabbing transition-all duration-200 ease-out ${
+                                  pressDrag.pendingCode === code
+                                    ? 'scale-[1.005] bg-white dark:bg-[#1c1c1e] shadow-[0_8px_24px_-8px_rgba(59,130,246,0.35),0_0_0_1px_rgba(59,130,246,0.18)] relative z-10'
+                                    : ''
+                                } ${
+                                  pressDrag.activeCode === code
+                                    ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
+                                    : ''
+                                } ${
+                                  pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code)
+                                    ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)] relative z-[5]'
+                                    : ''
+                                } ${
+                                  dragOverCode === code ? 'bg-blue-50/60 dark:bg-blue-950/30' : ''
+                                }`}
                               >
                                 <td
                                   className="p-4 pl-6 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
@@ -2156,6 +2417,187 @@ function App() {
           </ModalShell>
         )}
       </AnimatePresence>
+
+      {/* ── 长按 2s 拖动浮卡（PC + 移动通用，跟随指针）── */}
+      {pressDrag.activeCode && (() => {
+        const code = pressDrag.activeCode;
+        const fund = fundsData[code];
+        const pos = positions[code];
+        const bounds = slotBoundsRef.current.find(b => b.code === code);
+        if (!fund || !bounds) return null;
+
+        const changeVal = parseFloat(fund.gszzl);
+        const isUp = changeVal > 0;
+        const isDown = changeVal < 0;
+        const changeColor = isUp
+          ? 'text-[var(--color-up)]'
+          : isDown ? 'text-[var(--color-down)]' : 'text-slate-400';
+        const changeBg = isUp
+          ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
+          : isDown
+            ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
+            : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
+
+        let holdingValue = 0;
+        let todayProfit = 0;
+        if (pos) {
+          const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+          const prevPrice = parseFloat(fund.dwjz);
+          holdingValue = pos.shares * currentPrice;
+          if (prevPrice > 0) {
+            todayProfit = pos.shares * (currentPrice - prevPrice);
+          }
+        }
+
+        const isDesktop = window.innerWidth >= 768;
+
+        if (isDesktop) {
+          // PC 桌面表格模式：渲染与表格 1:1 宽度的浮动行
+          return (
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1.01, opacity: 1 }}
+              transition={SPRING.snap}
+              style={{
+                position: 'fixed',
+                top: pressDrag.ghostY - pressDrag.grabOffsetY,
+                left: bounds.left,
+                width: bounds.width,
+                zIndex: 9999,
+                pointerEvents: 'none',
+                willChange: 'top',
+              }}
+              className="bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-3xl rounded-xl shadow-[0_20px_50px_-10px_rgba(0,0,0,0.3),0_0_0_1px_rgba(59,130,246,0.3)]
+                         border border-blue-500/40 cursor-grabbing overflow-hidden"
+            >
+              <table className="w-full text-left border-collapse text-xs">
+                <tbody>
+                  <tr className="bg-blue-50/20 dark:bg-blue-950/20">
+                    <td className="p-4 pl-6">
+                      <div className="flex items-center gap-2">
+                        <svg width="10" height="14" viewBox="0 0 10 14" className="text-blue-500 shrink-0" fill="currentColor">
+                          <circle cx="2" cy="3" r="1.2" /><circle cx="8" cy="3" r="1.2" />
+                          <circle cx="2" cy="7" r="1.2" /><circle cx="8" cy="7" r="1.2" />
+                          <circle cx="2" cy="11" r="1.2" /><circle cx="8" cy="11" r="1.2" />
+                        </svg>
+                        <div>
+                          <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
+                            {fund.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+                            <span className="tabular-nums">{fund.fundcode}</span>
+                            <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
+                              selfTab === 'stock'
+                                ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                                  : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                                  : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+                                : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+                            }`}>
+                              {selfTab === 'stock'
+                                ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+                                : '公募场外'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-4 text-right font-mono font-medium tabular-nums">
+                      {parseFloat(fund.dwjz).toFixed(4)}
+                      <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
+                    </td>
+                    <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums">
+                      {parseFloat(fund.gsz).toFixed(4)}
+                      <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
+                    </td>
+                    <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
+                      {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+                    </td>
+                    <td className="p-4 text-right whitespace-nowrap">
+                      {pos ? (
+                        <div className="inline-flex flex-col items-end text-right p-1">
+                          <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums">
+                            ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5 tabular-nums">
+                            {pos.shares.toFixed(2)}份 · @{pos.cost.toFixed(4)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">未持仓</span>
+                      )}
+                    </td>
+                    <td className={`p-4 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
+                      pos
+                        ? (todayProfit > 0 ? 'text-[var(--color-up)]'
+                            : todayProfit < 0 ? 'text-[var(--color-down)]'
+                            : 'text-slate-400')
+                        : 'text-slate-300 dark:text-slate-700'
+                    }`}>
+                      {pos ? `${todayProfit > 0 ? '+' : ''}${todayProfit.toFixed(2)}` : '--'}
+                    </td>
+                    <td className="p-4 text-center pr-6 whitespace-nowrap">
+                      <span className="px-2.5 py-1 rounded-full bg-blue-500 text-white text-[10px] font-bold tracking-wider shadow-sm">
+                        拖动中
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </motion.div>
+          );
+        }
+
+        // 移动端 Card 模式
+        return (
+          <motion.div
+            initial={{ scale: 0.96, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={SPRING.snap}
+            style={{
+              position: 'fixed',
+              top: pressDrag.ghostY - pressDrag.grabOffsetY,
+              left: bounds.left,
+              width: bounds.width,
+              zIndex: 9999,
+              pointerEvents: 'none',
+              willChange: 'top',
+            }}
+            className="bg-white/90 dark:bg-[#1c1c1e]/90 backdrop-blur-3xl rounded-[20px] p-3.5 space-y-2 cursor-grabbing origin-top-left
+                       shadow-[0_24px_48px_-12px_rgba(0,0,0,0.28),0_2px_6px_-1px_rgba(0,0,0,0.08),inset_0_1px_0_0_rgba(255,255,255,0.6)]
+                       ring-1 ring-black/[0.06] dark:ring-white/[0.08]
+                       before:absolute before:inset-x-0 before:top-0 before:h-[2px] before:bg-gradient-to-r before:from-transparent before:via-blue-500 before:to-transparent before:rounded-t-[20px]"
+          >
+            <div className="flex items-start justify-between gap-2 relative">
+              <div className="min-w-0 flex-1">
+                <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+                  {fund.name}
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono mt-0.5 tabular-nums">
+                  {fund.fundcode}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <svg width="10" height="14" viewBox="0 0 10 14" className="text-blue-500" fill="currentColor">
+                  <circle cx="2" cy="3" r="1.2" /><circle cx="8" cy="3" r="1.2" />
+                  <circle cx="2" cy="7" r="1.2" /><circle cx="8" cy="7" r="1.2" />
+                  <circle cx="2" cy="11" r="1.2" /><circle cx="8" cy="11" r="1.2" />
+                </svg>
+                <div className="px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[9px] font-bold tracking-wider">
+                  拖动中
+                </div>
+              </div>
+            </div>
+            <div className="flex items-baseline justify-between pt-1">
+              <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                {parseFloat(fund.gsz).toFixed(4)}
+              </div>
+              <div className={`px-2 py-0.5 rounded-lg font-mono font-bold text-xs tabular-nums ${changeBg}`}>
+                {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+              </div>
+            </div>
+          </motion.div>
+        );
+      })()}
 
       <AnimatePresence>
         {selectedFundCode && fundsData[selectedFundCode] && (() => {
