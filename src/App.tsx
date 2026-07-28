@@ -240,7 +240,7 @@ function App() {
   // onPointerDown 时记录按下的原始 target，onUp 时判断是否是短按点击
   const pointerDownTargetRef = useRef<EventTarget | null>(null);
   // commitDrag 通过 ref 传入 document effect，使 effect 只需注册一次（依赖数组为空）
-  const commitDragRef = useRef<(() => void) | null>(null);
+  const commitDragRef = useRef<((activeCode?: string, order?: string[]) => void) | null>(null);
 
   // 根据当前鼠标停留 of 物理位置计算目标插入位置 (goalIdx)
   const calculateGoalIdx = useCallback((gcode: string, clientY: number, currList: string[]): number => {
@@ -379,9 +379,10 @@ function App() {
     rowGestureRefs.current.forEach(st => { st.scrollIntent = false; });
   }, []);
 
-  const commitDrag = useCallback(async () => {
-    if (!pendingOrder || !dragActiveCode) return;
-    const newOrder = pendingOrder;
+  const commitDrag = useCallback(async (activeCodeParam?: string, orderParam?: string[]) => {
+    const activeCode = activeCodeParam || dragActiveCode;
+    const newOrder = orderParam || pendingOrderRef.current || pendingOrder;
+    if (!newOrder || !activeCode) return;
     const previousWatchlist = watchlist;
     setPendingOrderAndRef(null);
     // dragCommittedRef 不在这里清零 —— 让浏览器合成的 click 有机会被 onClickCapture 拦截
@@ -389,8 +390,10 @@ function App() {
     setPendingDragCode(null);
     setDragOverIndex(null);
     // 清理本次激活行的 scrollIntent（拖拽完成后手势结束）
-    const st = rowGestureRefs.current.get(dragActiveCode);
-    if (st) st.scrollIntent = false;
+    if (activeCode) {
+      const st = rowGestureRefs.current.get(activeCode);
+      if (st) st.scrollIntent = false;
+    }
 
     // 顺序未变 → 不发请求
     const merged = mergeKindOrder(watchlist, newOrder, selfTab, getKindOfCode);
@@ -756,12 +759,13 @@ function App() {
       const wasActivated = !!(st && st.activated);
       // 关键: onUp 之前先同步跑一次 tickMove + flushToGoal, 并 flushSync 强制 commit
       //   避免 onUp 与 chain rAF race 导致 commitDrag 读到旧 pendingOrder
+      let finalOrder: string[] | undefined = undefined;
       if (wasActivated) {
         tickMove();
-        flushToGoal(gcode);
+        finalOrder = flushToGoal(gcode) || undefined;
         flushSync(() => {});   // 强制 React 立即 commit flushToGoal 的 setState
+        commitDragRef.current?.(gcode, finalOrder);
       }
-      if (wasActivated) commitDragRef.current?.();
       if (st) {
         if (st.start && st.start.el) {
           (st.start.el as HTMLElement).style.transform = '';
@@ -808,7 +812,7 @@ function App() {
     // onUp 时强制把 gcode 推到 goalIdx (一次性, 突破 ±1 步限制)
     //   拖动期间的 chain rAF 因为是 ±1 步, 可能还没推到 goal 就被 onUp 打断;
     //   onUp 时一次性 jump 到 goal, 保证最终顺序符合手指落点.
-    const flushToGoal = (gcode: string) => {
+    const flushToGoal = (gcode: string): string[] | null => {
       const bounds = slotBoundsRef.current;
       const cardHeight = bounds[0] ? (bounds[0].bottom - bounds[0].top) : 60;
       let clampedClientY = dragLastClientYRef.current;
@@ -818,17 +822,20 @@ function App() {
         clampedClientY = Math.min(Math.max(topBoundary, clampedClientY), bottomBoundary);
       }
 
+      let res: string[] | null = pendingOrderRef.current;
       setPendingOrderAndRef(curr => {
         if (!curr) return curr;
         const fromIdx = curr.indexOf(gcode);
-        if (fromIdx < 0) return curr;
+        if (fromIdx < 0) { res = curr; return curr; }
         const goalIdx = calculateGoalIdx(gcode, clampedClientY, curr);
-        if (goalIdx === fromIdx) return curr;
+        if (goalIdx === fromIdx) { res = curr; return curr; }
         const next = [...curr];
         next.splice(fromIdx, 1);
         next.splice(goalIdx, 0, gcode);
+        res = next;
         return next;
       });
+      return res;
     };
     const onCancel = () => {
       const gcode = gestureCodeRef.current;
