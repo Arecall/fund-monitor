@@ -2158,7 +2158,12 @@ function App() {
                                   <div className="flex items-center justify-center gap-1">
                                     <button
                                       type="button"
-                                      onClick={(e) => { e.stopPropagation(); }}
+                                      onPointerDown={(e) => { e.stopPropagation(); }}
+                                      onPointerUp={(e) => { e.stopPropagation(); }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedFundCode(code);
+                                      }}
                                       className="text-[10px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2.5 py-1.5 rounded-full transition-colors cursor-pointer"
                                     >
                                       查看详情
@@ -2564,6 +2569,7 @@ function ModalShell({
   ariaLabel: string;
 }) {
   const prefersReducedMotion = useReducedMotion();
+  const mountedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2587,7 +2593,12 @@ function ModalShell({
       exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
       transition={{ duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
       onMouseDown={(e) => {
+        if (Date.now() - mountedAtRef.current < 350) return;
         // Click-out dismiss (§7 wayfinding: every screen has a way out)
+        if (e.target === e.currentTarget) onDismiss();
+      }}
+      onClick={(e) => {
+        if (Date.now() - mountedAtRef.current < 350) return;
         if (e.target === e.currentTarget) onDismiss();
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40"
@@ -2675,6 +2686,13 @@ function DetailDrawer({
 }) {
   const prefersReducedMotion = useReducedMotion();
   const drawerRef = useRef<HTMLDivElement>(null);
+  const mountedAtRef = useRef<number>(Date.now());
+
+  // 防点击穿透：刚挂载 350ms 内忽略蒙层点击（防止触屏/Pad 上触发打开的 click 事件落在刚挂载的蒙层上导致闪退）
+  const handleScrimClick = useCallback(() => {
+    if (Date.now() - mountedAtRef.current < 350) return;
+    onDismiss();
+  }, [onDismiss]);
 
   // ESC dismiss + scroll lock
   useEffect(() => {
@@ -2702,7 +2720,7 @@ function DetailDrawer({
         animate={{ opacity: 1 }}
         exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
         transition={{ duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
-        onClick={onDismiss}
+        onClick={handleScrimClick}
         className="absolute inset-0 bg-slate-950/40"
         style={{
           backdropFilter: prefersReducedMotion ? undefined : 'blur(8px)',
