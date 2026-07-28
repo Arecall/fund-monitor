@@ -440,6 +440,7 @@ function App() {
     timer: number | null;
     start: { x: number; y: number; pointerId: number; el: Element | null } | null;
     activated: boolean;
+    scrollIntent: boolean;   // 触屏：未激活就大距离移动 → 标记为滚动意图，抑制 onClick
   }>());
 
   // 关键设计：move/up 监听绑到 document 而非每行。原因：
@@ -455,7 +456,7 @@ function App() {
       pointerDownTargetRef.current = e.target; // 记录原始按下位置（用于 onUp 短按检测）
       let st = rowGestureRefs.current.get(code);
       if (!st) {
-        st = { timer: null, start: null, activated: false };
+        st = { timer: null, start: null, activated: false, scrollIntent: false };
         rowGestureRefs.current.set(code, st);
       }
       // 清理上次未释放的资源
@@ -463,6 +464,7 @@ function App() {
       const el = e.currentTarget as Element | null;
       st.start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, el };
       st.activated = false;
+      st.scrollIntent = false;   // 新手势开始，重置滚动意图标记
       gestureCodeRef.current = code;
       // 新手势开始：重置 rAF + toIdx dedup 状态
       dragLastToIdxRef.current = -1;
@@ -481,9 +483,10 @@ function App() {
       // 跳过了 button 的 onClick，使"查看详情"无法触发弹窗。
       // document 级 pointer 监听器足以覆盖所有跨行拖动场景，无需 capture。
       const isTouch = e.pointerType === 'touch';
-      // Touch: 长按 450ms 激活拖拽（手指静止按住）
+      // Touch: 长按 600ms 激活拖拽（手指静止按住）—— 与 PC 鼠标阈值对齐，
+      //   避免快速操作时手指轻微停顿被误识为长按
       // PC 鼠标: 定时器仅作为"按住不动也能激活"的兜底，真正的激活在 onPointerMove 里检测位移
-      const threshold = isTouch ? 450 : 600;
+      const threshold = isTouch ? 600 : 600;
       st.timer = window.setTimeout(() => {
         if (!st!.start) return;
         // PC 鼠标的定时器兜底：只有在用户按住超过 600ms 且有轻微位移时才激活
@@ -578,8 +581,11 @@ function App() {
         return;
       }
 
-      if (!st.activated && !isMouseGesture && dist > 8) {
+      if (!st.activated && !isMouseGesture && dist > 15) {
         // Touch: 未激活就大距离移动 → 视为滚动意图，取消拖拽等待
+        // 阈值从 8px 放宽到 15px，避免手指自然抖动就被误判
+        // scrollIntent 标记传给 onClickCapture，阻止滑动结束后误开详情
+        st.scrollIntent = true;
         if (st.timer != null) { clearTimeout(st.timer); st.timer = null; }
         st.start = null;
         setPendingDragCode(null);
@@ -746,6 +752,12 @@ function App() {
       // 若没有激活过拖拽，立即复位 dragCommittedRef；若激活过，延迟 300ms 清零拦截 click
       if (!wasActivated) {
         dragCommittedRef.current = false;
+        // 触屏滑动意图 → 不触发详情（兜底拦截；正常情况 gestureCodeRef 已被设为 null 提前 return）
+        const st = gcode ? rowGestureRefs.current.get(gcode) : null;
+        if (st?.scrollIntent) {
+          st.scrollIntent = false;
+          return;
+        }
         // 短按（非拖拽）：直接在 onUp 里触发弹窗，绕开 click 事件的 LCA 问题
         // PC 端 pointerdown 在 button，pointerup 由于 Framer Motion layout 动画落在 TR，
         // 浏览器合成的 click.target = TR（LCA），导致 button.onClick 永远不触发。
@@ -1827,10 +1839,19 @@ function App() {
                             transition={dragActiveCode ? SPRING.drag : SPRING.default}
                             onClick={() => { setSelectedFundCode(code); }}
                             onClickCapture={(e) => {
+                              // 拖拽激活过 → 拦截（防止 commit 后合成 click 误开详情）
                               if (dragCommittedRef.current) {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 dragCommittedRef.current = false;
+                                return;
+                              }
+                              // 触屏滑动 → 拦截（滚动意图标记，防止浏览器合成的 click 误开详情）
+                              const st = rowGestureRefs.current.get(code);
+                              if (st?.scrollIntent) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                st.scrollIntent = false;
                               }
                             }}
                             {...(() => {
@@ -1840,8 +1861,8 @@ function App() {
                                 onPointerCancel: h.onPointerCancel,
                               };
                             })()}
-                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
-                            style={{ touchAction: 'none' }}
+                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors cursor-pointer space-y-2 select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
+                            style={{ touchAction: 'pan-y' }}
                           >
                             {/* Card Header: Name + Code + Tag + Actions */}
                             <div className="flex items-start justify-between gap-2">
@@ -2003,6 +2024,11 @@ function App() {
                                   const st = rowGestureRefs.current.get(code);
                                   if (!st || st.activated) return; // 拖拽中不触发
                                   if (dragCommittedRef.current) return; // 刚结束拖拽不触发
+                                  if (st.scrollIntent) {
+                                    // 触屏滑动 → 不触发详情
+                                    st.scrollIntent = false;
+                                    return;
+                                  }
                                   // 排除持仓列（该列 td 有 stopPropagation 阻止 pointerdown 到 TR，
                                   // 所以 gestureCodeRef 不会被设置，这里不会走到）
                                   setSelectedFundCode(code);
@@ -2013,6 +2039,14 @@ function App() {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     dragCommittedRef.current = false;
+                                    return;
+                                  }
+                                  // 触屏滑动 → 拦截（兜底；正常路径走 onPointerUp）
+                                  const st = rowGestureRefs.current.get(code);
+                                  if (st?.scrollIntent) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    st.scrollIntent = false;
                                   }
                                 }}
                                 {...(() => {
@@ -2022,8 +2056,8 @@ function App() {
                                     onPointerCancel: h.onPointerCancel,
                                   };
                                 })()}
-                                className={`apple-row touch-none select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
-                                style={{ touchAction: 'none' }}
+                                className={`apple-row select-none ${(pendingDragCode === code || dragActiveCode === code) ? 'is-dragging' : ''}`}
+                                style={{ touchAction: 'pan-y' }}
                               >
                                 <td className="p-4 pl-6">
                                   <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
