@@ -278,6 +278,8 @@ function App() {
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const timerRef = useRef<any>(null);
+  const watchlistRef = useRef<string[]>([]);
+  const fundsDataRef = useRef<Record<string, FundValuation>>({});
 
   /* ---------- Selection state for detail panel ---------- */
   const [selectedFundCode, setSelectedFundCode] = useState<string | null>(null);
@@ -630,6 +632,13 @@ function App() {
   }, [currentUser]);
 
   /* ---------- Polling (background-friendly + 休市自动暂停) ---------- */
+  // 使用 ref 跟踪最新 state，避免定时器回调闭包过期
+  useEffect(() => {
+    watchlistRef.current = watchlist;
+    watchlistItemsRef.current = watchlistItems;
+    fundsDataRef.current = fundsData;
+  });
+
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (autoRefreshInterval > 0 && currentUser) {
@@ -637,11 +646,13 @@ function App() {
         if (document.visibilityState !== 'visible') return;
 
         // 全局休市校验：提取用户自选列表中关注的所有市场
-        const activeMarkets: FundMarket[] = watchlistItems.map(item => {
+        const items = watchlistItemsRef.current;
+        const data = fundsDataRef.current;
+        const activeMarkets: FundMarket[] = items.map(item => {
           if (item.market === 'us' || item.market === 'hk' || item.market === 'domestic' || item.market === 'other') {
             return item.market;
           }
-          const val = fundsData[item.fund_code];
+          const val = data[item.fund_code];
           return detectFundMarket(val?.name, item.fund_code);
         });
 
@@ -655,7 +666,7 @@ function App() {
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchlist, watchlistItems, fundsData, autoRefreshInterval, currentUser]);
+  }, [autoRefreshInterval, currentUser]);
 
   /* ---------- Toast ---------- */
   const showToast = useCallback((msg: string) => {
@@ -695,12 +706,16 @@ function App() {
     try {
       const indices = await fetchMarketIndices();
       if (indices.length > 0) setMarketIndices(indices);
-      const updatedFunds = { ...fundsData };
-      await Promise.all(watchlist.map(async (code) => {
-        const item = watchlistItems.find((w: WatchlistItem) => w.fund_code === code);
+      const codes = watchlistRef.current;
+      const items = watchlistItemsRef.current;
+      const data = fundsDataRef.current;
+      const updatedFunds = { ...data };
+      await Promise.all(codes.map(async (code) => {
+        const item = items.find((w: WatchlistItem) => w.fund_code === code);
         const val = await fetchFundValuation(code, item?.kind);
         if (val) updatedFunds[code] = val;
       }));
+      fundsDataRef.current = updatedFunds;
       setFundsData(updatedFunds);
     } catch (e) {
       console.error('定时轮询行情失败:', e);
