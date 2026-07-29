@@ -95,6 +95,7 @@ export function FundDetailPanel({
   const isUp = changeAmt > 0;
   const isDown = changeAmt < 0;
   const dirColor = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
+  const currencyPrefix = fund.market === 'us' ? '$' : fund.market === 'hk' ? 'HK$' : '¥';
 
   /** Parse gztime once so the relative-time hook starts from the right anchor. */
   const gzTs = parseGzTime(fund.gztime);
@@ -278,7 +279,7 @@ export function FundDetailPanel({
           {position ? (
             <>
               <span className="font-mono font-bold text-lg sm:text-xl tabular-nums">
-                ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {currencyPrefix}{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 truncate">
                 {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)} <Pencil size={9} className="shrink-0" />
@@ -322,7 +323,7 @@ export function FundDetailPanel({
           <div className="flex items-center gap-2">
             <span>最新净值</span>
             <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
-              ¥{current.toFixed(4)}
+              {currencyPrefix}{current.toFixed(4)}
             </span>
           </div>
 
