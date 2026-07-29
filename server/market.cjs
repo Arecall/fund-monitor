@@ -937,43 +937,8 @@ async function fetchStockKLineHistory(code, days = 30) {
   const c = code.trim();
   const isUS = /^[A-Za-z]{1,5}$/.test(c);
 
-  // 1. 美股第一优先级：优先使用新浪 US_MinKService 接口拉取全量历史日 K 线（数据完整且免受 Yahoo IP 封锁）
+  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口 (v8/finance/chart) 拉取历史日 K 线
   if (isUS) {
-    try {
-      const s = c.toLowerCase();
-      const sinaUrl = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_us_${s}=/US_MinKService.getDailyK?symbol=${s}`;
-      const r = await axios.get(sinaUrl, {
-        headers: {
-          'Referer': 'https://finance.sina.com.cn',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-        timeout: 6000
-      });
-      const text = r.data;
-      const start = typeof text === 'string' ? text.indexOf('[') : -1;
-      const end = typeof text === 'string' ? text.lastIndexOf(']') : -1;
-      if (start !== -1 && end !== -1) {
-        const jsonStr = text.slice(start, end + 1);
-        const arr = JSON.parse(jsonStr);
-        if (Array.isArray(arr) && arr.length > 0) {
-          const list = arr.map(item => ({
-            date: item.d,
-            open: parseFloat(item.o) || 0,
-            high: parseFloat(item.h) || 0,
-            low: parseFloat(item.l) || 0,
-            close: parseFloat(item.c) || 0,
-            volume: parseFloat(item.v) || 0,
-          })).filter(k => k.close > 0);
-          if (list.length > 0) {
-            return list.slice(-days);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`[kline] 新浪 API 美股 ${c} 获取历史日 K 线失败, 准备尝试 Yahoo:`, err.message);
-    }
-
-    // 2. 美股第二优先级备选：Yahoo Finance Chart 接口
     try {
       const yahooSymbol = encodeURIComponent(c.toUpperCase());
       const rangeParam = days <= 7 ? '1wk' : (days <= 35 ? '1mo' : '3mo');
@@ -1013,7 +978,42 @@ async function fetchStockKLineHistory(code, days = 30) {
         if (list.length > 0) return list;
       }
     } catch (err) {
-      console.warn(`[kline] Yahoo Chart API 美股 ${c} 获取历史日 K 线失败, 准备降级回退腾讯:`, err.message);
+      console.warn(`[kline] Yahoo Chart API 美股 ${c} 获取历史日 K 线失败, 准备降级回退新浪:`, err.message);
+    }
+
+    // 2. 美股第二优先级（降级备用）：新浪 US_MinKService 全量日 K 线接口（数据完整无极差断层）
+    try {
+      const s = c.toLowerCase();
+      const sinaUrl = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_us_${s}=/US_MinKService.getDailyK?symbol=${s}`;
+      const r = await axios.get(sinaUrl, {
+        headers: {
+          'Referer': 'https://finance.sina.com.cn',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        timeout: 6000
+      });
+      const text = r.data;
+      const start = typeof text === 'string' ? text.indexOf('[') : -1;
+      const end = typeof text === 'string' ? text.lastIndexOf(']') : -1;
+      if (start !== -1 && end !== -1) {
+        const jsonStr = text.slice(start, end + 1);
+        const arr = JSON.parse(jsonStr);
+        if (Array.isArray(arr) && arr.length > 0) {
+          const list = arr.map(item => ({
+            date: item.d,
+            open: parseFloat(item.o) || 0,
+            high: parseFloat(item.h) || 0,
+            low: parseFloat(item.l) || 0,
+            close: parseFloat(item.c) || 0,
+            volume: parseFloat(item.v) || 0,
+          })).filter(k => k.close > 0);
+          if (list.length > 0) {
+            return list.slice(-days);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[kline] 新浪 API 美股 ${c} 降级获取历史日 K 线失败, 准备降级回退腾讯:`, err.message);
     }
   }
 
