@@ -63,30 +63,35 @@ export function FundDetailPanel({
   const [chartKey, setChartKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   // 真实分钟 K 线（仅 stock 时拉取；美股接口缺失 → null → fallback 合成）
+  // 10s 定时器，自动按 10s 节拍拉取最新分钟 bar，匹配全局 10s 轮询
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   useEffect(() => {
-    let cancelled = false;
     if (kind !== 'stock' || !fund.fundcode) {
       setMinuteData(null);
       return;
     }
-    (async () => {
-      const res = await fetchStockMinute(fund.fundcode, 'stock');
-      if (cancelled) return;
-      if (res?.data && res.data.length > 0) {
-        const bars = res.data.map(d => ({
-          t: Date.parse(d.time.replace(' ', 'T')),
-          v: d.close,
-          volume: d.volume,
-          turnover: d.amount,
-        })).filter(b => Number.isFinite(b.t));
-        setMinuteData({ bars });
-      } else {
-        setMinuteData(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [fund.fundcode, kind, chartKey]);   // chartKey 变化（手动刷新）时重拉
+    let cancelled = false;
+    const loadMinuteData = async () => {
+      try {
+        const res = await fetchStockMinute(fund.fundcode, 'stock');
+        if (cancelled) return;
+        if (res?.data && res.data.length > 0) {
+          const bars = res.data.map(d => ({
+            t: Date.parse(d.time.replace(' ', 'T')),
+            v: d.close,
+            volume: d.volume,
+            turnover: d.amount,
+          })).filter(b => Number.isFinite(b.t));
+          setMinuteData({ bars });
+        } else {
+          setMinuteData(null);
+        }
+      } catch {}
+    };
+    loadMinuteData();
+    const timer = setInterval(loadMinuteData, 10_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [fund.fundcode, kind, chartKey]);   // chartKey 变化（手动刷新）时立即重拉
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);

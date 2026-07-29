@@ -290,6 +290,7 @@ function App() {
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
 
   // 选中股票/基金时，异步自动拉取历史净值 (history)、基本信息 (basic) 和重仓持股 (holdings)
+  // 同时以 10s 节拍刷新历史 K 线，让 1D/1W/1M 分时图保持实时
   useEffect(() => {
     if (!selectedFundCode) return;
     const code = selectedFundCode;
@@ -299,7 +300,8 @@ function App() {
     let cancelled = false;
     setHistoryLoading(true);
 
-    (async () => {
+    const loadDetail = async () => {
+      if (cancelled) return;
       try {
         const [hist, basic, holdings] = await Promise.all([
           fetchFundHistory(code, 60, kind),
@@ -315,9 +317,12 @@ function App() {
       } finally {
         if (!cancelled) setHistoryLoading(false);
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
+    loadDetail();
+    const timer = setInterval(loadDetail, 10_000);
+
+    return () => { cancelled = true; clearInterval(timer); };
   }, [selectedFundCode, watchlistItems]);
 
 

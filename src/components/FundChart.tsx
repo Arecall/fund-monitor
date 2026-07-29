@@ -95,10 +95,10 @@ export function FundChart({
     return () => ro.disconnect();
   }, []);
 
-  // 30 秒定时器，用于在时间跨越 09:30/13:00 等节点时自动重算 series 状态
+  // 10 秒定时器，用于在时间跨越 09:30/13:00 等节点时自动重算 series 状态，并随父级 10s 轮询节拍对齐刷新
   const [timeTick, setTimeTick] = useState(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setTimeTick(Date.now()), 30_000);
+    const timer = setInterval(() => setTimeTick(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
 
