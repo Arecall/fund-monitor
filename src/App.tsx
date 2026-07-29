@@ -274,7 +274,7 @@ function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isIntlColor, setIsIntlColor] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [autoRefreshInterval] = useState<number>(30);
+  const [autoRefreshInterval] = useState<number>(10);
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const timerRef = useRef<any>(null);
