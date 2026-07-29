@@ -63,7 +63,7 @@ export function FundDetailPanel({
   const [chartKey, setChartKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   // 真实分钟 K 线（仅 stock 时拉取；美股接口缺失 → null → fallback 合成）
-  // 10s 定时器，自动按 10s 节拍拉取最新分钟 bar，匹配全局 10s 轮询
+  // 定时器节拍：股票 10s（匹配 Sina tick 节奏），基金不走本路径
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   useEffect(() => {
     if (kind !== 'stock' || !fund.fundcode) {
@@ -91,7 +91,7 @@ export function FundDetailPanel({
     loadMinuteData();
     const timer = setInterval(loadMinuteData, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [fund.fundcode, kind, chartKey]);   // chartKey 变化（手动刷新）时立即重拉
+  }, [fund.fundcode, kind, chartKey]);
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);

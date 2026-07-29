@@ -274,11 +274,17 @@ function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isIntlColor, setIsIntlColor] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [autoRefreshInterval] = useState<number>(10);
+  // 双定时器策略：
+  //   - 股票（A 股 / 港股 / 美股）：10 秒一轮，匹配 Sina tick 节奏
+  //   - 场外公募基金：60 秒一轮，匹配 fundgz / Sina fu_ 的整分钟发布节奏
+  const STOCK_REFRESH_INTERVAL = 10;   // 股票 10 秒
+  const FUND_REFRESH_INTERVAL = 60;    // 基金 60 秒
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const timerRef = useRef<any>(null);
+  const stockTimerRef = useRef<any>(null);
+  const fundTimerRef = useRef<any>(null);
   const watchlistRef = useRef<string[]>([]);
+  const watchlistItemsRef = useRef<WatchlistItem[]>([]);
   const fundsDataRef = useRef<Record<string, FundValuation>>({});
 
   /* ---------- Selection state for detail panel ---------- */
@@ -290,7 +296,7 @@ function App() {
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
 
   // 选中股票/基金时，异步自动拉取历史净值 (history)、基本信息 (basic) 和重仓持股 (holdings)
-  // 同时以 10s 节拍刷新历史 K 线，让 1D/1W/1M 分时图保持实时
+  // 定时器节拍：股票 10s，基金 60s，匹配上游数据源节奏
   useEffect(() => {
     if (!selectedFundCode) return;
     const code = selectedFundCode;
@@ -320,7 +326,8 @@ function App() {
     };
 
     loadDetail();
-    const timer = setInterval(loadDetail, 10_000);
+    const interval = kind === 'stock' ? 10_000 : 60_000;
+    const timer = setInterval(loadDetail, interval);
 
     return () => { cancelled = true; clearInterval(timer); };
   }, [selectedFundCode, watchlistItems]);
@@ -420,9 +427,6 @@ function App() {
 
   const pressDragRef = useRef(pressDrag);
   useEffect(() => { pressDragRef.current = pressDrag; }, [pressDrag]);
-
-  const watchlistItemsRef = useRef(watchlistItems);
-  useEffect(() => { watchlistItemsRef.current = watchlistItems; }, [watchlistItems]);
 
   const pressTimerRef = useRef<number | null>(null);
   const pressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
@@ -644,34 +648,68 @@ function App() {
     fundsDataRef.current = fundsData;
   });
 
+  // 仅刷新当前种类的代码，避免打爆上游
+  const refreshOneKind = (kindFilter: 'fund' | 'stock') => {
+    if (document.visibilityState !== 'visible') return;
+
+    const codes = watchlistRef.current;
+    const items = watchlistItemsRef.current;
+    const data = fundsDataRef.current;
+
+    const targetCodes = codes.filter(code => {
+      const it = items.find(w => w.fund_code === code);
+      return (it?.kind || 'fund') === kindFilter;
+    });
+    if (targetCodes.length === 0) return;
+
+    // 休市校验：仅当该种类下的市场仍有活跃时刷新
+    const activeMarkets: FundMarket[] = targetCodes.map(code => {
+      const it = items.find(w => w.fund_code === code);
+      if (it?.market === 'us' || it?.market === 'hk' || it?.market === 'domestic' || it?.market === 'other') {
+        return it.market;
+      }
+      const val = data[code];
+      return detectFundMarket(val?.name, code);
+    });
+    if (!isAnyMarketOpen(activeMarkets)) return;
+
+    (async () => {
+      try {
+        const updatedFunds = { ...data };
+        await Promise.all(targetCodes.map(async (code) => {
+          const it = items.find((w: WatchlistItem) => w.fund_code === code);
+          const val = await fetchFundValuation(code, it?.kind);
+          if (val) updatedFunds[code] = val;
+        }));
+        fundsDataRef.current = updatedFunds;
+        setFundsData(updatedFunds);
+      } catch (e) {
+        console.error(`[poll:${kindFilter}] 轮询失败:`, e);
+      }
+    })();
+  };
+
   useEffect(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (autoRefreshInterval > 0 && currentUser) {
-      timerRef.current = setInterval(() => {
-        if (document.visibilityState !== 'visible') return;
+    if (stockTimerRef.current) clearInterval(stockTimerRef.current);
+    if (fundTimerRef.current) clearInterval(fundTimerRef.current);
+    if (!currentUser) return;
 
-        // 全局休市校验：提取用户自选列表中关注的所有市场
-        const items = watchlistItemsRef.current;
-        const data = fundsDataRef.current;
-        const activeMarkets: FundMarket[] = items.map(item => {
-          if (item.market === 'us' || item.market === 'hk' || item.market === 'domestic' || item.market === 'other') {
-            return item.market;
-          }
-          const val = data[item.fund_code];
-          return detectFundMarket(val?.name, item.fund_code);
-        });
+    // 股票 10s 一轮
+    stockTimerRef.current = setInterval(() => {
+      refreshOneKind('stock');
+    }, STOCK_REFRESH_INTERVAL * 1000);
 
-        // 若用户关注的所有市场目前均处于休市闭市状态（如周末或深夜全盘休市），跳过轮询刷新
-        if (!isAnyMarketOpen(activeMarkets)) {
-          return;
-        }
+    // 基金 60s 一轮
+    fundTimerRef.current = setInterval(() => {
+      refreshOneKind('fund');
+    }, FUND_REFRESH_INTERVAL * 1000);
 
-        refreshPricesOnly();
-      }, autoRefreshInterval * 1000);
-    }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefreshInterval, currentUser]);
+    return () => {
+      if (stockTimerRef.current) clearInterval(stockTimerRef.current);
+      if (fundTimerRef.current) clearInterval(fundTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks-exhaustive-deps
+  }, [currentUser]);
 
   /* ---------- Toast ---------- */
   const showToast = useCallback((msg: string) => {
@@ -704,26 +742,6 @@ function App() {
       showToast('数据加载失败，请检查后端服务是否启动');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const refreshPricesOnly = async () => {
-    try {
-      const indices = await fetchMarketIndices();
-      if (indices.length > 0) setMarketIndices(indices);
-      const codes = watchlistRef.current;
-      const items = watchlistItemsRef.current;
-      const data = fundsDataRef.current;
-      const updatedFunds = { ...data };
-      await Promise.all(codes.map(async (code) => {
-        const item = items.find((w: WatchlistItem) => w.fund_code === code);
-        const val = await fetchFundValuation(code, item?.kind);
-        if (val) updatedFunds[code] = val;
-      }));
-      fundsDataRef.current = updatedFunds;
-      setFundsData(updatedFunds);
-    } catch (e) {
-      console.error('定时轮询行情失败:', e);
     }
   };
 
