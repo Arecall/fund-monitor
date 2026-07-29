@@ -18,6 +18,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initTables() {
   db.serialize(() => {
+    // 开启 WAL 模式 + 设置锁超时时间与同步级别，极大提升并发读写吞吐量并防止锁竞争
+    db.run('PRAGMA journal_mode = WAL;');
+    db.run('PRAGMA busy_timeout = 5000;');
+    db.run('PRAGMA synchronous = NORMAL;');
+
     // 1. 用户表
     db.run(`
       CREATE TABLE IF NOT EXISTS users (

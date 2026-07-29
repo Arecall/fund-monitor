@@ -15,7 +15,7 @@
  *   15 秒一次 ":keepalive\n\n" 注释，保活反代层与浏览器 EventSource。
  */
 const { EventEmitter } = require('events');
-const market = require('./market.cjs');
+const marketHelper = require('./market.cjs');
 const dbHelper = require('./db.cjs');
 
 const STOCK_INTERVAL_MS = 10 * 1000;   // 股票 10 秒
@@ -45,6 +45,20 @@ class ValuationBroker {
     this._keepaliveTimer = setInterval(() => {
       // :keepalive 注释；前端 EventSource 自动忽略
       this.emitter.emit('keepalive');
+
+      // 定时保活的同时检测：如果有处于 closed=true 但有订阅者且已到开盘时间的条目，自动拉起
+      const now = new Date();
+      for (const [code, entry] of this.codes.entries()) {
+        if (entry.closed && entry.subscribers > 0) {
+          try {
+            if (marketHelper.isInTradingTime(code, now, entry.market || undefined)) {
+              entry.closed = false;
+              console.log(`[realtime] ${code} 交易时段开启（保活检测），自动恢复抓取`);
+              this._startFetchLoop(code, entry);
+            }
+          } catch {}
+        }
+      }
     }, KEEPALIVE_MS);
     this._keepaliveTimer.unref?.();
   }
@@ -88,9 +102,18 @@ class ValuationBroker {
     }
 
     entry.subscribers += 1;
-    if (entry.closed) {
-      // 已经收盘：不再启动循环，立即 emit 一次 closed 让前端感知
-      // 立刻 + 异步都做，因为 event listener 可能稍后才注册
+
+    // 检查：如果此前标记为已收盘 (closed = true)，但此时已迎来新交易日/开盘时段 (inSession = true)
+    // 则重置 closed 标识并拉起抓取循环（实现跨夜/跨周末长连接的自动开盘恢复）
+    const now = new Date();
+    const inSession = marketHelper.isInTradingTime(code, now, entry.market || undefined);
+
+    if (entry.closed && inSession) {
+      entry.closed = false;
+      console.log(`[realtime] ${code} 重新进入交易时段，自动恢复抓取`);
+      this._startFetchLoop(code, entry);
+    } else if (entry.closed) {
+      // 仍然处于收盘阶段：不再启动循环，立即 emit 一次 closed 让前端感知
       const payload = {
         code,
         kind: entry.kind,
@@ -131,7 +154,7 @@ class ValuationBroker {
     const now = new Date();
     let inSession;
     try {
-      inSession = market.isInTradingTime(entry.code, now, entry.market || undefined);
+      inSession = marketHelper.isInTradingTime(entry.code, now, entry.market || undefined);
     } catch (e) {
       return false;  // 判定失败保守放行
     }
@@ -160,7 +183,7 @@ class ValuationBroker {
   _startFetchLoop(code, entry) {
     const fetchOnce = async () => {
       try {
-        const val = await market.getFundValuation(code, entry.kind);
+        const val = await marketHelper.getFundValuation(code, entry.kind);
         if (!val) return;
         const now = Date.now();
         // 防止上游返回同一个 gztime 反复 emit（节流 + 去重）
@@ -214,6 +237,18 @@ class ValuationBroker {
       );
       if (r.changes > 0) {
         console.log(`[realtime] 已清理 ${r.changes} 条过期行情快照`);
+      }
+
+      // GC：清理内存字典中 subscribers === 0 且 timer === null 的已退订无用节点
+      let purgedCount = 0;
+      for (const [code, entry] of this.codes.entries()) {
+        if (entry.subscribers <= 0 && !entry.timer) {
+          this.codes.delete(code);
+          purgedCount++;
+        }
+      }
+      if (purgedCount > 0) {
+        console.log(`[realtime] 已垃圾回收 ${purgedCount} 个已退订的内存节点`);
       }
     } catch (e) {
       console.warn('[realtime] purge snapshots 失败:', e.message);

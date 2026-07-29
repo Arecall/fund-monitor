@@ -30,7 +30,7 @@ export function RelativeTime({
   const diffSec = Math.max(0, Math.floor((now - timestamp) / 1000));
 
   let text: string;
-  if (diffSec < 5) text = '刚刚';
+  if (diffSec < 3) text = '刚刚';
   else if (diffSec < 60) text = `${diffSec} 秒前`;
   else if (diffSec < 3600) text = `${Math.floor(diffSec / 60)} 分钟前`;
   else if (diffSec < 86400) text = `${Math.floor(diffSec / 3600)} 小时前`;

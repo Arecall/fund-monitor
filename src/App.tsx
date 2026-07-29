@@ -47,8 +47,10 @@ import {
 } from './services/api';
 import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
 import { FundDetailPanel } from './components/FundDetailPanel';
-import { EmailConfigPanel } from './components/EmailConfigPanel';
-import { GoldTab } from './components/GoldTab';
+
+// 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
+const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
+const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ default: m.GoldTab })));
 
 /* ───────────────────────────────────────────────────────────────────
    Apple Motion tokens — derived from WWDC Designing Fluid Interfaces
@@ -1520,7 +1522,9 @@ function App() {
       {/* Main grid — 金价 tab 占满整页时只渲染金价 */}
       {mainTab === 'gold' ? (
         <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
-          <GoldTab />
+          <React.Suspense fallback={<div className="p-8 text-center text-xs text-slate-400 font-mono">加载黄金分析看板…</div>}>
+            <GoldTab />
+          </React.Suspense>
         </div>
       ) : (
       <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-6">
@@ -2486,11 +2490,13 @@ function App() {
                       <div className="text-[10px] text-slate-400">配置邮件警报接收箱</div>
                     </div>
                   </div>
-                  <EmailConfigPanel
-                    isAdmin={currentUser.toLowerCase() === 'admin'}
-                    currentUser={currentUser}
-                    onToast={showToast}
-                  />
+                  <React.Suspense fallback={<div className="text-xs text-slate-400">加载中…</div>}>
+                    <EmailConfigPanel
+                      isAdmin={currentUser.toLowerCase() === 'admin'}
+                      currentUser={currentUser}
+                      onToast={showToast}
+                    />
+                  </React.Suspense>
                 </div>
 
                 {/* 4. User Info & Logout */}
