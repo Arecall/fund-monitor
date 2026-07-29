@@ -39,16 +39,16 @@ export function formatTurnover(v: number): string {
 }
 
 /**
- * 市值格式化
+ * 市值格式化（使用货币符号：USD $ / HKD HK$ / RMB ¥）
  * @param market 'domestic' | 'hk' | 'us'
  */
 export function formatMarketCap(v: number, market?: string): string {
   if (!Number.isFinite(v) || v <= 0) return '—';
-  const unit = market === 'us' ? '美元' : market === 'hk' ? '港币' : '元';
-  if (v >= 1e12) return `${(v / 1e12).toFixed(2)}万亿${unit}`;
-  if (v >= 1e8)  return `${(v / 1e8).toFixed(2)}亿${unit}`;
-  if (v >= 1e4)  return `${(v / 1e4).toFixed(2)}万${unit}`;
-  return `${v.toFixed(0)}${unit}`;
+  const prefix = market === 'us' ? '$' : market === 'hk' ? 'HK$' : '¥';
+  if (v >= 1e12) return `${prefix}${(v / 1e12).toFixed(2)}万亿`;
+  if (v >= 1e8)  return `${prefix}${(v / 1e8).toFixed(2)}亿`;
+  if (v >= 1e4)  return `${prefix}${(v / 1e4).toFixed(2)}万`;
+  return `${prefix}${v.toFixed(0)}`;
 }
 
 /**

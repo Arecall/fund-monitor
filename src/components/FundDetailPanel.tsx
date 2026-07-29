@@ -95,7 +95,6 @@ export function FundDetailPanel({
   const isUp = changeAmt > 0;
   const isDown = changeAmt < 0;
   const dirColor = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
-  const dirBg    = isUp ? 'bg-[var(--color-up-bg)]' : isDown ? 'bg-[var(--color-down-bg)]' : 'bg-slate-100 dark:bg-slate-800/50';
 
   /** Parse gztime once so the relative-time hook starts from the right anchor. */
   const gzTs = parseGzTime(fund.gztime);
@@ -152,42 +151,40 @@ export function FundDetailPanel({
       </div>
 
       {/* ── Metric row — funds 6 / stocks 8 cards ─────────────── */}
-      <div className={`grid grid-cols-2 gap-2.5 ${kind === 'stock' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'}`}>
+      <div className={`grid grid-cols-2 gap-3 ${kind === 'stock' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'}`}>
         <MetricCard label="当前净值" tone="neutral" title={current.toFixed(6)}>
-          <span
-            className="font-mono font-bold text-[1.4rem] tabular-nums text-slate-900 dark:text-slate-50 leading-none cursor-default"
-          >
+          <span className="font-mono font-bold text-base sm:text-lg tabular-nums text-slate-900 dark:text-slate-50 leading-tight cursor-default">
             {current.toFixed(4)}
           </span>
+          <span className="text-[10px] opacity-0 font-mono mt-0.5 select-none">—</span>
         </MetricCard>
 
-        <MetricCard label="实时涨跌" tone={isUp ? 'up' : isDown ? 'down' : 'neutral'} highlight>
+        <MetricCard label="实时涨跌" tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}>
           <div className="flex items-center gap-1">
-            {isUp ? <ArrowUpRight size={14} /> : isDown ? <ArrowDownRight size={14} /> : <span className="w-3.5" />}
-            <span className="font-mono font-bold text-[1rem] tabular-nums">
+            {isUp ? <ArrowUpRight size={15} className="shrink-0" /> : isDown ? <ArrowDownRight size={15} className="shrink-0" /> : null}
+            <span className="font-mono font-bold text-base sm:text-lg tabular-nums leading-tight">
               {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
             </span>
           </div>
-          <span className="text-[9px] font-bold bg-red-50 dark:bg-red-950/40 text-[#ff453a] px-1.5 py-0.5 rounded mt-1 self-start">
-            实时
+          <span className="text-[10px] text-slate-400 font-mono mt-0.5">
+            波动 {Math.abs(changeAmt).toFixed(4)}
           </span>
         </MetricCard>
 
         <MetricCard label="今日涨跌幅" tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}>
-          <span className="font-mono font-bold text-[1rem] tabular-nums">
+          <span className="font-mono font-bold text-base sm:text-lg tabular-nums leading-tight">
             {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
           </span>
+          <span className="text-[10px] opacity-0 font-mono mt-0.5 select-none">—</span>
         </MetricCard>
 
         <MetricCard label="昨收" tone="neutral" title={previous > 0 ? previous.toFixed(6) : '—'}>
-          <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+          <span className="font-mono font-bold text-base sm:text-lg tabular-nums text-slate-800 dark:text-slate-100 leading-tight">
             {previous > 0 ? previous.toFixed(4) : '—'}
           </span>
-          {fund.dwjz && (
-            <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
-              {fund.jzrq || ''}
-            </span>
-          )}
+          <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+            {fund.jzrq || '—'}
+          </span>
         </MetricCard>
 
         {/* 个股专属：总市值 / 换手率（仅 stock + 东财字段就绪时显示） */}
@@ -198,17 +195,17 @@ export function FundDetailPanel({
           return (
             <>
               <MetricCard label="总市值" tone="neutral" title={typeof totalMC === 'number' ? `${totalMC.toFixed(0)} 元` : '—'}>
-                <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+                <span className="font-mono font-bold text-sm sm:text-base tabular-nums text-slate-800 dark:text-slate-100 leading-tight whitespace-nowrap truncate">
                   {typeof totalMC === 'number' && totalMC > 0 ? formatMarketCap(totalMC, fund.market) : '—'}
                 </span>
-                <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums whitespace-nowrap truncate">
                   {typeof totalMC === 'number' && totalMC > 0 && current > 0 && previous > 0
                     ? `流通 ${formatMarketCap((fund as any).stockSpecific?.floatMarketCap ?? 0, fund.market)}`
-                    : ''}
+                    : '—'}
                 </span>
               </MetricCard>
               <MetricCard label="换手率" tone="neutral" title={typeof turnoverRate === 'number' ? `${turnoverRate.toFixed(2)}%` : '—'}>
-                <span className="font-mono font-bold text-[1rem] tabular-nums text-slate-700 dark:text-slate-200">
+                <span className="font-mono font-bold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100">
                   {typeof turnoverRate === 'number' && turnoverRate >= 0 ? `${turnoverRate.toFixed(2)}%` : '—'}
                 </span>
                 {(() => {
@@ -225,17 +222,17 @@ export function FundDetailPanel({
         })()}
 
         <MetricCard label="更新时间" tone="neutral">
-          <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200" style={{ fontSize: '1rem', letterSpacing: '0.01em' }}>
+          <span className="font-mono font-semibold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100">
             {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
           </span>
-          <span className="text-[10px] text-slate-400 mt-0.5">
+          <span className="text-[10px] text-slate-400 mt-0.5 font-mono">
             {new Date(gzTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
           </span>
         </MetricCard>
 
         {basic?.scale?.size != null && (
           <MetricCard label="当前规模" tone="neutral" title={`${basic.scale.size!.toFixed(2)} 亿`}>
-            <span className="font-mono font-bold text-[1.05rem] tabular-nums text-slate-800 dark:text-slate-100 leading-none">
+            <span className="font-mono font-bold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100 leading-none">
               {basic.scale.size!.toFixed(2)}
               <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
             </span>
@@ -280,15 +277,15 @@ export function FundDetailPanel({
         >
           {position ? (
             <>
-              <span className="font-mono font-bold text-[1rem] tabular-nums">
+              <span className="font-mono font-bold text-lg sm:text-xl tabular-nums">
                 ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
-              <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
-                {position.shares}份 · @{position.cost.toFixed(4)} <Pencil size={9} />
+              <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 truncate">
+                {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)} <Pencil size={9} className="shrink-0" />
               </span>
             </>
           ) : (
-            <span className="text-xs text-slate-400">未持仓</span>
+            <span className="text-xs text-slate-400 font-medium">未持仓</span>
           )}
         </MetricCard>
       </div>
@@ -298,30 +295,42 @@ export function FundDetailPanel({
         initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         transition={SPRING.panel}
-        className={`rounded-2xl border border-[var(--hairline-border)] p-4 flex items-center gap-3 flex-wrap ${dirBg}`}
+        className="bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl rounded-2xl border border-[var(--hairline-border)] p-4 md:p-5 shadow-sm space-y-3"
       >
-        <div className="flex items-center gap-2">
-          <span className="apple-eyebrow text-slate-600 dark:text-slate-300">实时涨跌</span>
-          <span className="text-[10px] bg-red-50 dark:bg-red-950/40 text-[#ff453a] px-1.5 py-0.5 rounded font-bold">
-            实时
-          </span>
+        {/* 上层：主标与实时涨跌数值 */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              实时行情
+            </span>
+            <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} className="text-xs" />
+          </div>
+
+          <div className="flex items-baseline gap-3">
+            <span className={`font-mono font-bold text-2xl tabular-nums ${dirColor}`}>
+              {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
+            </span>
+            <span className={`font-mono font-bold text-lg tabular-nums ${dirColor}`}>
+              {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
+            </span>
+          </div>
         </div>
-        <div className="flex items-baseline gap-3">
-          <span className={`font-mono font-bold text-xl tabular-nums ${dirColor}`}>
-            {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
-          </span>
-          <span className={`font-mono font-bold text-lg tabular-nums ${dirColor}`}>
-            {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
-          </span>
-        </div>
-        <div className="hidden md:flex items-center gap-3 ml-auto text-[11px] text-slate-500">
-          <span>最新净值 <span className="font-mono font-semibold text-slate-700 dark:text-slate-200 tabular-nums">{current.toFixed(4)}</span></span>
-          <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} />
-        </div>
-        <div className="text-[10px] text-slate-400 w-full md:w-auto flex items-center gap-1.5">
-          <RelativeTime timestamp={gzTs} prefix="最近更新 " />
-          <span className="opacity-50">·</span>
-          <span className="font-mono">{new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}</span>
+
+        {/* 下层：元数据对齐栏 */}
+        <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span>最新净值</span>
+            <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
+              ¥{current.toFixed(4)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+            <RelativeTime timestamp={gzTs} prefix="最近更新 " />
+            <span className="opacity-40">·</span>
+            <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}</span>
+          </div>
         </div>
       </motion.div>
 
@@ -1032,7 +1041,6 @@ function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
 function MetricCard({
   label,
   tone,
-  highlight,
   onClick,
   title,
   className = '',
@@ -1051,9 +1059,9 @@ function MetricCard({
   const isMuted = tone === 'muted';
 
   const toneStyles = isUp
-    ? 'border-[rgba(255,69,58,0.18)]'
+    ? 'border-red-200/50 dark:border-red-900/30'
     : isDown
-      ? 'border-[rgba(48,209,88,0.18)]'
+      ? 'border-emerald-200/50 dark:border-emerald-900/30'
       : 'border-[var(--hairline-border)]';
 
   const textColor = isUp
@@ -1063,11 +1071,14 @@ function MetricCard({
       : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50';
 
   const content = (
-    <div title={title} className={`flex flex-col gap-1.5 p-3 min-h-[88px] rounded-2xl border ${toneStyles} ${highlight ? (isUp ? 'bg-[var(--color-up-bg)]' : isDown ? 'bg-[var(--color-down-bg)]' : 'bg-slate-50 dark:bg-white/5') : 'bg-white/40 dark:bg-white/[0.02]'} ${onClick ? 'cursor-pointer hover:bg-white/70 dark:hover:bg-white/[0.05] transition-colors' : ''} ${className}`}>
-      <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500'} uppercase tracking-wider truncate`}>
+    <div
+      title={title}
+      className={`flex flex-col justify-between p-3.5 h-[96px] rounded-2xl border ${toneStyles} bg-slate-100/50 dark:bg-white/[0.04] transition-all duration-200 ${onClick ? 'cursor-pointer hover:bg-slate-200/60 dark:hover:bg-white/[0.08]' : ''} ${className}`}
+    >
+      <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
         {label}
       </div>
-      <div className={`flex flex-col min-w-0 ${textColor}`}>
+      <div className={`flex flex-col min-w-0 justify-end flex-1 ${textColor}`}>
         {children}
       </div>
     </div>

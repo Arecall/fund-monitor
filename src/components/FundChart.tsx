@@ -11,6 +11,8 @@ import {
   type DataSource
 } from '../utils/chartData';
 import { detectFundMarket, isMarketOpen } from '../utils/fundMarket';
+import { OpenCountdown } from './RelativeTime';
+import { useAppEnv } from '../utils/env';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
 import type { FundHistoryPoint } from '../services/api';
 import type { MinuteFeed } from '../utils/chartData';
@@ -74,6 +76,7 @@ export function FundChart({
   refreshing = false,
   onRefresh
 }: FundChartProps) {
+  const { isDev } = useAppEnv();
   const [range, setRange] = useState<RangeKey>('intraday');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [showDataNote, setShowDataNote] = useState(false);
@@ -92,10 +95,32 @@ export function FundChart({
     return () => ro.disconnect();
   }, []);
 
+  // 30 秒定时器，用于在时间跨越 09:30/13:00 等节点时自动重算 series 状态
+  const [timeTick, setTimeTick] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setTimeTick(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 🧪 模拟 2 分钟倒计时开盘功能
+  const [mockSecLeft, setMockSecLeft] = useState<number | null>(null);
+  useEffect(() => {
+    if (mockSecLeft === null) return;
+    if (mockSecLeft <= 0) {
+      // 倒计时清零！触发模拟开盘切盘动画
+      setMockSecLeft(null);
+      return;
+    }
+    const timer = setInterval(() => {
+      setMockSecLeft(s => (s !== null && s > 0 ? s - 1 : null));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [mockSecLeft]);
+
   // Build the active series
   const series = useMemo(
     () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed),
-    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed]
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, timeTick]
   );
   const points = series.points;
 
@@ -271,19 +296,10 @@ export function FundChart({
     return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
   }, [points, range, x, y]);
 
-  // 副 Y 轴：均价（VWAP）相对首点的 % 偏离（5 个 % 标签与橙色均价线对齐）。
-  // 没有均价线时回退到价格偏离，避免副轴空白。
-  const pctSeries = useMemo(() => {
-    if (points.length < 2) return { minPct: 0, maxPct: 0, last: 0 };
-    const base = points[0].v;
-    if (!Number.isFinite(base) || base === 0) return { minPct: 0, maxPct: 0, last: 0 };
-    const series = vwapSeries.perPoint.length === points.length ? vwapSeries.perPoint : points.map(p => p.v);
-    const pcts = series.map(v => (v - base) / base * 100);
-    const lo = Math.min(Math.min(...pcts), 0);
-    const hi = Math.max(Math.max(...pcts), 0);
-    const padP = (hi - lo) * 0.05 || 1;
-    return { minPct: lo - padP, maxPct: hi + padP, last: pcts[pcts.length - 1] };
-  }, [points, vwapSeries.perPoint]);
+  // 判断当下时刻该资产所在市场是否开盘
+  const fundMarket = useMemo(() => detectFundMarket(fundName, fundCode), [fundName, fundCode]);
+  const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
+  const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -297,6 +313,15 @@ export function FundChart({
   // ─── X-axis ticks ────────────────────────────────────────────────
   const xTicks = useMemo(() => {
     if (points.length < 2) return [];
+    if (range === 'intraday') {
+      const midLabel = fundMarket === 'us' ? '13:00' : '11:30/13:00';
+      const endLabel = fundMarket === 'hk' ? '16:00' : (fundMarket === 'us' ? '04:00' : '15:00');
+      return [
+        { idx: 0, label: '09:30' },
+        { idx: Math.floor((points.length - 1) / 2), label: midLabel },
+        { idx: points.length - 1, label: endLabel },
+      ];
+    }
     const N = 5;
     const out: { idx: number; label: string }[] = [];
     for (let i = 0; i < N; i++) {
@@ -304,7 +329,7 @@ export function FundChart({
       out.push({ idx, label: formatTick(points[idx].t, range) });
     }
     return out;
-  }, [points, range]);
+  }, [points, range, fundMarket]);
 
   // ─── Hover ───────────────────────────────────────────────────────
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -324,23 +349,24 @@ export function FundChart({
   // ─── Derived metrics for the tooltip & header ────────────────────
   const lastPoint = points[points.length - 1];
   const firstPoint = points[0];
-  const changeAmt = lastPoint.v - firstPoint.v;
-  const changePercent = changePct(lastPoint.v, firstPoint.v);
+
+  // 基准参考线取值：
+  //   - 股票 / 基金分时图（range === 'intraday'）与全盘涨跌幅：基准统一为上一交易日收盘价 (previous)。
+  //   - 如果 previous 无效（<= 0），退化为 firstPoint.v。
+  const baselineValue = previous > 0 ? previous : (firstPoint?.v || 0);
+  const baselineLabel = '昨收';
+
+  const changeAmt = lastPoint ? lastPoint.v - baselineValue : 0;
+  const changePercent = baselineValue > 0 ? changePct(lastPoint.v, baselineValue) : 0;
   const isUp = changeAmt > 0;
   const isDown = changeAmt < 0;
   const colorVar = isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)';
   const colorId = isUp ? 'gUp' : isDown ? 'gDown' : 'gFlat';
 
-  // 基准参考线取值：
-  //   - 个股（kind === 'stock' 且 openPrice 有效）→ 今开（开盘价）
-  //   - 基金 / 个股缺 open → 前一交易日收盘（previous）
-  const baselineValue = (kind === 'stock' && openPrice && openPrice > 0) ? openPrice : firstPoint.v;
-  const baselineLabel = (kind === 'stock' && openPrice && openPrice > 0) ? '今开' : '昨收';
-
   // Hover point value
   const hoverPoint: ChartPoint | null = hoverIdx !== null ? points[hoverIdx] : null;
-  const hoverChangeAmt = hoverPoint ? hoverPoint.v - firstPoint.v : 0;
-  const hoverChangePct = hoverPoint ? changePct(hoverPoint.v, firstPoint.v) : 0;
+  const hoverChangeAmt = hoverPoint ? hoverPoint.v - baselineValue : 0;
+  const hoverChangePct = hoverPoint && baselineValue > 0 ? changePct(hoverPoint.v, baselineValue) : 0;
   const hoverX = hoverIdx !== null ? x(hoverIdx) : 0;
   const hoverY = hoverPoint ? y(hoverPoint.v) : 0;
   // hover 处的均价：来自 vwapSeries.perPoint（缺 VWAP 时 undefined → 不显示均价行）
@@ -357,11 +383,6 @@ export function FundChart({
     if (!refreshing) return;
   }, [refreshing]);
 
-  // 判断当下时刻该资产所在市场是否开盘
-  const fundMarket = useMemo(() => detectFundMarket(fundName, fundCode), [fundName, fundCode]);
-  const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
-  const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
-
   // 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
   // 盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。
   // 提前 memoize，避免每次 render 重新分配 Date 对象和字符串
@@ -377,6 +398,12 @@ export function FundChart({
     return { sameDay, dataStr };
   }, [series.points, series.preMarket]);
 
+  // 是否在盘前等待阶段（处于开盘中 isCurrentlyOpen 时强制为 false，保证盘中 100% 渲染真实/实时分时走势）
+  const isPreMarketState = mockSecLeft !== null
+    ? mockSecLeft > 0
+    : (!isCurrentlyOpen && range === 'intraday' && series.preMarket);
+  const showLines = !isPreMarketState;
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
@@ -385,13 +412,14 @@ export function FundChart({
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 min-w-0 flex-1">
           <span className="shrink-0">分时走势</span>
           <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
-          {range === 'intraday' && series.preMarket && (
+          {isPreMarketState && (
             <span
               title={series.note}
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-sm"
             >
-              <Clock size={9} />
-              盘前 · 等待开盘
+              <Clock size={10} className="text-blue-500 animate-pulse" />
+              <span className="opacity-90">盘前 · </span>
+              <OpenCountdown market={fundMarket} showTargetTime={true} />
             </span>
           )}
         </div>
@@ -427,14 +455,28 @@ export function FundChart({
               : `已休市 · ${formatTick(lastPointTime, range)}`}
           </span>
         </span>
-        <PressableButton
-          onClick={() => onRefresh?.()}
-          disabled={refreshing}
-          className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50 shrink-0"
-        >
-          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-          手动刷新
-        </PressableButton>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isDev && (
+            <PressableButton
+              onClick={() => setMockSecLeft(60)}
+              disabled={mockSecLeft !== null}
+              title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
+              className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
+            >
+              <Clock size={11} className={mockSecLeft !== null ? 'animate-spin' : ''} />
+              {mockSecLeft !== null ? `倒计时 ${mockSecLeft}s` : '🧪 模拟 1min 开盘倒计时'}
+            </PressableButton>
+          )}
+
+          <PressableButton
+            onClick={() => onRefresh?.()}
+            disabled={refreshing}
+            className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50 shrink-0"
+          >
+            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+            手动刷新
+          </PressableButton>
+        </div>
       </div>
 
       {/* Data-source note (expandable) */}
@@ -543,7 +585,7 @@ export function FundChart({
                 >
                   {t.v.toFixed(range === 'intraday' ? 4 : 2)}
                 </text>
-                {/* 右轴：涨跌幅 %（独立范围 minPct → maxPct） */}
+                {/* 右轴：相对基准价的涨跌幅 %（与左轴价格 100% 精确映射对齐） */}
                 <text
                   x={padding.left + innerW + 8}
                   y={t.y + 3}
@@ -554,10 +596,10 @@ export function FundChart({
                   className="font-mono tabular-nums"
                 >
                   {(() => {
-                    // 把 5 个 Y tick 均匀映射到 [minPct, maxPct]
-                    const frac = 1 - (t.y - padding.top) / innerH;  // 0=底 1=顶
-                    const v = pctSeries.minPct + frac * (pctSeries.maxPct - pctSeries.minPct);
-                    return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+                    const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 0);
+                    if (!base || base <= 0) return '0.00%';
+                    const pct = ((t.v - base) / base) * 100;
+                    return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
                   })()}
                 </text>
               </g>
@@ -609,52 +651,56 @@ export function FundChart({
               />
             </clipPath>
           </defs>
-          <motion.path
-            key={`area-${range}`}
-            d={areaPath}
-            fill={`url(#${colorId})`}
-            clipPath="url(#fundChartAreaReveal)"
-            initial={prefersReducedMotion ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
-          />
+          {showLines && (
+            <>
+              <motion.path
+                key={`area-${range}`}
+                d={areaPath}
+                fill={`url(#${colorId})`}
+                clipPath="url(#fundChartAreaReveal)"
+                initial={prefersReducedMotion ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
+              />
 
-          {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
-          <motion.path
-            key={`line-glow-${range}`}
-            d={smoothLinePath}
-            fill="none"
-            stroke={colorVar}
-            strokeWidth="3.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            opacity="0.18"
-            filter="url(#lineGlow)"
-            initial={prefersReducedMotion ? false : { pathLength: 0 }}
-            animate={{ pathLength: 1 }}
-            transition={{ ...SPRING_DRAW, duration: 0.7 }}
-          />
+              {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
+              <motion.path
+                key={`line-glow-${range}`}
+                d={smoothLinePath}
+                fill="none"
+                stroke={colorVar}
+                strokeWidth="3.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity="0.18"
+                filter="url(#lineGlow)"
+                initial={prefersReducedMotion ? false : { pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ ...SPRING_DRAW, duration: 0.7 }}
+              />
 
-          {/* Line — 用平滑曲线（Catmull-Rom），纯色 + 下方柔光层营造发光质感 */}
-          <motion.path
-            key={`line-${range}`}
-            d={smoothLinePath}
-            fill="none"
-            stroke={colorVar}
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            initial={
-              prefersReducedMotion
-                ? false
-                : { pathLength: 0, opacity: 0 }
-            }
-            animate={{ pathLength: 1, opacity: 1 }}
-            transition={SPRING_DRAW}
-          />
+              {/* Line — 用平滑曲线（Catmull-Rom），纯色 + 下方柔光层营造发光质感 */}
+              <motion.path
+                key={`line-${range}`}
+                d={smoothLinePath}
+                fill="none"
+                stroke={colorVar}
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                initial={
+                  prefersReducedMotion
+                    ? false
+                    : { pathLength: 0, opacity: 0 }
+                }
+                animate={{ pathLength: 1, opacity: 1 }}
+                transition={SPRING_DRAW}
+              />
+            </>
+          )}
 
           {/* 均价线（橙色 VWAP — 成交量加权均价），仅在分时图 + 真实逐分钟 volume 数据存在时绘制 */}
-          {vwapSeries.path && (
+          {showLines && vwapSeries.path && (
             <motion.path
               key={`vwap-line-${range}`}
               d={vwapSeries.path}
@@ -797,14 +843,14 @@ export function FundChart({
                 </g>
                 {/* 右轴 % 跟随标签 */}
                 {(() => {
-                  const frac = 1 - (hoverY - padding.top) / innerH;
-                  const pctVal = pctSeries.minPct + frac * (pctSeries.maxPct - pctSeries.minPct);
+                  const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 0);
+                  const pctVal = base > 0 ? ((hoverPoint.v - base) / base) * 100 : 0;
                   return (
                     <g>
                       <rect
                         x={padding.left + innerW + 4}
                         y={hoverY - 8}
-                        width={40}
+                        width={44}
                         height={16}
                         rx={3}
                         fill={colorVar}
@@ -894,6 +940,60 @@ export function FundChart({
             )}
           </AnimatePresence>
         </svg>
+
+        {/* ── 盘前等待开盘 极简金融原生 Standby View Overlay (如图片 #8) ── */}
+        {!showLines && (
+          <div
+            style={{
+              position: 'absolute',
+              left: padding.left,
+              top: padding.top,
+              width: innerW,
+              height: innerH,
+            }}
+            className="flex flex-col items-center justify-center pointer-events-none z-10 select-none space-y-1"
+          >
+            <motion.div
+              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={SPRING_TAB}
+              className="flex flex-col items-center justify-center space-y-1 text-center"
+            >
+              {/* 极简灰色圆圈时钟图标 */}
+              <div className="w-11 h-11 rounded-full border-[1.75px] border-slate-300 dark:border-slate-600 flex items-center justify-center text-slate-400 dark:text-slate-400 mb-1">
+                <Clock size={22} strokeWidth={1.5} />
+              </div>
+
+              {/* 待开盘 */}
+              <div className="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">
+                待开盘
+              </div>
+
+              {/* 蓝色倒计时 (如 2:56) */}
+              <div className="text-xl font-bold font-mono text-[#2563eb] dark:text-[#3b82f6] tabular-nums tracking-tight">
+                {mockSecLeft !== null ? (
+                  <span>
+                    {Math.floor(mockSecLeft / 60)}:{String(mockSecLeft % 60).padStart(2, '0')}
+                  </span>
+                ) : (
+                  <OpenCountdown market={fundMarket} rawCountdown={true} />
+                )}
+              </div>
+
+              {/* 方便直接触发测试的内嵌按钮（仅开发环境专属） */}
+              {isDev && (
+                <button
+                  type="button"
+                  onClick={() => setMockSecLeft(60)}
+                  disabled={mockSecLeft !== null}
+                  className="pointer-events-auto mt-2 px-2.5 py-1 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200/80 dark:border-blue-800/60 hover:bg-blue-100 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {mockSecLeft !== null ? `倒计时中 (${mockSecLeft}s)` : '🧪 触发 1 分钟倒计时切盘测试'}
+                </button>
+              )}
+            </motion.div>
+          </div>
+        )}
 
         {/* Tooltip — spring entrance, anchored to source (hover point) */}
         <AnimatePresence>
@@ -1008,8 +1108,8 @@ export function FundChart({
         </span>
         <span className="text-slate-500">
           区间内 {points[0].v.toFixed(4)} → {lastPoint.v.toFixed(4)}
-          {kind === 'stock' && openPrice && openPrice > 0 && (
-            <span className="ml-2 text-slate-400">· {baselineLabel} {openPrice.toFixed(4)}</span>
+          {baselineValue > 0 && (
+            <span className="ml-2 text-slate-400">· {baselineLabel} {baselineValue.toFixed(4)}</span>
           )}
         </span>
       </div>

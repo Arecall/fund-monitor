@@ -73,8 +73,74 @@ export function parseGzTime(s: string | undefined): number {
      - 美股 (US, QDII 主要跟踪)：21:30–04:00 次日（夏令）/ 22:30–05:00 次日（冬令）
    ─────────────────────────────────────────────────────────────────── */
 
-import { detectFundMarket, type FundMarket } from '../utils/fundMarket';
+import { detectFundMarket, getNextOpenTime, type FundMarket } from '../utils/fundMarket';
 export type { FundMarket } from '../utils/fundMarket';
+
+/**
+ * 实时开盘倒计时组件
+ * 区分目标开盘时间 (如 09:30) 与剩余倒计时 (如 06:59)，消除阅读混淆
+ */
+export function OpenCountdown({
+  market = 'domestic',
+  showTargetTime = true,
+  rawCountdown = false,
+  prefix = '',
+  className = ''
+}: {
+  market?: FundMarket;
+  showTargetTime?: boolean;
+  rawCountdown?: boolean;
+  prefix?: string;
+  className?: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const nextOpen = getNextOpenTime(market, new Date(now));
+  const diffMs = Math.max(0, nextOpen.getTime() - now);
+
+  const totalSec = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+
+  let countdownStr = '';
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const leftHours = hours % 24;
+    countdownStr = `${days}天${leftHours}小时`;
+  } else if (hours > 0) {
+    countdownStr = `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  } else {
+    // 隐藏开头的 0：例如 2:56 而非 02:56
+    countdownStr = `${mins}:${String(secs).padStart(2, '0')}`;
+  }
+
+  const targetTimeLabel = `${String(nextOpen.getHours()).padStart(2, '0')}:${String(nextOpen.getMinutes()).padStart(2, '0')}`;
+
+  if (rawCountdown) {
+    return <span className={`font-mono ${className}`}>{countdownStr}</span>;
+  }
+
+  return (
+    <span className={`font-mono font-semibold tracking-tight inline-flex items-center gap-1 ${className}`}>
+      {prefix && <span>{prefix}</span>}
+      {showTargetTime && (
+        <span className="bg-blue-100/80 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 text-[10px] px-1.5 py-0.2 rounded font-sans font-bold">
+          {targetTimeLabel} 开盘
+        </span>
+      )}
+      <span className="tabular-nums">
+        <span className="text-[10px] font-sans font-normal opacity-75 mr-0.5">剩</span>
+        {countdownStr}
+      </span>
+    </span>
+  );
+}
 
 /** 分钟数（自 00:00）→ "HH:MM" */
 function minToHHMM(min: number): string {
@@ -172,24 +238,56 @@ export function deriveMarketStatus(
   const isWeekend = day === 0 || day === 6;
   const min = d.getHours() * 60 + d.getMinutes();
 
+  // 美股 4 阶段判定（盘前/盘中/盘后/夜盘）
+  if (market === 'us') {
+    const dst = isUSDST(d);
+    // 夏令时: 盘前 16:00-21:30 | 盘中 21:30-04:00(次) | 盘后 04:00-08:00(次) | 夜盘 08:00-16:00
+    // 冬令时: 盘前 17:00-22:30 | 盘中 22:30-05:00(次) | 盘后 05:00-09:00(次) | 夜盘 09:00-17:00
+    const preStart = dst ? 16 * 60 : 17 * 60;
+    const regStart = dst ? (21 * 60 + 30) : (22 * 60 + 30);
+    const regEnd   = dst ? 4 * 60 : 5 * 60;
+    const postEnd  = dst ? 8 * 60 : 9 * 60;
+
+    // 周末美股判定：周六 04:00/05:00 前仍属周五常规盘中
+    if (isWeekend) {
+      if (day === 6 && min < regEnd) {
+        return { key: 'live', label: '美股盘中', color: 'text-[var(--color-up)]', pulse: true, detail: '美股常规盘中交易（延续自周五夜）' };
+      }
+      return {
+        key: 'offday',
+        label: '美股休市',
+        color: 'text-slate-500',
+        pulse: false,
+        detail: '美股周末休市'
+      };
+    }
+
+    // 1) 盘中 (Regular Session)
+    if (min >= regStart || min < regEnd) {
+      return { key: 'live', label: '美股盘中', color: 'text-[var(--color-up)]', pulse: true, detail: '美股常规盘中交易（美东 09:30–16:00）' };
+    }
+    // 2) 盘后 (After-Hours)
+    if (min >= regEnd && min < postEnd) {
+      return { key: 'closed', label: '美股盘后', color: 'text-amber-600 dark:text-amber-400', pulse: false, detail: '美股盘后交易（美东 16:00–20:00）' };
+    }
+    // 3) 夜盘 (Overnight)
+    if (min >= postEnd && min < preStart) {
+      return { key: 'preopen', label: '美股夜盘', color: 'text-indigo-500', pulse: false, detail: '美股夜盘交易（美东 20:00–04:00）' };
+    }
+    // 4) 盘前 (Pre-Market)
+    if (min >= preStart && min < regStart) {
+      return { key: 'preopen', label: '美股盘前', color: 'text-blue-600 dark:text-blue-400', pulse: false, detail: '美股盘前交易（美东 04:00–09:30）' };
+    }
+  }
+
   // 周末
   if (isWeekend) {
-    if (market === 'us' && day === 6 && min < 5 * 60) {
-      // 周六凌晨美股（延续自周五晚）仍在交易，按 isUSDST 决定 close
-      const closeMin = isUSDST(d) ? 4 * 60 : 5 * 60;
-      if (min < closeMin) {
-        return { key: 'live', label: '美股盘中', color: 'text-[var(--color-up)]', pulse: true,
-          detail: '美股交易延续到周六凌晨' };
-      }
-    }
     return {
       key: 'offday',
-      label: market === 'us' ? '美股休市' : market === 'hk' ? '港股休市' : '休市',
+      label: market === 'hk' ? '港股休市' : '休市',
       color: 'text-slate-500',
       pulse: false,
-      detail: market === 'us' ? '美股周末休市（北京时间周六日）'
-            : market === 'hk' ? '港股周末休市'
-            : 'A 股周末休市'
+      detail: market === 'hk' ? '港股周末休市' : 'A 股周末休市'
     };
   }
 
@@ -289,16 +387,17 @@ export function MarketStatusBadge({
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);     // 30s tick 足够
+    const id = setInterval(() => setNow(Date.now()), 1000); // 1s 保持倒计时精准更新
     return () => clearInterval(id);
   }, []);
 
   const market = detectFundMarket(fundName, fundCode);
   const status = deriveMarketStatus(gzTs, now, market);
+  const isClosedOrPreopen = status.key === 'closed' || status.key === 'preopen' || status.key === 'lunch' || status.key === 'offday';
 
   return (
     <span
-      className={`inline-flex items-center gap-1 font-semibold ${status.color} ${className}`}
+      className={`inline-flex items-center gap-1.5 font-semibold ${status.color} ${className}`}
       title={status.detail}
     >
       {status.pulse ? (
@@ -314,7 +413,10 @@ export function MarketStatusBadge({
           style={{ background: 'currentColor', opacity: 0.6 }}
         />
       )}
-      {status.label}
+      <span>{status.label}</span>
+      {isClosedOrPreopen && (
+        <OpenCountdown market={market} prefix="· " className="text-[10px] opacity-80" />
+      )}
     </span>
   );
 }

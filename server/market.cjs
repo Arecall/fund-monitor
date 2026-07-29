@@ -268,84 +268,146 @@ async function fetchHKStockValuation(code) {
 }
 
 /**
- * 通过 Sina 行情接口获取美股实时数据
- *   接口：hq.sinajs.cn/list=gb_{ticker}
- *   返回字段：name(0)=中文, open(5), prev_close(7), current(1), change(4), change_pct(2), datetime(25)
+ * 通过 Yahoo Finance v8/chart 免 Cookie 接口拉取美股实时/盘前/盘后数据
+ *   接口：https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d
+ *   备选降级：若 Yahoo 网络请求失败或超时，自动退化使用 Sina 美股 HQ 接口
+ */
+async function fetchYahooUSStockValuation(ticker) {
+  const rawSymbol = ticker.toUpperCase().replace(/^GB_/, '').replace(/^US/, '');
+  const yahooSymbol = encodeURIComponent(rawSymbol);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`;
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      },
+      timeout: 6000
+    });
+
+    const result = response.data?.chart?.result?.[0];
+    if (!result || !result.meta) return null;
+
+    const meta = result.meta;
+    const current = meta.regularMarketPrice;
+    if (typeof current !== 'number' || current <= 0) return null;
+
+    const prevClose = meta.chartPreviousClose || meta.previousClose || current;
+    const changePct = prevClose > 0 ? ((current - prevClose) / prevClose) * 100 : 0;
+    const change = current - prevClose;
+
+    // 获取最高价/最低价/开盘价/成交量
+    const openVal = meta.regularMarketDayLow || meta.regularMarketPrice; // fallback
+    const highVal = meta.regularMarketDayHigh;
+    const lowVal  = meta.regularMarketDayLow;
+    const volumeVal = meta.regularMarketVolume;
+
+    // 取最后交易点时间戳转换为 ISO string/北京时间 string
+    const marketTimeMs = (meta.regularMarketTime || Math.floor(Date.now() / 1000)) * 1000;
+    const d = new Date(marketTimeMs);
+    const jzrq = d.toISOString().slice(0, 10);
+    const gztime = `${jzrq} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+    return {
+      fundcode: rawSymbol,
+      name: meta.shortName || meta.longName || rawSymbol,
+      jzrq,
+      dwjz: prevClose.toFixed(4),
+      gsz: current.toFixed(4),
+      gszzl: changePct.toFixed(2),
+      gztime,
+      market: 'us',
+      open: typeof meta.regularMarketDayHigh === 'number' ? openVal?.toFixed(4) : undefined,
+      stockSpecific: {
+        open: typeof openVal === 'number' ? openVal : null,
+        high: typeof highVal === 'number' ? highVal : null,
+        low: typeof lowVal === 'number' ? lowVal : null,
+        volume: typeof volumeVal === 'number' ? volumeVal : null,
+        turnover: null,
+        change: change,
+      }
+    };
+  } catch (e) {
+    console.warn(`[Yahoo] Fetch ${rawSymbol} failed (${e.message}), falling back to Sina...`);
+    return null;
+  }
+}
+
+/**
+ * 获取美股估值（优先 Yahoo Finance 接口，失败降级使用 Sina）
  */
 async function fetchUSStockValuation(ticker) {
+  // 1. 尝试 Yahoo Finance 接口 (方案 B)
+  const yahooRes = await fetchYahooUSStockValuation(ticker);
+  if (yahooRes) return yahooRes;
+
+  // 2. 降级回退 Sina 美股接口
   const symbol = ticker.toLowerCase().replace(/^gb_/, '').replace(/^us/, '');
   const url = `http://hq.sinajs.cn/list=gb_${symbol}`;
-  const response = await axios.get(url, {
-    responseType: 'arraybuffer',
-    headers: { 'Referer': 'http://finance.sina.com.cn' },
-    timeout: 5000
-  });
-  const text = iconv.decode(Buffer.from(response.data), 'gbk');
-  // var hq_str_gb_aapl="苹果,333.7400,0.14,..."
-  const m = text.match(/="([^"]+)"/);
-  if (!m) return null;
-  const parts = m[1].split(',');
-  if (parts.length < 26) return null;
-  // Sina 美股字段顺序（已实测 AAPL）：
-  //   name(0)=中文名, current(1), change_pct(2), datetime(3)="2026-07-20 17:10:01", change(4),
-  //   open(5), high(6), low(7), bid(8), ask(9),
-  //   volume(10), shares_outstanding(11), turnover(12) ... , prev_close(26)
-  // 注：美股 Sina 不一定返回 turnover（接口对部分美股可能为 0）
-  const nameZh = parts[0];
-  const current = parseFloat(parts[1]);
-  const changePct = parseFloat(parts[2]);
-  const datetime = parts[3] || '';        // "2026-07-20 17:10:01"（已是 ISO-ish）
-  const change = parseFloat(parts[4]);
-  const openVal = parseFloat(parts[5]);
-  const highVal = parseFloat(parts[6]);
-  const lowVal  = parseFloat(parts[7]);
-  const volumeVal = parseFloat(parts[10]);
-  const turnoverVal = parseFloat(parts[12]);
-  let prevClose = parts.length > 26 ? parseFloat(parts[26]) : NaN;
-  if ((isNaN(prevClose) || prevClose <= 0) && !isNaN(current) && !isNaN(change)) {
-    prevClose = current - change;
-  }
-  if (isNaN(current) || current <= 0) return null;
-  // 转换日期格式：parts[3] 已是 "YYYY-MM-DD HH:MM:SS" 或美式格式
-  let gztime = '';
-  let jzrq = '';
-  if (datetime) {
-    const m = datetime.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}:\d{2})/);
-    if (m) {
-      jzrq = `${m[1]}-${m[2]}-${m[3]}`;
-      gztime = `${jzrq} ${m[4]}`;
-    } else {
-      // 降级使用当前美股日期与时间
-      const nowNy = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        hourCycle: 'h23',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit'
-      }).formatToParts(new Date());
-      const p = Object.fromEntries(nowNy.map(x => [x.type, x.value]));
-      jzrq = `${p.year}-${p.month}-${p.day}`;
-      gztime = `${jzrq} ${p.hour}:${p.minute}`;
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: { 'Referer': 'http://finance.sina.com.cn' },
+      timeout: 5000
+    });
+    const text = iconv.decode(Buffer.from(response.data), 'gbk');
+    const m = text.match(/="([^"]+)"/);
+    if (!m) return null;
+    const parts = m[1].split(',');
+    if (parts.length < 26) return null;
+    const nameZh = parts[0];
+    const current = parseFloat(parts[1]);
+    const changePctRaw = parseFloat(parts[2]);
+    const datetime = parts[3] || '';
+    const change = parseFloat(parts[4]);
+    const openVal = parseFloat(parts[5]);
+    const highVal = parseFloat(parts[6]);
+    const lowVal  = parseFloat(parts[7]);
+    const volumeVal = parseFloat(parts[10]);
+    const turnoverVal = parseFloat(parts[12]);
+
+    let prevClose = (!isNaN(current) && !isNaN(change)) ? current - change : parseFloat(parts[26] || '');
+    if (isNaN(prevClose) || prevClose <= 0) {
+      prevClose = current;
     }
-  }
-  return {
-    fundcode: ticker.toUpperCase(),
-    name: nameZh,
-    jzrq,
-    dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),
-    gsz: current.toFixed(4),
-    gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
-    gztime,
-    market: 'us',
-    open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
-    stockSpecific: {
-      open: isNaN(openVal) || openVal <= 0 ? null : openVal,
-      high: isNaN(highVal) || highVal <= 0 ? null : highVal,
-      low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
-      volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
-      turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
-      change: isNaN(change) ? 0 : change,
+
+    let changePct = changePctRaw;
+    if (isNaN(changePct) && prevClose > 0 && !isNaN(current)) {
+      changePct = ((current - prevClose) / prevClose) * 100;
     }
-  };
+    if (isNaN(current) || current <= 0) return null;
+    let gztime = '';
+    let jzrq = '';
+    if (datetime) {
+      const m = datetime.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}:\d{2})/);
+      if (m) {
+        jzrq = `${m[1]}-${m[2]}-${m[3]}`;
+        gztime = `${jzrq} ${m[4]}`;
+      }
+    }
+    return {
+      fundcode: ticker.toUpperCase(),
+      name: nameZh,
+      jzrq,
+      dwjz: isNaN(prevClose) ? '0' : prevClose.toFixed(4),
+      gsz: current.toFixed(4),
+      gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
+      gztime,
+      market: 'us',
+      open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
+      stockSpecific: {
+        open: isNaN(openVal) || openVal <= 0 ? null : openVal,
+        high: isNaN(highVal) || highVal <= 0 ? null : highVal,
+        low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+        volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
+        turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
+        change: isNaN(change) ? 0 : change,
+      }
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -738,7 +800,49 @@ async function fetchStockMinuteData(code, market) {
       }
     }
 
-    // 2. 如果腾讯未返回数据且为 A 股，Fallback 到 Sina 分钟 K 线
+    // 2. 如果腾讯未返回数据：A 股 Fallback 到 Sina 分钟 K 线；美股 Fallback 到 Yahoo Chart 接口 (方案 B)
+    if (!result && market === 'us') {
+      try {
+        const yahooSymbol = encodeURIComponent(c);
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`;
+        const r = await axios.get(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json'
+          },
+          timeout: 6000
+        });
+        const chartRes = r.data?.chart?.result?.[0];
+        if (chartRes && Array.isArray(chartRes.timestamp)) {
+          const timestamps = chartRes.timestamp;
+          const quotes = chartRes.indicators?.quote?.[0]?.close || [];
+          const volumes = chartRes.indicators?.quote?.[0]?.volume || [];
+          result = timestamps.map((ts, i) => {
+            const p = quotes[i];
+            if (typeof p !== 'number' || isNaN(p)) return null;
+            const d = new Date(ts * 1000);
+            const yyyy = d.getFullYear();
+            const M = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            const vol = volumes[i] || 100;
+            return {
+              time: `${yyyy}-${M}-${day} ${hh}:${mm}:00`,
+              open: p,
+              high: p,
+              low: p,
+              close: p,
+              volume: vol,
+              amount: p * vol,
+            };
+          }).filter(Boolean);
+        }
+      } catch (err) {
+        console.warn(`[minute] Yahoo Chart API ${c} 获取失败:`, err.message);
+      }
+    }
+
     if (!result && market === 'domestic') {
       let symbol;
       if (c.startsWith('60') || c.startsWith('68')) symbol = `sh${c}`;

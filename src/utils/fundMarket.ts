@@ -103,6 +103,67 @@ function isTradingSession(date: Date, tz: string, sessions: number[][]): boolean
 }
 
 /**
+ * 计算指定市场下一个常规盘中开盘的 Date 对象（北京时间）
+ */
+export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
+  const target = new Date(date);
+  const day = target.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const min = target.getHours() * 60 + target.getMinutes();
+
+  if (market === 'us') {
+    // 美股常规盘中开盘：美东 09:30 (夏令时北京 21:30, 冬令时北京 22:30)
+    const m = target.getMonth() + 1;
+    const isDst = m >= 3 && m <= 10;
+    const openHour = isDst ? 21 : 22;
+    const openMin = openHour * 60 + 30;
+
+    if (day === 6) { // 周六 → 推进到周一晚
+      target.setDate(target.getDate() + 2);
+      target.setHours(openHour, 30, 0, 0);
+    } else if (day === 0) { // 周日 → 推进到周一晚
+      target.setDate(target.getDate() + 1);
+      target.setHours(openHour, 30, 0, 0);
+    } else if (min < openMin) { // 今日盘中开盘前 (包含夜盘/盘前段)
+      target.setHours(openHour, 30, 0, 0);
+    } else { // 今日盘中开盘后/收盘后 → 推进到下一个工作日晚
+      target.setDate(target.getDate() + (day === 5 ? 3 : 1));
+      target.setHours(openHour, 30, 0, 0);
+    }
+    return target;
+  }
+
+  // A 股 / 港股
+  const morningOpenMin = 9 * 60 + 30;   // 09:30
+  const afternoonOpenMin = 13 * 60;      // 13:00
+  const closeMin = market === 'hk' ? 16 * 60 : 15 * 60;
+
+  if (day === 6) { // 周六
+    target.setDate(target.getDate() + 2);
+    target.setHours(9, 30, 0, 0);
+  } else if (day === 0) { // 周日
+    target.setDate(target.getDate() + 1);
+    target.setHours(9, 30, 0, 0);
+  } else if (min < morningOpenMin) { // 早盘前（00:00 - 09:30）
+    target.setHours(9, 30, 0, 0);
+  } else if (min >= 11 * 60 + 30 && min < afternoonOpenMin) { // 午休（11:30 - 13:00）
+    target.setHours(13, 0, 0, 0);
+  } else if (min >= morningOpenMin && min < closeMin) { // 盘中（09:30-11:30 或 13:00-15:00）
+    // 盘中时下一个节点为午盘 13:00 或 收盘/次日
+    if (min < 11 * 60 + 30) {
+      target.setHours(13, 0, 0, 0);
+    } else {
+      target.setDate(target.getDate() + (day === 5 ? 3 : 1));
+      target.setHours(9, 30, 0, 0);
+    }
+  } else { // 盘后（>= 15:00/16:00）
+    target.setDate(target.getDate() + (day === 5 ? 3 : 1));
+    target.setHours(9, 30, 0, 0);
+  }
+
+  return target;
+}
+
+/**
  * 判断给定的自选列表中，是否有任意一个市场处于开盘/交易时间内
  * 如果全部休市（如周末或全休市夜间），返回 false 告知前端暂停自动轮询
  */
