@@ -35,6 +35,7 @@ import {
   savePosition,
   removePosition,
   searchByName,
+  subscribeValuations,
   type SearchResult,
   type FundValuation,
   type MarketIndex,
@@ -274,15 +275,7 @@ function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isIntlColor, setIsIntlColor] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  // 双定时器策略：
-  //   - 股票（A 股 / 港股 / 美股）：10 秒一轮，匹配 Sina tick 节奏
-  //   - 场外公募基金：60 秒一轮，匹配 fundgz / Sina fu_ 的整分钟发布节奏
-  const STOCK_REFRESH_INTERVAL = 10;   // 股票 10 秒
-  const FUND_REFRESH_INTERVAL = 60;    // 基金 60 秒
-
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const stockTimerRef = useRef<any>(null);
-  const fundTimerRef = useRef<any>(null);
   const watchlistRef = useRef<string[]>([]);
   const watchlistItemsRef = useRef<WatchlistItem[]>([]);
   const fundsDataRef = useRef<Record<string, FundValuation>>({});
@@ -689,25 +682,65 @@ function App() {
     })();
   };
 
+  /** SSE 实时订阅：登录 / 自选变更时自动重新建立连接 */
   useEffect(() => {
-    if (stockTimerRef.current) clearInterval(stockTimerRef.current);
-    if (fundTimerRef.current) clearInterval(fundTimerRef.current);
     if (!currentUser) return;
+    const codes = watchlistRef.current.map(s => s.trim()).filter(Boolean);
+    if (codes.length === 0) return;
 
-    // 股票 10s 一轮
-    stockTimerRef.current = setInterval(() => {
-      refreshOneKind('stock');
-    }, STOCK_REFRESH_INTERVAL * 1000);
+    // kind 默认按 watchlist 已知分类决定，未知走 stock
+    const items = watchlistItemsRef.current;
 
-    // 基金 60s 一轮
-    fundTimerRef.current = setInterval(() => {
-      refreshOneKind('fund');
-    }, FUND_REFRESH_INTERVAL * 1000);
+    // 同时建立两个 SSE：股票 10s 节奏 + 基金 60s 节奏
+    // 服务端 broker 已经按 kind 分流，前端再分流一次仅为了让重连 / 日志更清晰
+    const stockCodes = codes.filter(c => {
+      const it = items.find(w => w.fund_code.toUpperCase() === c.toUpperCase());
+      return (it?.kind || 'stock') === 'stock';
+    });
+    const fundCodes = codes.filter(c => {
+      const it = items.find(w => w.fund_code.toUpperCase() === c.toUpperCase());
+      return it?.kind === 'fund';
+    });
+
+    const applyTick = (code: string, val: FundValuation) => {
+      const next = { ...fundsDataRef.current, [code]: val };
+      fundsDataRef.current = next;
+      setFundsData(next);
+    };
+
+    const stockDisposer = subscribeValuations({
+      codes: stockCodes,
+      kind: 'stock',
+      onTick: t => applyTick(t.code, t.val),
+    });
+    const fundDisposer = subscribeValuations({
+      codes: fundCodes,
+      kind: 'fund',
+      onTick: t => applyTick(t.code, t.val),
+    });
 
     return () => {
-      if (stockTimerRef.current) clearInterval(stockTimerRef.current);
-      if (fundTimerRef.current) clearInterval(fundTimerRef.current);
+      stockDisposer();
+      fundDisposer();
     };
+    // eslint-disable-next-line react-hooks-exhaustive-deps
+  }, [currentUser, watchlist.join('|')]);
+
+  // 兜底轮询：仅在 SSE 长时间未推时启用
+  useEffect(() => {
+    if (!currentUser) return;
+    const timer = setInterval(() => {
+      // 如果 fundsData 在过去 30 秒完全没变（用户已在界面上看到陈旧数据），触发一次兜底拉取
+      // 简单判定：fundsData 的 capturedAt 字段缺失则视为陈旧
+      const data = fundsDataRef.current;
+      const isStale = Object.values(data).some((v: any) =>
+        typeof v?.capturedAt === 'number' && Date.now() - v.capturedAt > 30_000
+      );
+      if (isStale) {
+        refreshOneKind('stock');
+      }
+    }, 30_000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks-exhaustive-deps
   }, [currentUser]);
 
@@ -1547,7 +1580,8 @@ function App() {
             </h3>
             <div className="text-[11px] text-[#86868b] leading-relaxed space-y-2">
               <p>后端通过 SQLite 进行多用户自选与持仓列表隔离。</p>
-              <p>数据自动定时刷新：股票每 10 秒一轮；场外公募基金每 60 秒一轮，匹配上游估值发布节奏。</p>
+              <p>数据推送：股票 / 基金的实时估值由后端 SSE 长连接（GET /api/stream/valuations）实时推送给前端，上游一更新即收到。</p>
+              <p>行情快照：服务端每次拉到上游数据后落 SQLite 快照（保留 90 天滚动清理），便于后续复盘与审计。</p>
             </div>
           </motion.section>
         </div>

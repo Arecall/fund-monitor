@@ -196,6 +196,26 @@ function initTables() {
     `);
     db.run(`CREATE INDEX IF NOT EXISTS idx_gold_history_key_t ON gold_history (key, t)`);
 
+    // 行情快照（实时推送 broker 在每次拉到上游数据时写入）：
+    //   code + captured_at (epoch ms) 复合主键，确保幂等写入
+    //   gztime  来自上游原始字符串（如 "2026-07-29 14:35:27"）
+    //   current 现价
+    //   pct     涨跌幅（百分比，已含符号）
+    //   raw     完整 JSON 字符串，方便后续复盘 / 回放，不参与搜索
+    // 后端每 90 天滚动清理，避免磁盘膨胀。
+    db.run(`
+      CREATE TABLE IF NOT EXISTS quote_snapshots (
+        code TEXT NOT NULL,
+        captured_at INTEGER NOT NULL,
+        gztime TEXT,
+        current REAL,
+        pct REAL,
+        raw TEXT,
+        PRIMARY KEY (code, captured_at)
+      ) WITHOUT ROWID
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_quote_snapshots_code_time ON quote_snapshots (code, captured_at DESC)`);
+
     console.log('数据库表结构初始化/验证完成');
   });
 }

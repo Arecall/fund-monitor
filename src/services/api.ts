@@ -130,6 +130,90 @@ export async function fetchMarketIndices(): Promise<MarketIndex[]> {
 }
 
 /**
+ * SSE 订阅：监听后端实时推送的估值更新
+ *
+ * 行为：
+ *   - 用 EventSource 建立长连接，后端每次拿到上游就立即推送
+ *   - 上游节拍差异（股票 10s / 基金 60s）已由服务端按种类分流
+ *   - 自动重连：内置 onerror + readyState 监控，3 秒后 retry
+ *   - 返回 disposer() 调用即可断开订阅
+ */
+export type RealtimeTick = {
+  code: string;
+  val: FundValuation;
+  capturedAt: number;
+};
+
+export type RealtimeOptions = {
+  codes: string[];
+  kind?: 'stock' | 'fund';
+  onTick?: (tick: RealtimeTick) => void;
+  onReady?: () => void;
+  onError?: (err: unknown) => void;
+};
+
+export function subscribeValuations(opts: RealtimeOptions): () => void {
+  const { codes, kind = 'stock', onTick, onReady, onError } = opts;
+  if (!codes || codes.length === 0) return () => {};
+
+  let es: EventSource | null = null;
+  let closed = false;
+  let retryTimer: number | null = null;
+
+  const open = () => {
+    if (closed) return;
+    const qs = `?codes=${encodeURIComponent(codes.join(','))}&kind=${kind}`;
+    const url = `/api/stream/valuations${qs}_t=${Date.now()}`.replace(/\?/, '?');
+    try {
+      es = new EventSource(url);
+    } catch (e) {
+      onError?.(e);
+      scheduleRetry();
+      return;
+    }
+    es.addEventListener('ready', () => onReady?.());
+    es.addEventListener('tick', (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data) as RealtimeTick;
+        onTick?.(data);
+      } catch (e) {
+        // 忽略解析错误
+      }
+    });
+    es.onerror = (ev) => {
+      if (closed) return;
+      onError?.(ev);
+      // EventSource 默认会自动重连，但与 keepalive 路径不友好，主动关闭重建
+      try { es?.close(); } catch {}
+      scheduleRetry();
+    };
+  };
+
+  const scheduleRetry = () => {
+    if (closed) return;
+    if (retryTimer != null) return;
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      open();
+    }, 3000);
+  };
+
+  open();
+
+  return () => {
+    closed = true;
+    if (retryTimer != null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (es) {
+      try { es.close(); } catch {}
+      es = null;
+    }
+  };
+}
+
+/**
  * 获取金价（国际 COMEX / 国内 SGE Au99.99 / 伦敦 XAU spot）
  */
 export async function fetchGoldPrices(): Promise<GoldPricesResponse | null> {

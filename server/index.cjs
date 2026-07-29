@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const dbHelper = require('./db.cjs');
 const marketHelper = require('./market.cjs');
+const { broker: valuationBroker } = require('./realtime.cjs');
 const mailer = require('./mailer.cjs');
 const { hashPassword, verifyPassword, passwordMeetsPolicy } = require('./auth.cjs');
 const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldings, aggregateBySector } = require('./sectors.cjs');
@@ -27,7 +28,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.32' });
+  res.json({ status: 'ok', version: '1.3.0' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -43,8 +44,11 @@ app.use((req, res, next) => {
 // 每次请求必须携带 X-User-Name 请求头
 // 自动在数据库中查找该用户，如果不存在则隐式创建它，并将 user_id 附加在 req 上
 async function userIsolationMiddleware(req, res, next) {
-  // 对于大盘行情 + 登录端点，不需要用户隔离
-  if (req.path.startsWith('/api/market/') || req.path === '/api/auth/login') {
+  // 对于大盘行情 + 登录端点 + 实时推送 SSE，不需要用户隔离
+  // （推送流是 anonymous 共享的，每个 code 只保持一份抓取循环）
+  if (req.path.startsWith('/api/market/') ||
+      req.path.startsWith('/api/stream/') ||
+      req.path === '/api/auth/login') {
     return next();
   }
 
@@ -1106,6 +1110,88 @@ console.log(`[alerts] 监控循环已启动，每 ${ALERT_POLL_MS / 1000}s 扫�
 // 启动时加载全局提醒设置（默认值立即生效）
 loadAlertSettings().then(() => {
   console.log(`[alerts] 收盘后停止通知 = ${ALERT_STOP_AFTER_CLOSE}`);
+});
+
+// ==========================================
+// 启动服务
+// ==========================================
+// ==========================================
+// 7. 实时推送：SSE 端点
+// ==========================================
+
+/**
+ * GET /api/stream/valuations?codes=002050,AAPL,019018&kind=stock
+ *   - codes: 逗号分隔的代码列表（必填）
+ *   - kind: 整体默认 kind，未识别 code 走此默认（可选，默认 'stock'）
+ *
+ * SSE 协议要点：
+ *   - Content-Type: text/event-stream
+ *   - Cache-Control: no-store
+ *   - Connection: keep-alive
+ *   - 每条事件 `event: tick\ndata: <JSON>\n\n`
+ *   - 周期性 `:keepalive\n\n` 注释，保持反向代理 / 浏览器连接
+ */
+app.get('/api/stream/valuations', (req, res) => {
+  const codesParam = String(req.query.codes || '').trim();
+  const defaultKind = req.query.kind === 'fund' ? 'fund' : 'stock';
+  const codes = codesParam
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (codes.length === 0) {
+    return res.status(400).json({ error: 'codes 不能为空' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');  // 禁用 Nginx 缓冲
+  res.flushHeaders?.();
+  // 立即写一行注释 + 一条 ready 事件，避免某些客户端超时
+  res.write(`:sse-connected ${Date.now()}\n\n`);
+  res.write(`event: ready\ndata: {"codes":${JSON.stringify(codes)}}\n\n`);
+
+  // 订阅每个 code；按 code 个性化 kind（用户可显式传 kind=fund）
+  const unsubscribers = [];
+  const onTick = (payload) => {
+    if (!codes.includes(payload.code)) return;
+    try {
+      res.write(`event: tick\n`);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (e) {
+      // 连接已断，忽略
+    }
+  };
+  const onKeepalive = () => {
+    try {
+      res.write(`:keepalive ${Date.now()}\n\n`);
+    } catch {}
+  };
+
+  valuationBroker.emitter.on('tick', onTick);
+  valuationBroker.emitter.on('keepalive', onKeepalive);
+
+  codes.forEach(code => {
+    const unsub = valuationBroker.subscribe(code, defaultKind);
+    unsubscribers.push(unsub);
+  });
+
+  // 客户端断线：清理订阅
+  req.on('close', () => {
+    valuationBroker.emitter.off('tick', onTick);
+    valuationBroker.emitter.off('keepalive', onKeepalive);
+    unsubscribers.forEach(fn => { try { fn(); } catch {} });
+  });
+});
+
+/** 调试：列出 broker 当前订阅状态 */
+app.get('/api/stream/stats', (_req, res) => {
+  try {
+    res.json({ codes: valuationBroker.stats() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ==========================================
