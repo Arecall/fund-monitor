@@ -1120,20 +1120,30 @@ loadAlertSettings().then(() => {
 // ==========================================
 
 /**
- * GET /api/stream/valuations?codes=002050,AAPL,019018&kind=stock
+ * GET /api/stream/valuations?codes=002050,AAPL,019018&kind=stock&market=domestic|hk|us
  *   - codes: 逗号分隔的代码列表（必填）
  *   - kind: 整体默认 kind，未识别 code 走此默认（可选，默认 'stock'）
+ *   - market: 用于 broker 的收盘判定（domestic/hk/us，可选；不传则由 detectCodeKind 推断）
+ *
+ * SSE 事件：
+ *   - event: ready   连接就绪
+ *   - event: tick    行情更新
+ *   - event: closed  收盘 + 1 分钟后停止抓取（最后一条 lastVal 是收盘价）
  *
  * SSE 协议要点：
  *   - Content-Type: text/event-stream
  *   - Cache-Control: no-store
  *   - Connection: keep-alive
- *   - 每条事件 `event: tick\ndata: <JSON>\n\n`
- *   - 周期性 `:keepalive\n\n` 注释，保持反向代理 / 浏览器连接
+ *   - 周期性 `:keepalive\n\n` 注释
  */
 app.get('/api/stream/valuations', (req, res) => {
   const codesParam = String(req.query.codes || '').trim();
   const defaultKind = req.query.kind === 'fund' ? 'fund' : 'stock';
+  const rawMarket = String(req.query.market || '').trim().toLowerCase();
+  const market =
+    rawMarket === 'domestic' || rawMarket === 'hk' || rawMarket === 'us' || rawMarket === 'other'
+      ? rawMarket
+      : null;
   const codes = codesParam
     .split(',')
     .map(s => s.trim())
@@ -1163,6 +1173,13 @@ app.get('/api/stream/valuations', (req, res) => {
       // 连接已断，忽略
     }
   };
+  const onClosed = (payload) => {
+    if (!codes.includes(payload.code)) return;
+    try {
+      res.write(`event: closed\n`);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch {}
+  };
   const onKeepalive = () => {
     try {
       res.write(`:keepalive ${Date.now()}\n\n`);
@@ -1170,16 +1187,18 @@ app.get('/api/stream/valuations', (req, res) => {
   };
 
   valuationBroker.emitter.on('tick', onTick);
+  valuationBroker.emitter.on('closed', onClosed);
   valuationBroker.emitter.on('keepalive', onKeepalive);
 
   codes.forEach(code => {
-    const unsub = valuationBroker.subscribe(code, defaultKind);
+    const unsub = valuationBroker.subscribe(code, defaultKind, market);
     unsubscribers.push(unsub);
   });
 
   // 客户端断线：清理订阅
   req.on('close', () => {
     valuationBroker.emitter.off('tick', onTick);
+    valuationBroker.emitter.off('closed', onClosed);
     valuationBroker.emitter.off('keepalive', onKeepalive);
     unsubscribers.forEach(fn => { try { fn(); } catch {} });
   });

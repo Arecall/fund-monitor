@@ -227,6 +227,12 @@ function App() {
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>([]);
   const [fundsData, setFundsData] = useState<Record<string, FundValuation>>({});
+  // 收盘码表：broker emit 'closed' 时写入，便于后续 UI 切到"已休市"提示
+  // 当前不直接消费，MarketingStatusBadge 通过 gzTs+时间也能自然显示 closed 状态
+  const closedCodesRef = useRef<Record<string, { lastVal: FundValuation | null; closedAt: number }>>({});
+  const setClosedCodes = useCallback((updater: (prev: Record<string, { lastVal: FundValuation | null; closedAt: number }>) => Record<string, { lastVal: FundValuation | null; closedAt: number }>) => {
+    closedCodesRef.current = updater(closedCodesRef.current);
+  }, []);
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [positions, setPositions] = useState<Record<string, UserPosition>>({});
   const [selfTab, setSelfTab] = useState<'fund' | 'stock'>(() => {
@@ -707,16 +713,24 @@ function App() {
       fundsDataRef.current = next;
       setFundsData(next);
     };
+    const applyClosed = (code: string, info: { lastVal: FundValuation | null; closedAt: number }) => {
+      // 收盘事件：保留最后一次 gztime 让 UI 继续展示"已休市"价格
+      setClosedCodes(prev => ({ ...prev, [code]: info }));
+    };
 
     const stockDisposer = subscribeValuations({
       codes: stockCodes,
       kind: 'stock',
-      onTick: t => applyTick(t.code, t.val),
+      market: 'domestic',
+      onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
+      onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
     });
     const fundDisposer = subscribeValuations({
       codes: fundCodes,
       kind: 'fund',
-      onTick: t => applyTick(t.code, t.val),
+      market: 'domestic',
+      onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
+      onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
     });
 
     return () => {

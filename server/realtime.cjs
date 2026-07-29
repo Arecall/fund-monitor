@@ -22,6 +22,7 @@ const STOCK_INTERVAL_MS = 10 * 1000;   // 股票 10 秒
 const FUND_INTERVAL_MS  = 60 * 1000;   // 基金 60 秒
 const KEEPALIVE_MS      = 15 * 1000;   // SSE 心跳
 const SNAPSHOT_TTL_DAYS = 31;           // 行情快照保留 31 天（已落库数据需要复盘时查阅）
+const CLOSE_GRACE_MS    = 60 * 1000;   // 收盘后 1 分钟停止抓取循环
 
 class ValuationBroker {
   constructor() {
@@ -51,19 +52,26 @@ class ValuationBroker {
   /**
    * 订阅 code 的实时行情。
    * 多次订阅同一 code 不会重复触发抓取循环，仅累加 subscriber 计数。
+   * @param {string} code    6 位 / 5 位 / 1-5 位字母 ticker
+   * @param {'stock'|'fund'} kind  决定抓取节拍；自动收盘判定不影响节拍
+   * @param {'domestic'|'hk'|'us'|'other'} [market] 显式传入市场类别（用于 isInTradingTime）
    */
-  subscribe(code, kind = 'stock') {
+  subscribe(code, kind = 'stock', market = null) {
     code = code.trim().toUpperCase();
     const interval = kind === 'fund' ? FUND_INTERVAL_MS : STOCK_INTERVAL_MS;
     let entry = this.codes.get(code);
     if (!entry) {
       entry = {
+        code,
         kind,
         interval,
+        market,
         timer: null,
         subscribers: 0,
         lastEmitAt: 0,
         lastEmittedSnapshot: null,
+        lastEmittedVal: null,
+        closed: false,
       };
       this.codes.set(code, entry);
     } else if (entry.kind !== kind) {
@@ -74,11 +82,29 @@ class ValuationBroker {
         clearInterval(entry.timer);
         entry.timer = null;
       }
+    } else if (market && !entry.market) {
+      // 补充 market 信息
+      entry.market = market;
     }
 
     entry.subscribers += 1;
-    if (!entry.timer) {
-      this._startFetchLoop(code, entry);
+    if (entry.closed) {
+      // 已经收盘：不再启动循环，立即 emit 一次 closed 让前端感知
+      // 立刻 + 异步都做，因为 event listener 可能稍后才注册
+      const payload = {
+        code,
+        kind: entry.kind,
+        lastVal: entry.lastEmittedVal,
+        closedAt: entry.lastEmitAt || Date.now(),
+      };
+      this.emitter.emit('closed', payload);
+    } else if (!entry.timer) {
+      // 收盘判定：若订阅瞬间已是收盘后状态，直接走 closed 路径
+      if (this._isRecentlyClosed(entry)) {
+        this._stopAndAnnounceClosed(entry);
+      } else {
+        this._startFetchLoop(code, entry);
+      }
     }
     this._ensureKeepalive();
     return () => this.unsubscribe(code);
@@ -95,6 +121,42 @@ class ValuationBroker {
     }
   }
 
+  /**
+   * 判定当前 entry 是否已经"收盘 + 已过 1 分钟"。
+   * - 不在日内交易时段（周末、节假日、跨日交易空档）
+   * - 距离最近一次成功 emit ≥ 60 秒，或从未 emit 过
+   * 返回 true 则应停止循环并 emit closed。
+   */
+  _isRecentlyClosed(entry) {
+    const now = new Date();
+    let inSession;
+    try {
+      inSession = market.isInTradingTime(entry.code, now, entry.market || undefined);
+    } catch (e) {
+      return false;  // 判定失败保守放行
+    }
+    if (inSession) return false;
+    // 不在交易时段：距离最近一次 emit > 1 分钟
+    if (!entry.lastEmitAt) return true;
+    return (Date.now() - entry.lastEmitAt) >= CLOSE_GRACE_MS;
+  }
+
+  _stopAndAnnounceClosed(entry) {
+    if (entry.timer) {
+      clearInterval(entry.timer);
+      entry.timer = null;
+    }
+    entry.closed = true;
+    const payload = {
+      code: entry.code,
+      kind: entry.kind,
+      lastVal: entry.lastEmittedVal,
+      closedAt: entry.lastEmitAt || Date.now(),
+    };
+    this.emitter.emit('closed', payload);
+    console.log(`[realtime] ${entry.code} 已收盘, 停止抓取循环`);
+  }
+
   _startFetchLoop(code, entry) {
     const fetchOnce = async () => {
       try {
@@ -106,6 +168,7 @@ class ValuationBroker {
         if (entry.lastEmittedSnapshot === sig) return;
         entry.lastEmittedSnapshot = sig;
         entry.lastEmitAt = now;
+        entry.lastEmittedVal = val;
 
         // 写库（best-effort，不阻塞推送）
         this._persistSnapshot(code, val).catch((e) =>
@@ -113,6 +176,11 @@ class ValuationBroker {
         );
 
         this.emitter.emit('tick', { code, val, capturedAt: now });
+
+        // emit 完成后做收盘判定
+        if (this._isRecentlyClosed(entry)) {
+          this._stopAndAnnounceClosed(entry);
+        }
       } catch (e) {
         console.warn(`[realtime] fetch ${code} failed:`, e.message);
       }
@@ -156,7 +224,13 @@ class ValuationBroker {
   stats() {
     const out = [];
     for (const [code, e] of this.codes.entries()) {
-      out.push({ code, kind: e.kind, subscribers: e.subscribers });
+      out.push({
+        code,
+        kind: e.kind,
+        subscribers: e.subscribers,
+        closed: !!e.closed,
+        timer: !!e.timer,
+      });
     }
     return out;
   }

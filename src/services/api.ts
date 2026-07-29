@@ -144,16 +144,27 @@ export type RealtimeTick = {
   capturedAt: number;
 };
 
+/** 后端推送的"该 code 已收盘 + 1 分钟"事件 */
+export type RealtimeClosed = {
+  code: string;
+  kind: string;
+  lastVal: FundValuation | null;
+  closedAt: number;
+};
+
 export type RealtimeOptions = {
   codes: string[];
   kind?: 'stock' | 'fund';
+  /** 可选：市场类别，透传给 broker 用于收盘判定 */
+  market?: 'domestic' | 'hk' | 'us' | 'other';
   onTick?: (tick: RealtimeTick) => void;
+  onClosed?: (closed: RealtimeClosed) => void;
   onReady?: () => void;
   onError?: (err: unknown) => void;
 };
 
 export function subscribeValuations(opts: RealtimeOptions): () => void {
-  const { codes, kind = 'stock', onTick, onReady, onError } = opts;
+  const { codes, kind = 'stock', market, onTick, onClosed, onReady, onError } = opts;
   if (!codes || codes.length === 0) return () => {};
 
   let es: EventSource | null = null;
@@ -162,8 +173,12 @@ export function subscribeValuations(opts: RealtimeOptions): () => void {
 
   const open = () => {
     if (closed) return;
-    const qs = `?codes=${encodeURIComponent(codes.join(','))}&kind=${kind}`;
-    const url = `/api/stream/valuations${qs}_t=${Date.now()}`.replace(/\?/, '?');
+    const params = new URLSearchParams();
+    params.set('codes', codes.join(','));
+    params.set('kind', kind);
+    if (market) params.set('market', market);
+    params.set('_t', String(Date.now()));
+    const url = `/api/stream/valuations?${params.toString()}`;
     try {
       es = new EventSource(url);
     } catch (e) {
@@ -180,10 +195,15 @@ export function subscribeValuations(opts: RealtimeOptions): () => void {
         // 忽略解析错误
       }
     });
+    es.addEventListener('closed', (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data) as RealtimeClosed;
+        onClosed?.(data);
+      } catch {}
+    });
     es.onerror = (ev) => {
       if (closed) return;
       onError?.(ev);
-      // EventSource 默认会自动重连，但与 keepalive 路径不友好，主动关闭重建
       try { es?.close(); } catch {}
       scheduleRetry();
     };
