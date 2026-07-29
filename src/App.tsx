@@ -1594,12 +1594,11 @@ function App() {
             className="apple-card p-5"
           >
             <h3 className="apple-eyebrow mb-3 flex items-center gap-1.5">
-              <Sliders size={14} className="text-[#0066cc]" /> 订阅架构说明
+              <Sliders size={14} className="text-[#0066cc]" /> 数据更新机制
             </h3>
             <div className="text-[11px] text-[#86868b] leading-relaxed space-y-2">
-              <p>后端通过 SQLite 进行多用户自选与持仓列表隔离。</p>
-              <p>数据推送：股票 / 基金的实时估值由后端 SSE 长连接（GET /api/stream/valuations）实时推送给前端，上游一更新即收到。</p>
-              <p>行情快照：服务端每次拉到上游数据后落 SQLite 快照（保留 31 天滚动清理），便于后续复盘与审计。</p>
+              <p>后端独立隔离多用户自选与持仓列表。</p>
+              <p>行情刷新频率：股票约 10 秒 / 次，基金估值约 1 分钟 / 次。</p>
             </div>
           </motion.section>
         </div>
