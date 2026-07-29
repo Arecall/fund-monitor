@@ -17,11 +17,11 @@ const cache = {
 const searchCache = {};
 
 // 缓存过期时间
-const FUND_CACHE_TTL = 10 * 1000;         // 基金/股票估值缓存 10秒
+const FUND_CACHE_TTL = 3 * 1000;          // 基金/股票估值缓存 3秒（小于前端 10s 轮询，确保每次轮询穿透拉取上游最新）
 const FUND_HISTORY_TTL = 60 * 60 * 1000;  // 基金历史净值缓存 1小时
 const FUND_BASIC_TTL = 60 * 60 * 1000;    // 基金基本/资产配置缓存 1小时
 const FUND_HOLDINGS_TTL = 60 * 60 * 1000; // 基金持仓缓存 1小时
-const MARKET_CACHE_TTL = 10 * 1000;       // 大盘指数缓存 10秒
+const MARKET_CACHE_TTL = 3 * 1000;        // 大盘指数缓存 3秒
 const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
 const GOLD_CACHE_TTL = 30 * 1000;         // 金价缓存 30秒
 
@@ -728,7 +728,7 @@ async function fetchStockCapitalFlow(code, market) {
  * 缓存 30 秒（分钟数据实时变化，但 30s 内重读基本一致，避免打爆上游）
  */
 const _minuteCache = {};
-const MINUTE_CACHE_TTL = 10 * 1000;
+const MINUTE_CACHE_TTL = 3 * 1000;
 
 async function fetchStockMinuteData(code, market) {
   const c = code.toUpperCase();
