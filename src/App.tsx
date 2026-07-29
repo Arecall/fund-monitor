@@ -1547,8 +1547,7 @@ function App() {
             </h3>
             <div className="text-[11px] text-[#86868b] leading-relaxed space-y-2">
               <p>后端通过 SQLite 进行多用户自选与持仓列表隔离。</p>
-              <p>数据自动定时刷新：股票每 10 秒一轮，匹配 Sina 实时 tick 节奏；场外公募基金每 60 秒一轮，匹配上游估值发布节奏。</p>
-              <p>后端内置 3 秒内存缓存，在保障穿透拉取的同时避免打爆上游接口。</p>
+              <p>数据自动定时刷新：股票每 10 秒一轮；场外公募基金每 60 秒一轮，匹配上游估值发布节奏。</p>
             </div>
           </motion.section>
         </div>
