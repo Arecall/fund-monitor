@@ -928,21 +928,68 @@ async function fetchEastMoneyLSJZ(code) {
 }
 
 /**
- * 腾讯 K 线历史数据（A 股 / 港股 / 美股 通用）
+ * 股票 K 线历史数据（A 股 / 港股 / 美股 通用）
+ *   美股：第一优先级使用 Yahoo Finance K线历史接口 (v8/finance/chart)，降级回退腾讯
+ *   A股/港股：优先使用腾讯 AppStock K线接口
  *   返回标准化格式：[{ date, open, high, low, close, volume }]
- *   A 股：web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,30,qfq
- *   美股：... /usfqkline/get?param=us.TSLA,day,,,30,qfq
- *   港股：... /hkfqkline/get?param=hk00700,day,,,30,qfq
  */
 async function fetchStockKLineHistory(code, days = 30) {
   const c = code.trim();
+  const isUS = /^[A-Za-z]{1,5}$/.test(c);
+
+  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口拉取历史日 K 线
+  if (isUS) {
+    try {
+      const yahooSymbol = encodeURIComponent(c.toUpperCase());
+      const rangeParam = days <= 7 ? '1wk' : (days <= 35 ? '1mo' : '3mo');
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d&range=${rangeParam}`;
+      const r = await axios.get(yahooUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json'
+        },
+        timeout: 6000
+      });
+      const chartRes = r.data?.chart?.result?.[0];
+      if (chartRes && Array.isArray(chartRes.timestamp) && chartRes.timestamp.length > 0) {
+        const timestamps = chartRes.timestamp;
+        const quotes = chartRes.indicators?.quote?.[0] || {};
+        const opens = quotes.open || [];
+        const highs = quotes.high || [];
+        const lows = quotes.low || [];
+        const closes = quotes.close || [];
+        const volumes = quotes.volume || [];
+
+        const list = timestamps.map((ts, i) => {
+          const closeVal = closes[i];
+          if (typeof closeVal !== 'number' || isNaN(closeVal)) return null;
+          const d = new Date(ts * 1000);
+          const dateStr = d.toISOString().slice(0, 10);
+          return {
+            date: dateStr,
+            open: opens[i] || closeVal,
+            high: highs[i] || closeVal,
+            low: lows[i] || closeVal,
+            close: closeVal,
+            volume: volumes[i] || 0,
+          };
+        }).filter(Boolean);
+
+        if (list.length > 0) return list;
+      }
+    } catch (err) {
+      console.warn(`[kline] Yahoo Chart API 美股 ${c} 获取历史日 K 线失败, 准备降级回退腾讯:`, err.message);
+    }
+  }
+
+  // 2. A股/港股，或美股 Yahoo 失败时的降级路径：腾讯 AppStock K线接口
   let symbol, url;
   if (/^\d{6}$/.test(c)) {
     if (c.startsWith('60') || c.startsWith('68')) { symbol = 'sh' + c; }
     else if (c.startsWith('00') || c.startsWith('30')) { symbol = 'sz' + c; }
     else return [];
     url = 'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
-  } else if (/^[A-Za-z]{1,5}$/.test(c)) {
+  } else if (isUS) {
     symbol = 'us.' + c.toUpperCase();
     url = 'http://web.ifzq.gtimg.cn/appstock/app/usfqkline/get';
   } else if (/^\d{4,5}$/.test(c)) {
@@ -956,25 +1003,30 @@ async function fetchStockKLineHistory(code, days = 30) {
   try {
     const r = await axios.get(fullUrl, { timeout: 8000 });
     const d = r.data;
-    if (!d || d.code !== 0 || !d.data) return [];
-    const key = Object.keys(d.data).find(k => k !== 'qt') || Object.keys(d.data)[0];
-    if (!key || key === 'qt') return [];
-    const arr = d.data[key]?.day || d.data[key]?.qfqday || [];
-    return arr.map((k) => {
-      const [date, open, close, high, low, volume] = k;
-      return {
-        date,
-        open: parseFloat(open) || 0,
-        high: parseFloat(high) || 0,
-        low: parseFloat(low) || 0,
-        close: parseFloat(close) || 0,
-        volume: parseFloat(volume) || 0,
-      };
-    });
+    if (d && d.code === 0 && d.data) {
+      const key = Object.keys(d.data).find(k => k !== 'qt') || Object.keys(d.data)[0];
+      if (key && key !== 'qt') {
+        const arr = d.data[key]?.day || d.data[key]?.qfqday || [];
+        if (Array.isArray(arr) && arr.length > 0) {
+          return arr.map((k) => {
+            const [date, open, close, high, low, volume] = k;
+            return {
+              date,
+              open: parseFloat(open) || 0,
+              high: parseFloat(high) || 0,
+              low: parseFloat(low) || 0,
+              close: parseFloat(close) || 0,
+              volume: parseFloat(volume) || 0,
+            };
+          });
+        }
+      }
+    }
   } catch (e) {
-    console.error(`[kline] ${code} 失败:`, e.message);
-    return [];
+    console.error(`[kline] 腾讯 API ${code} 失败:`, e.message);
   }
+
+  return [];
 }
 
 /**
@@ -2330,6 +2382,7 @@ module.exports = {
   fetchEastMoneyFlowStockInfo,
   fetchEastMoneyDelayFlowStockInfo,
   fetchStockCapitalFlow,
+  fetchStockKLineHistory,
   searchByName,
   getGoldPrices,
 };
