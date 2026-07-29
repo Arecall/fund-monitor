@@ -728,7 +728,7 @@ async function fetchStockCapitalFlow(code, market) {
  * 缓存 30 秒（分钟数据实时变化，但 30s 内重读基本一致，避免打爆上游）
  */
 const _minuteCache = {};
-const MINUTE_CACHE_TTL = 3 * 1000;
+const MINUTE_CACHE_TTL = 10 * 1000;
 
 async function fetchStockMinuteData(code, market) {
   const c = code.toUpperCase();
@@ -756,7 +756,7 @@ async function fetchStockMinuteData(code, market) {
     if (tencentSym) {
       try {
         const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tencentSym}`;
-        const r = await axios.get(url, { timeout: 6000 });
+        const r = await axios.get(url, { timeout: 3000 });
         const rawArr = r.data?.data?.[tencentSym]?.data?.data;
         if (Array.isArray(rawArr) && rawArr.length > 0) {
           const today = new Date();
@@ -810,7 +810,7 @@ async function fetchStockMinuteData(code, market) {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json'
           },
-          timeout: 6000
+          timeout: 3000
         });
         const chartRes = r.data?.chart?.result?.[0];
         if (chartRes && Array.isArray(chartRes.timestamp)) {
@@ -1711,7 +1711,7 @@ async function fetchStockQuotes(stockList) {
         const r = await axios.get(`http://hq.sinajs.cn/list=${allTry}`, {
           responseType: 'arraybuffer',
           headers: { 'Referer': 'http://finance.sina.com.cn' },
-          timeout: 6000
+          timeout: 3000
         });
         const text = iconv.decode(Buffer.from(r.data), 'gbk');
         for (const line of text.split('\n').filter(Boolean)) {

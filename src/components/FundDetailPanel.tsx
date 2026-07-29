@@ -73,7 +73,7 @@ export function FundDetailPanel({
     let cancelled = false;
     const loadMinuteData = async () => {
       try {
-        const res = await fetchStockMinute(fund.fundcode, 'stock');
+        const res = await fetchStockMinute(fund.fundcode, 'stock', fund.market);
         if (cancelled) return;
         if (res?.data && res.data.length > 0) {
           const bars = res.data.map(d => ({

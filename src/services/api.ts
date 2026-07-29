@@ -315,10 +315,12 @@ export interface StockMinuteResponse {
 
 export async function fetchStockMinute(
   code: string,
-  kind: 'fund' | 'stock' = 'stock'
+  kind: 'fund' | 'stock' = 'stock',
+  market?: string
 ): Promise<StockMinuteResponse | null> {
   try {
-    const data = await request(`/api/market/fund/${code}/minute?kind=${kind}`);
+    const marketQuery = market ? `&market=${encodeURIComponent(market)}` : '';
+    const data = await request(`/api/market/fund/${code}/minute?kind=${kind}${marketQuery}`);
     return data as StockMinuteResponse;
   } catch (error) {
     console.error(`获取分钟数据 ${code} 失败:`, error);

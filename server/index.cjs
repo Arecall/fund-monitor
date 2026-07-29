@@ -28,7 +28,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.1' });
+  res.json({ status: 'ok', version: '1.3.2' });
 });
 app.use(express.static(DIST_DIR));
 app.use((req, res, next) => {
@@ -622,19 +622,27 @@ app.get('/api/market/fund/:code/holdings', async (req, res) => {
 app.get('/api/market/fund/:code/minute', async (req, res) => {
   const { code } = req.params;
   const kindOverride = req.query.kind;     // 'stock'
+  const rawMarket = String(req.query.market || '').trim().toLowerCase();
+  const marketParam = ['domestic', 'hk', 'us', 'other'].includes(rawMarket) ? rawMarket : null;
+
   if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
     return res.status(400).json({ error: '代码格式不正确' });
   }
   try {
-    const val = await marketHelper.getFundValuation(code, kindOverride);
-    if (!val || !val.market) {
-      return res.status(404).json({ error: '未找到该代码对应的市场' });
+    let targetMarket = marketParam;
+    if (!targetMarket) {
+      const val = await marketHelper.getFundValuation(code, kindOverride);
+      if (!val || !val.market) {
+        return res.status(404).json({ error: '未找到该代码对应的市场' });
+      }
+      targetMarket = val.market;
     }
-    if (val.market === 'other') {
-      return res.json({ code, market: val.market, data: null });
+
+    if (targetMarket === 'other') {
+      return res.json({ code, market: targetMarket, data: null });
     }
-    const data = await marketHelper.fetchStockMinuteData(code, val.market);
-    res.json({ code, market: val.market, data: data || null });
+    const data = await marketHelper.fetchStockMinuteData(code, targetMarket);
+    res.json({ code, market: targetMarket, data: data || null });
   } catch (error) {
     res.status(500).json({ error: '获取分钟数据失败' });
   }
