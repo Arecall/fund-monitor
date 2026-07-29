@@ -21,7 +21,7 @@ const dbHelper = require('./db.cjs');
 const STOCK_INTERVAL_MS = 10 * 1000;   // 股票 10 秒
 const FUND_INTERVAL_MS  = 60 * 1000;   // 基金 60 秒
 const KEEPALIVE_MS      = 15 * 1000;   // SSE 心跳
-const SNAPSHOT_TTL_DAYS = 90;           // 行情快照保留 90 天
+const SNAPSHOT_TTL_DAYS = 31;           // 行情快照保留 31 天（已落库数据需要复盘时查阅）
 
 class ValuationBroker {
   constructor() {

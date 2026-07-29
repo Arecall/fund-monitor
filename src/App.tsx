@@ -1581,7 +1581,7 @@ function App() {
             <div className="text-[11px] text-[#86868b] leading-relaxed space-y-2">
               <p>后端通过 SQLite 进行多用户自选与持仓列表隔离。</p>
               <p>数据推送：股票 / 基金的实时估值由后端 SSE 长连接（GET /api/stream/valuations）实时推送给前端，上游一更新即收到。</p>
-              <p>行情快照：服务端每次拉到上游数据后落 SQLite 快照（保留 90 天滚动清理），便于后续复盘与审计。</p>
+              <p>行情快照：服务端每次拉到上游数据后落 SQLite 快照（保留 31 天滚动清理），便于后续复盘与审计。</p>
             </div>
           </motion.section>
         </div>
