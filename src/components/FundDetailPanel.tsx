@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -20,9 +20,10 @@ import type {
   FundHoldingStock
 } from '../services/api';
 import { fetchStockMinute } from '../services/api';
-import { FundChart } from './FundChart';
+const FundChart = lazy(() => import('./FundChart').then(m => ({ default: m.FundChart })));
+const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.AlertPanel })));
+
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
-import { AlertPanel } from './AlertPanel';
 import { formatMarketCap, formatVolume } from '../utils/format';
 import type { MinuteFeed } from '../utils/chartData';
 
@@ -91,7 +92,7 @@ export function FundDetailPanel({
     loadMinuteData();
     const timer = setInterval(loadMinuteData, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [fund.fundcode, kind, chartKey]);
+  }, [fund.fundcode, fund.market, kind, chartKey]);
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
@@ -342,7 +343,8 @@ export function FundDetailPanel({
 
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
-        <FundChart
+        <Suspense fallback={<div className="h-[300px] rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse" />}>
+          <FundChart
           key={`${chartKey}-${(fund as any).dataDate || fund.gztime?.split(' ')[0] || ''}`}
           fundCode={fund.fundcode}
           fundName={fund.name}
@@ -375,7 +377,8 @@ export function FundDetailPanel({
           historyLoading={historyLoading}
           refreshing={refreshing}
           onRefresh={handleRefresh}
-        />
+          />
+        </Suspense>
       </section>
 
       {/* ── Capital flow bar chart (仅 A 股个股) ── */}
@@ -397,11 +400,13 @@ export function FundDetailPanel({
       )}
 
       {/* ── Alert panel (price notifications) ─────────────────── */}
-      <AlertPanel
-        fundCode={fund.fundcode}
-        fundName={fund.name}
-        onToast={onToast}
-      />
+      <Suspense fallback={<div className="h-12 rounded-2xl border border-[var(--hairline-border)] bg-slate-100 dark:bg-white/10 animate-pulse" />}>
+        <AlertPanel
+          fundCode={fund.fundcode}
+          fundName={fund.name}
+          onToast={onToast}
+        />
+      </Suspense>
     </motion.div>
   );
 }

@@ -16,6 +16,7 @@
  */
 const { EventEmitter } = require('events');
 const marketHelper = require('./market.cjs');
+const marketTime = require('./time.cjs');
 const dbHelper = require('./db.cjs');
 
 const STOCK_INTERVAL_MS = 10 * 1000;   // 股票 10 秒
@@ -183,13 +184,13 @@ class ValuationBroker {
     if (isUs) {
       try {
         const now = new Date();
-        const isDST = (now.getMonth() + 1) >= 3 && (now.getMonth() + 1) <= 10;
-        const closeHour = isDST ? 4 : 5;
-        const closeMin = 0;
-        // 取"上一次 emit 时间"的日期作为收盘日期；若从未 emit 则以 today 为准
+        // 冻结的日期与夏/冬令时必须来自同一笔最后行情，避免 DST 切换周末
+        // 用今天的规则覆盖上周五收盘规则而导致 04:00 / 05:00 错位。
         const lastDate = new Date(entry.lastEmitAt || Date.now());
-        const jzrq = `${lastDate.getFullYear()}-${String(lastDate.getMonth() + 1).padStart(2, '0')}-${String(lastDate.getDate()).padStart(2, '0')}`;
-        const frozenGztime = `${jzrq} ${String(closeHour).padStart(2, '0')}:${String(closeMin).padStart(2, '0')}`;
+        const closeHour = marketTime.isUsEasternDst(lastDate) ? 4 : 5;
+        // 收盘时间字符串必须按北京时间生成，不能依赖部署主机的本地时区。
+        const jzrq = marketTime.formatBeijingYmd(lastDate);
+        const frozenGztime = `${jzrq} ${String(closeHour).padStart(2, '0')}:00`;
         if (entry.lastEmittedVal) {
           entry.lastEmittedVal = {
             ...entry.lastEmittedVal,
@@ -201,17 +202,9 @@ class ValuationBroker {
           if (stored) {
             entry.lastEmittedVal = { ...stored, gztime: frozenGztime };
           } else {
-            // 极端兜底：构造空骨架（前端会用 closedCodes 标记 + 不再 tick 来"软化"显示）
-            entry.lastEmittedVal = {
-              fundcode: entry.code,
-              name: '',
-              jzrq: jzrq,
-              dwjz: '0',
-              gsz: '0',
-              gszzl: '0',
-              gztime: frozenGztime,
-              market: 'us',
-            };
+            // 没有真实的内存/落库行情时只能明确表示"无可用收盘价"。
+            // 绝不能构造 0.0000 骨架，否则前端会把它当作有效报价覆盖真实数据。
+            entry.lastEmittedVal = null;
           }
         }
       } catch (e) {
@@ -242,7 +235,11 @@ class ValuationBroker {
         [code, since]
       );
       if (!row || !row.raw) return null;
-      try { return JSON.parse(row.raw); } catch { return null; }
+      try {
+        const val = JSON.parse(row.raw);
+        const price = parseFloat(val?.gsz) || parseFloat(val?.dwjz);
+        return Number.isFinite(price) && price > 0 ? val : null;
+      } catch { return null; }
     } catch (e) {
       console.warn(`[realtime] loadLastClosedSnapshotFromDb failed for ${code}:`, e.message);
       return null;

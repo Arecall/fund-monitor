@@ -15,6 +15,7 @@
 
 import type { FundHistoryPoint } from '../services/api';
 import { detectFundMarket, type FundMarket } from './fundMarket';
+import { beijingWallTimeToTimestamp, getBeijingParts as getSharedBeijingParts, isUsEasternDst } from './time';
 export type { FundMarket } from './fundMarket';
 
 export type RangeKey = 'intraday' | '1D' | '1W' | '1M';
@@ -161,31 +162,29 @@ function dateToTs(date: string): number {
   return new Date(parts[0], parts[1] - 1, parts[2]).getTime();
 }
 
-/** 简化的 US DST：3-10 月 = 夏令时（NY = UTC-4），否则冬令时（UTC-5） */
-function isUSDST(d: Date): boolean {
-  const m = d.getMonth() + 1;
-  return m >= 3 && m <= 10;
-}
-
 /** Get the intraday window in Beijing time (startTs, endTs) for the given market. */
 function getIntradayWindow(
   market: FundMarket,
   now: number
 ): { startTs: number; endTs: number; xLabelMode: 'local' | 'ny' } {
   const d = new Date(now);
-  const today = (y: number, m: number, day: number, h: number, min: number) =>
-    new Date(y, m, day, h, min, 0, 0).getTime();
+  const bjt = getSharedBeijingParts(d);
+  const year = Number(bjt.year);
+  const month = Number(bjt.month) - 1;
+  const day = Number(bjt.day);
+  const today = (y: number, m: number, date: number, h: number, min: number) =>
+    beijingWallTimeToTimestamp(y, m, date, h, min);
 
   if (market === 'us') {
     // US session 跨日：今天 21:30 → 明天 04:00（夏令）/ 05:00（冬令）
-    const dst = isUSDST(d);
+    const dst = isUsEasternDst(d);
     const startH = dst ? 21 : 22;
     const startM = 30;
     const closeH = dst ? 4 : 5;
     const DAY = 24 * 3600 * 1000;
 
-    const todayStart = today(d.getFullYear(), d.getMonth(), d.getDate(), startH, startM);
-    const todayClose = today(d.getFullYear(), d.getMonth(), d.getDate(), closeH, 0);
+    const todayStart = today(year, month, day, startH, startM);
+    const todayClose = today(year, month, day, closeH, 0);
 
     let startTs: number;
     let endTs: number;
@@ -207,13 +206,13 @@ function getIntradayWindow(
     return { startTs, endTs, xLabelMode: 'ny' };
   }
   if (market === 'hk') {
-    const startTs = today(d.getFullYear(), d.getMonth(), d.getDate(), 9, 30);
-    const endTs = today(d.getFullYear(), d.getMonth(), d.getDate(), 16, 0);
+    const startTs = today(year, month, day, 9, 30);
+    const endTs = today(year, month, day, 16, 0);
     return { startTs, endTs, xLabelMode: 'local' };
   }
   // A 股 / other
-  const startTs = today(d.getFullYear(), d.getMonth(), d.getDate(), 9, 30);
-  const endTs = today(d.getFullYear(), d.getMonth(), d.getDate(), 15, 0);
+  const startTs = today(year, month, day, 9, 30);
+  const endTs = today(year, month, day, 15, 0);
   return { startTs, endTs, xLabelMode: 'local' };
 }
 

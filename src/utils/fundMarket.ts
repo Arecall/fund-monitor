@@ -12,6 +12,8 @@
  *      也应该按其跟踪的标的（纳斯达克/标普）分类为美股。
  */
 
+import { beijingWallTimeToTimestamp, getBeijingParts, isUsEasternDst } from './time';
+
 export type FundMarket = 'domestic' | 'hk' | 'us' | 'other';
 
 const US_PATTERN = /纳斯达克|纳指|纳100|纳达克|标普|标500|道琼斯|道琼|道指|Nasdaq|NASDAQ|S&P|标普500|SP500|美股|美国|QDII|海外|全球|标100|纳100/i;
@@ -106,30 +108,23 @@ function isTradingSession(date: Date, tz: string, sessions: number[][]): boolean
  * 计算指定市场下一个常规盘中开盘的 Date 对象（北京时间）
  */
 export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
-  const target = new Date(date);
-  const day = target.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-  const min = target.getHours() * 60 + target.getMinutes();
+  const bjt = getBeijingParts(date);
+  // UTC date is used only as a timezone-neutral calendar container; wall times are
+  // converted to Beijing timestamps explicitly before returning.
+  const target = new Date(Date.UTC(Number(bjt.year), Number(bjt.month) - 1, Number(bjt.day)));
+  const day = target.getUTCDay(); // 北京时间的 0=Sun, 1=Mon, ..., 6=Sat
+  const min = Number(bjt.hour) * 60 + Number(bjt.minute);
 
   if (market === 'us') {
-    // 美股常规盘中开盘：美东 09:30 (夏令时北京 21:30, 冬令时北京 22:30)
-    const m = target.getMonth() + 1;
-    const isDst = m >= 3 && m <= 10;
-    const openHour = isDst ? 21 : 22;
-    const openMin = openHour * 60 + 30;
+    // 先确定下一北京交易日，再按该日纽约 DST 规则计算北京时间开盘时刻。
+    const todayOpenHour = isUsEasternDst(date) ? 21 : 22;
+    const todayOpenMin = todayOpenHour * 60 + 30;
+    if (day === 6) target.setUTCDate(target.getUTCDate() + 2);
+    else if (day === 0) target.setUTCDate(target.getUTCDate() + 1);
+    else if (min >= todayOpenMin) target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
 
-    if (day === 6) { // 周六 → 推进到周一晚
-      target.setDate(target.getDate() + 2);
-      target.setHours(openHour, 30, 0, 0);
-    } else if (day === 0) { // 周日 → 推进到周一晚
-      target.setDate(target.getDate() + 1);
-      target.setHours(openHour, 30, 0, 0);
-    } else if (min < openMin) { // 今日盘中开盘前 (包含夜盘/盘前段)
-      target.setHours(openHour, 30, 0, 0);
-    } else { // 今日盘中开盘后/收盘后 → 推进到下一个工作日晚
-      target.setDate(target.getDate() + (day === 5 ? 3 : 1));
-      target.setHours(openHour, 30, 0, 0);
-    }
-    return target;
+    const openHour = isUsEasternDst(target) ? 21 : 22;
+    return new Date(beijingWallTimeToTimestamp(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate(), openHour, 30));
   }
 
   // A 股 / 港股
@@ -137,30 +132,21 @@ export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
   const afternoonOpenMin = 13 * 60;      // 13:00
   const closeMin = market === 'hk' ? 16 * 60 : 15 * 60;
 
-  if (day === 6) { // 周六
-    target.setDate(target.getDate() + 2);
-    target.setHours(9, 30, 0, 0);
-  } else if (day === 0) { // 周日
-    target.setDate(target.getDate() + 1);
-    target.setHours(9, 30, 0, 0);
-  } else if (min < morningOpenMin) { // 早盘前（00:00 - 09:30）
-    target.setHours(9, 30, 0, 0);
-  } else if (min >= 11 * 60 + 30 && min < afternoonOpenMin) { // 午休（11:30 - 13:00）
-    target.setHours(13, 0, 0, 0);
-  } else if (min >= morningOpenMin && min < closeMin) { // 盘中（09:30-11:30 或 13:00-15:00）
-    // 盘中时下一个节点为午盘 13:00 或 收盘/次日
-    if (min < 11 * 60 + 30) {
-      target.setHours(13, 0, 0, 0);
-    } else {
-      target.setDate(target.getDate() + (day === 5 ? 3 : 1));
-      target.setHours(9, 30, 0, 0);
-    }
-  } else { // 盘后（>= 15:00/16:00）
-    target.setDate(target.getDate() + (day === 5 ? 3 : 1));
-    target.setHours(9, 30, 0, 0);
+  let targetHour = 9;
+  let targetMinute = 30;
+  if (day === 6) target.setUTCDate(target.getUTCDate() + 2);
+  else if (day === 0) target.setUTCDate(target.getUTCDate() + 1);
+  else if (min >= 11 * 60 + 30 && min < afternoonOpenMin) {
+    targetHour = 13;
+  } else if (min >= morningOpenMin && min < closeMin) {
+    // 盘中时下一个节点为午盘 13:00 或下一交易日开盘。
+    if (min < 11 * 60 + 30) targetHour = 13;
+    else target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+  } else if (min >= closeMin) {
+    target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
   }
 
-  return target;
+  return new Date(beijingWallTimeToTimestamp(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate(), targetHour, targetMinute));
 }
 
 /**

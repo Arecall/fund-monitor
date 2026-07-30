@@ -28,11 +28,24 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.7' });
+  res.json({ status: 'ok', version: '1.3.8' });
 });
-app.use(express.static(DIST_DIR));
+app.use(express.static(DIST_DIR, {
+  etag: true,
+  setHeaders(res, filePath) {
+    const relative = path.relative(DIST_DIR, filePath).replace(/\\/g, '/');
+    if (relative.startsWith('assets/')) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (relative === 'index.html') {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+  }
+}));
 app.use((req, res, next) => {
   if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     return res.sendFile(path.join(DIST_DIR, 'index.html'));
   }
   next();

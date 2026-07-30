@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
+import { isUsEasternDst, parseGzTime } from '../utils/time';
 
 /**
  * Returns a live "X 秒前" / "X 分钟前" string relative to a given timestamp.
@@ -51,19 +52,8 @@ export function RelativeTime({
   );
 }
 
-/**
- * Parses the gztime field returned by fundgz.1234567.com.cn, which is
- * formatted as "YYYY-MM-DD HH:MM". Returns Unix ms in local time.
- *
- * If the field is missing or malformed, returns Date.now() as a fallback
- * (better than NaN) and the UI will show "刚刚".
- */
-export function parseGzTime(s: string | undefined): number {
-  if (!s) return Date.now();
-  // Replace the space with T to make it ISO-ish for Date parsing.
-  const t = Date.parse(s.replace(' ', 'T'));
-  return Number.isFinite(t) ? t : Date.now();
-}
+// Backward-compatible re-export for existing callers. gztime is always a Beijing wall-clock time.
+export { parseGzTime };
 
 /* ───────────────────────────────────────────────────────────────────
    Market status — derived from gztime freshness + current clock.
@@ -156,12 +146,6 @@ function minToHHMM(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-/** 简化的美股夏令时判断：3-10 月视为夏令时 */
-function isUSDST(d: Date): boolean {
-  const m = d.getMonth() + 1;
-  return m >= 3 && m <= 10;
-}
-
 export type MarketStatusKey =
   | 'live'
   | 'lunch'
@@ -206,7 +190,7 @@ function getSessionWindows(market: FundMarket, d: Date): SessionWindows {
     };
   }
   if (market === 'us') {
-    const dst = isUSDST(d);
+    const dst = isUsEasternDst(d);
     if (dst) {
       // 夏令时：21:30 → 次日 04:00
       return {
@@ -247,7 +231,7 @@ export function deriveMarketStatus(
 
   // 美股 4 阶段判定（盘前/盘中/盘后/夜盘）
   if (market === 'us') {
-    const dst = isUSDST(d);
+    const dst = isUsEasternDst(d);
     // 夏令时: 盘前 16:00-21:30 | 盘中 21:30-04:00(次) | 盘后 04:00-08:00(次) | 夜盘 08:00-16:00
     // 冬令时: 盘前 17:00-22:30 | 盘中 22:30-05:00(次) | 盘后 05:00-09:00(次) | 夜盘 09:00-17:00
     const preStart = dst ? 16 * 60 : 17 * 60;
@@ -370,7 +354,7 @@ export function deriveMarketStatus(
     color: 'text-slate-500',
     pulse: false,
     detail: market === 'us'
-      ? `美股于北京时间 ${isUSDST(d) ? '04:00' : '05:00'} 收盘`
+      ? `美股于北京时间 ${isUsEasternDst(d) ? '04:00' : '05:00'} 收盘`
       : market === 'hk'
         ? '港股 16:00 收盘'
         : 'A 股 15:00 收盘'

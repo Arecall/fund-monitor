@@ -46,11 +46,12 @@ import {
   type WatchlistItem,
 } from './services/api';
 import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
-import { FundDetailPanel } from './components/FundDetailPanel';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
 const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ default: m.GoldTab })));
+const loadFundDetailPanel = () => import('./components/FundDetailPanel').then(m => ({ default: m.FundDetailPanel }));
+const FundDetailPanel = React.lazy(loadFundDetailPanel);
 
 /* ───────────────────────────────────────────────────────────────────
    Apple Motion tokens — derived from WWDC Designing Fluid Interfaces
@@ -172,6 +173,18 @@ function SkeletonCard({ code }: { code: string }) {
   );
 }
 
+function DetailPanelSkeleton() {
+  return (
+    <div className="apple-card p-5 md:p-6 space-y-5 animate-pulse">
+      <div className="h-5 w-48 rounded bg-slate-100 dark:bg-white/10" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Array.from({ length: 8 }, (_, i) => <div key={i} className="h-24 rounded-2xl bg-slate-100 dark:bg-white/10" />)}
+      </div>
+      <div className="h-[300px] rounded-2xl bg-slate-100 dark:bg-white/10" />
+    </div>
+  );
+}
+
 function SkeletonTableRow({ code }: { code: string }) {
   return (
     <tr className="animate-pulse select-none">
@@ -219,7 +232,8 @@ function SkeletonTableRow({ code }: { code: string }) {
 
 function App() {
   /* ---------- Session state ---------- */
-  const [currentUser, setCurrentUser] = useState<string>('guest');
+  const [currentUser, setCurrentUser] = useState<string>('');
+  const [authReady, setAuthReady] = useState(false);
   const [loginInput, setLoginInput] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
@@ -287,6 +301,9 @@ function App() {
   const watchlistRef = useRef<string[]>([]);
   const watchlistItemsRef = useRef<WatchlistItem[]>([]);
   const fundsDataRef = useRef<Record<string, FundValuation>>({});
+  const currentUserRef = useRef(currentUser);
+  const sessionGenerationRef = useRef(0);
+  const pendingInitialQuoteCodesRef = useRef<Set<string>>(new Set());
 
   /* ---------- Selection state for detail panel ---------- */
   const [selectedFundCode, setSelectedFundCode] = useState<string | null>(null);
@@ -295,43 +312,62 @@ function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [basicMap, setBasicMap] = useState<Record<string, FundBasicInfo | null>>({});
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
+  const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number }>>({});
+  const DETAIL_HISTORY_TTL = 30 * 60_000;
+  const DETAIL_BASIC_TTL = 24 * 60 * 60_000;
+  const DETAIL_HOLDINGS_TTL = 6 * 60 * 60_000;
 
-  // 选中股票/基金时，异步自动拉取历史净值 (history)、基本信息 (basic) 和重仓持股 (holdings)
-  // 定时器节拍：股票 10s，基金 60s，匹配上游数据源节奏
+  // 详情的实时价格由 SSE、股票分钟线由 FundDetailPanel 自己的 10s 定时器负责。
+  // 历史净值/基金资料/重仓属于低频数据，仅在首次打开或客户端 TTL 到期后刷新。
   useEffect(() => {
     if (!selectedFundCode) return;
     const code = selectedFundCode;
-    const item = watchlistItems.find(w => w.fund_code === code);
+    const item = watchlistItemsRef.current.find(w => w.fund_code === code);
     const kind = item?.kind || 'fund';
-
+    const now = Date.now();
+    const fetchedAt = detailFetchedAtRef.current[code] || {};
     let cancelled = false;
-    setHistoryLoading(true);
 
-    const loadDetail = async () => {
-      if (cancelled) return;
-      try {
-        const [hist, basic, holdings] = await Promise.all([
-          fetchFundHistory(code, 60, kind),
-          kind === 'fund' ? fetchFundBasic(code) : Promise.resolve(null),
-          kind === 'fund' ? fetchFundHoldings(code) : Promise.resolve([])
-        ]);
-        if (cancelled) return;
-        setHistoryMap(prev => ({ ...prev, [code]: hist }));
-        setBasicMap(prev => ({ ...prev, [code]: basic }));
-        setHoldingsMap(prev => ({ ...prev, [code]: holdings }));
-      } catch (err) {
-        console.error(`加载 ${code} 详情数据失败:`, err);
-      } finally {
-        if (!cancelled) setHistoryLoading(false);
-      }
-    };
+    const historyStale = !fetchedAt.history || now - fetchedAt.history >= DETAIL_HISTORY_TTL;
+    const basicStale = kind === 'fund' && (!fetchedAt.basic || now - fetchedAt.basic >= DETAIL_BASIC_TTL);
+    const holdingsStale = kind === 'fund' && (!fetchedAt.holdings || now - fetchedAt.holdings >= DETAIL_HOLDINGS_TTL);
 
-    loadDetail();
-    const interval = kind === 'stock' ? 10_000 : 60_000;
-    const timer = setInterval(loadDetail, interval);
+    if (historyStale) {
+      setHistoryLoading(true);
+      fetchFundHistory(code, 60, kind)
+        .then(hist => {
+          if (cancelled) return;
+          detailFetchedAtRef.current[code] = { ...detailFetchedAtRef.current[code], history: Date.now() };
+          setHistoryMap(prev => ({ ...prev, [code]: hist }));
+        })
+        .catch(err => console.error(`加载 ${code} 历史数据失败:`, err))
+        .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    } else {
+      setHistoryLoading(false);
+    }
 
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [selectedFundCode, watchlistItems]);
+    if (basicStale) {
+      fetchFundBasic(code)
+        .then(basic => {
+          if (cancelled) return;
+          detailFetchedAtRef.current[code] = { ...detailFetchedAtRef.current[code], basic: Date.now() };
+          setBasicMap(prev => ({ ...prev, [code]: basic }));
+        })
+        .catch(err => console.error(`加载 ${code} 基本信息失败:`, err));
+    }
+
+    if (holdingsStale) {
+      fetchFundHoldings(code)
+        .then(holdings => {
+          if (cancelled) return;
+          detailFetchedAtRef.current[code] = { ...detailFetchedAtRef.current[code], holdings: Date.now() };
+          setHoldingsMap(prev => ({ ...prev, [code]: holdings }));
+        })
+        .catch(err => console.error(`加载 ${code} 重仓数据失败:`, err));
+    }
+
+    return () => { cancelled = true; };
+  }, [selectedFundCode]);
 
 
   /* ---------- Drag-to-reorder（股票 tab，HTML5 原生 drag & drop）---------- */
@@ -634,12 +670,26 @@ function App() {
       setCurrentUser('guest');
       setIsLoggedIn(false);
     }
+    setAuthReady(true);
   }, []);
 
   useEffect(() => {
-    if (currentUser) loadUserData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    currentUserRef.current = currentUser;
+    sessionGenerationRef.current += 1;
+    pendingInitialQuoteCodesRef.current.clear();
+    fundsDataRef.current = {};
+    setFundsData({});
+    setSelectedFundCode(null);
+    setHistoryMap({});
+    setBasicMap({});
+    setHoldingsMap({});
+    detailFetchedAtRef.current = {};
   }, [currentUser]);
+
+  useEffect(() => {
+    if (authReady && isLoggedIn && currentUser) loadUserData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authReady, isLoggedIn, currentUser]);
 
   /* ---------- Polling (background-friendly + 休市自动暂停) ---------- */
   // 使用 ref 跟踪最新 state，避免定时器回调闭包过期
@@ -710,18 +760,23 @@ function App() {
       return it?.kind === 'fund';
     });
 
-    const applyTick = (code: string, val: FundValuation) => {
-      const next = { ...fundsDataRef.current, [code]: val };
+    // broker 首帧是报价主来源；SSE 未在短时间内交付的代码才走一次 REST 兜底。
+    const pendingCodes = new Set(codes.filter(code => !fundsDataRef.current[code]));
+    pendingInitialQuoteCodesRef.current = pendingCodes;
+    const applyTick = (code: string, val: FundValuation, capturedAt: number) => {
+      pendingCodes.delete(code);
+      const next = { ...fundsDataRef.current, [code]: { ...val, capturedAt } };
       fundsDataRef.current = next;
       setFundsData(next);
     };
     const applyClosed = (code: string, info: { lastVal: FundValuation | null; closedAt: number }) => {
-      // 收盘事件：保留最后一次 gztime 让 UI 继续展示"已休市"价格
+      const price = info.lastVal ? (parseFloat(info.lastVal.gsz) || parseFloat(info.lastVal.dwjz)) : 0;
+      const hasUsableQuote = Number.isFinite(price) && price > 0;
+      if (hasUsableQuote) pendingCodes.delete(code);
+      // 收盘事件：保留最后一次真实行情；无有效报价时不能用伪造的 0 值覆盖 UI。
       setClosedCodes(prev => ({ ...prev, [code]: info }));
-      // 把服务端冻结的 lastVal（gztime 已被重写为标准收盘时刻）同步到 fundsData
-      // 这样 FundDetailPanel 的"最近更新"会以正确时间戳展示
-      if (info.lastVal) {
-        const next = { ...fundsDataRef.current, [code]: info.lastVal };
+      if (hasUsableQuote && info.lastVal) {
+        const next = { ...fundsDataRef.current, [code]: { ...info.lastVal, capturedAt: info.closedAt } };
         fundsDataRef.current = next;
         setFundsData(next);
       }
@@ -745,7 +800,7 @@ function App() {
           codes: groupCodes,
           kind: defaultKind,
           market: m as FundMarket,
-          onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
+          onTick: t => { applyTick(t.code, t.val, t.capturedAt); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
           onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
         });
         disposers.push(sub);
@@ -755,7 +810,23 @@ function App() {
     groupByMarketAndKind(stockCodes, 'stock');
     groupByMarketAndKind(fundCodes, 'fund');
 
+    // SSE 正常时 broker 会立即推首帧；仅为仍缺失的代码进行一次 REST 兜底，
+    // 避免启动时每个代码都同时走 REST 与 broker 两条抓取链路。
+    const fallbackTimer = window.setTimeout(() => {
+      const missingCodes = [...pendingCodes].filter(code => !fundsDataRef.current[code]);
+      missingCodes.forEach(async code => {
+        const item = items.find(w => w.fund_code.toUpperCase() === code.toUpperCase());
+        const val = await fetchFundValuation(code, item?.kind);
+        if (!val || !pendingCodes.has(code)) return;
+        pendingCodes.delete(code);
+        const next = { ...fundsDataRef.current, [code]: { ...val, capturedAt: Date.now() } };
+        fundsDataRef.current = next;
+        setFundsData(next);
+      });
+    }, 3500);
+
     return () => {
+      window.clearTimeout(fallbackTimer);
       disposers.forEach(d => d());
     };
     // eslint-disable-next-line react-hooks-exhaustive-deps
@@ -787,29 +858,31 @@ function App() {
 
   /* ---------- Data loaders ---------- */
   const loadUserData = async () => {
+    const session = currentUserRef.current;
+    const generation = sessionGenerationRef.current;
     setLoading(true);
     try {
       const data = await fetchWatchlist();
+      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+
+      // 自选先发布：列表会立即用现有 Skeleton 行渲染，首帧报价交给 SSE 回填。
       setWatchlist(data.codes);
       setWatchlistItems(data.items);
-      const posList = await fetchPositions();
+
+      const [posList, indices] = await Promise.all([fetchPositions(), fetchMarketIndices()]);
+      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+
       const posMap: Record<string, UserPosition> = {};
       posList.forEach(p => { posMap[p.fund_code] = p; });
       setPositions(posMap);
-      const indices = await fetchMarketIndices();
       setMarketIndices(indices);
-      const updatedFunds: Record<string, FundValuation> = {};
-      await Promise.all(data.codes.map(async (code: string) => {
-        const item = data.items.find((w: WatchlistItem) => w.fund_code === code);
-        const val = await fetchFundValuation(code, item?.kind);
-        if (val) updatedFunds[code] = val;
-      }));
-      setFundsData(updatedFunds);
     } catch (e) {
       console.error('加载用户数据失败:', e);
       showToast('数据加载失败，请检查后端服务是否启动');
     } finally {
-      setLoading(false);
+      if (currentUserRef.current === session && sessionGenerationRef.current === generation) {
+        setLoading(false);
+      }
     }
   };
 
@@ -2787,7 +2860,9 @@ function App() {
             ariaLabel={isStock ? '股票详情' : '基金详情'}
             title={isStock ? '股票详情' : '基金详情'}
           >
+            <React.Suspense fallback={<DetailPanelSkeleton />}>
             <FundDetailPanel
+              key={selectedFundCode}
               fund={fundsData[selectedFundCode]}
               kind={item?.kind}
               position={positions[selectedFundCode]}
@@ -2801,6 +2876,7 @@ function App() {
               }}
               onToast={showToast}
             />
+            </React.Suspense>
           </DetailDrawer>
           );
         })()}

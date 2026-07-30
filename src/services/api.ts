@@ -33,6 +33,7 @@ export interface FundValuation {
   gszzl: string;     // 估算当日涨跌幅 (单位为 %，例如 -0.38)
   gztime: string;    // 估算时间
   lastUpdated?: number; // 本地获取时间戳
+  capturedAt?: number; // SSE broker 抓取并推送的时间戳
   market?: 'domestic' | 'hk' | 'us' | 'other';  // 板块路由用
   /** 个股当日开盘价（A股个股可用；基金无此概念） */
   open?: string;

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const iconv = require('iconv-lite');
+const marketTime = require('./time.cjs');
 
 // 内存缓存字典，避免短时间内高频轮询打爆天天基金和新浪接口
 // 结构: { key: { data, timestamp } }
@@ -1200,10 +1201,8 @@ async function fetchHoldingsBasedEstimate(code) {
 
   const estimatedGsz = lastNav * (1 + avgChange / 100);
   const now = new Date();
-  // 美股时间（NY）：当前 7-21 10:35 北京，美股昨晚已收（夏令 04:00 北京收盘）
-  // 7-21 北京白天：基于昨晚美股收盘后的官方净值 + 今日盘前/盘中变动
-  // 7-21 北京晚上 21:30+：今日美股盘中
-  const gzTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // 所有 gztime 均为北京时间，部署在 UTC 等其它时区的主机也不能偏移。
+  const gzTime = marketTime.formatBeijingYmdHm(now);
 
   // 推断主体市场：若前 10 重仓股中有美股/港股，设置对应 market 属性
   const hasUs = stocks.some(s => s.market === 'us');
@@ -1348,8 +1347,8 @@ async function getFundValuation(code, kindOverride) {
       }
       // 数据陈旧检查：Sina fu_ 对 QDII 经常返回 1-2 周前的数据，超过 7 天视为无效
       if (result && result.gztime) {
-        const dataTime = Date.parse(result.gztime.replace(' ', 'T'));
-        if (Number.isFinite(dataTime) && Date.now() - dataTime > 7 * 24 * 60 * 60 * 1000) {
+        const dataTime = marketTime.parseBeijingDateTime(result.gztime);
+        if (dataTime != null && Date.now() - dataTime > 7 * 24 * 60 * 60 * 1000) {
           console.log(`[fund] ${code} Sina data stale (${result.gztime}), trying EastMoney f10/lsjz`);
           result = null;
         }
