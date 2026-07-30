@@ -314,11 +314,17 @@ export function FundChart({
   const xTicks = useMemo(() => {
     if (points.length < 2) return [];
     if (range === 'intraday') {
-      const midLabel = fundMarket === 'us' ? '13:00' : '11:30/13:00';
-      const endLabel = fundMarket === 'hk' ? '16:00' : (fundMarket === 'us' ? '04:00' : '15:00');
+      if (fundMarket === 'us') {
+        return [
+          { idx: 0, label: formatTick(points[0].t, range) },
+          { idx: Math.floor((points.length - 1) / 2), label: formatTick(points[Math.floor((points.length - 1) / 2)].t, range) },
+          { idx: points.length - 1, label: formatTick(points[points.length - 1].t, range) },
+        ];
+      }
+      const endLabel = fundMarket === 'hk' ? '16:00' : '15:00';
       return [
         { idx: 0, label: '09:30' },
-        { idx: Math.floor((points.length - 1) / 2), label: midLabel },
+        { idx: Math.floor((points.length - 1) / 2), label: '11:30/13:00' },
         { idx: points.length - 1, label: endLabel },
       ];
     }

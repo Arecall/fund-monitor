@@ -720,24 +720,36 @@ function App() {
       setClosedCodes(prev => ({ ...prev, [code]: info }));
     };
 
-    const stockDisposer = subscribeValuations({
-      codes: stockCodes,
-      kind: 'stock',
-      market: 'domestic',
-      onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
-      onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
-    });
-    const fundDisposer = subscribeValuations({
-      codes: fundCodes,
-      kind: 'fund',
-      market: 'domestic',
-      onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
-      onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
-    });
+    // 股票/基金按 market（domestic / hk / us / other）及 kind 分组建立 SSE 订阅，避免全量硬编码为 domestic 导致美股/港股被错判为 A 股交易时段
+    const disposers: Array<() => void> = [];
+
+    const groupByMarketAndKind = (targetCodes: string[], defaultKind: 'stock' | 'fund') => {
+      const groups: Record<string, string[]> = {};
+      for (const code of targetCodes) {
+        const item = items.find(w => w.fund_code.toUpperCase() === code.toUpperCase());
+        const market = item?.market || detectFundMarket(undefined, code);
+        const key = `${market}`;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(code);
+      }
+      for (const [m, groupCodes] of Object.entries(groups)) {
+        if (groupCodes.length === 0) continue;
+        const sub = subscribeValuations({
+          codes: groupCodes,
+          kind: defaultKind,
+          market: m as FundMarket,
+          onTick: t => { applyTick(t.code, t.val); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
+          onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
+        });
+        disposers.push(sub);
+      }
+    };
+
+    groupByMarketAndKind(stockCodes, 'stock');
+    groupByMarketAndKind(fundCodes, 'fund');
 
     return () => {
-      stockDisposer();
-      fundDisposer();
+      disposers.forEach(d => d());
     };
     // eslint-disable-next-line react-hooks-exhaustive-deps
   }, [currentUser, watchlist.join('|')]);
