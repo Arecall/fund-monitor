@@ -718,6 +718,13 @@ function App() {
     const applyClosed = (code: string, info: { lastVal: FundValuation | null; closedAt: number }) => {
       // 收盘事件：保留最后一次 gztime 让 UI 继续展示"已休市"价格
       setClosedCodes(prev => ({ ...prev, [code]: info }));
+      // 把服务端冻结的 lastVal（gztime 已被重写为标准收盘时刻）同步到 fundsData
+      // 这样 FundDetailPanel 的"最近更新"会以正确时间戳展示
+      if (info.lastVal) {
+        const next = { ...fundsDataRef.current, [code]: info.lastVal };
+        fundsDataRef.current = next;
+        setFundsData(next);
+      }
     };
 
     // 股票/基金按 market（domestic / hk / us / other）及 kind 分组建立 SSE 订阅，避免全量硬编码为 domestic 导致美股/港股被错判为 A 股交易时段

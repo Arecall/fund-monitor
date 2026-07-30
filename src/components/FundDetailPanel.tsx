@@ -335,7 +335,7 @@ export function FundDetailPanel({
           <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
             <RelativeTime timestamp={gzTs} prefix="最近更新 " />
             <span className="opacity-40">·</span>
-            <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}</span>
+            <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
           </div>
         </div>
       </motion.div>

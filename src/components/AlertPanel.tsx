@@ -376,7 +376,7 @@ function AlertRow({
           <span className="truncate">{alert.email}</span>
           {alert.last_triggered_at && (
             <span className="text-slate-400 ml-1">
-              · 上次 {new Date(alert.last_triggered_at).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              · 上次 {new Date(alert.last_triggered_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
             </span>
           )}
         </div>

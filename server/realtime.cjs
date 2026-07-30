@@ -170,6 +170,55 @@ class ValuationBroker {
       entry.timer = null;
     }
     entry.closed = true;
+
+    // 收盘后将 lastVal.gztime 重写为该市场当次收盘时刻（北京时间）
+    // 目的：上游 QDII 基金接口在盘后会持续返回"当前北京时间"，
+    //       显示 10:06 这种尚未收盘的真实时间戳容易误导用户，
+    //       此处统一冻结为标准收盘时刻 (夏令 04:00 / 冬令 05:00)
+    //
+    // 关键修复：即便 lastEmittedVal 仍为 null（首次进入 fetchOnce 就已是非交易时段，
+    //           此前从未 emit 过 tick），也要用 entry.market 判定并构造一个冻结快照推给前端，
+    //           否则前端 fundsData 保留着初次加载时的 10:24 上游时间戳，UI 持续误导用户。
+    const isUs = entry.market === 'us' || (entry.lastEmittedVal && entry.lastEmittedVal.market === 'us');
+    if (isUs) {
+      try {
+        const now = new Date();
+        const isDST = (now.getMonth() + 1) >= 3 && (now.getMonth() + 1) <= 10;
+        const closeHour = isDST ? 4 : 5;
+        const closeMin = 0;
+        // 取"上一次 emit 时间"的日期作为收盘日期；若从未 emit 则以 today 为准
+        const lastDate = new Date(entry.lastEmitAt || Date.now());
+        const jzrq = `${lastDate.getFullYear()}-${String(lastDate.getMonth() + 1).padStart(2, '0')}-${String(lastDate.getDate()).padStart(2, '0')}`;
+        const frozenGztime = `${jzrq} ${String(closeHour).padStart(2, '0')}:${String(closeMin).padStart(2, '0')}`;
+        if (entry.lastEmittedVal) {
+          entry.lastEmittedVal = {
+            ...entry.lastEmittedVal,
+            gztime: frozenGztime,
+          };
+        } else {
+          // 无历史 emit：从数据库快照兜底读取上一帧"已收盘"数据，否则只发空骨架
+          const stored = this._loadLastClosedSnapshotFromDb(entry.code);
+          if (stored) {
+            entry.lastEmittedVal = { ...stored, gztime: frozenGztime };
+          } else {
+            // 极端兜底：构造空骨架（前端会用 closedCodes 标记 + 不再 tick 来"软化"显示）
+            entry.lastEmittedVal = {
+              fundcode: entry.code,
+              name: '',
+              jzrq: jzrq,
+              dwjz: '0',
+              gsz: '0',
+              gszzl: '0',
+              gztime: frozenGztime,
+              market: 'us',
+            };
+          }
+        }
+      } catch (e) {
+        console.warn(`[realtime] close-snapshot rewrite failed for ${entry.code}:`, e.message);
+      }
+    }
+
     const payload = {
       code: entry.code,
       kind: entry.kind,
@@ -178,6 +227,26 @@ class ValuationBroker {
     };
     this.emitter.emit('closed', payload);
     console.log(`[realtime] ${entry.code} 已收盘, 停止抓取循环`);
+  }
+
+  /**
+   * 从数据库中读取最近一次"已收盘/夜盘"时刻的快照，作为首次停止时构造冻结 lastVal 的兜底数据源。
+   * 仅返回 captured_at 在最近 48 小时内的快照，避免被 1 周前的陈旧数据覆盖。
+   * 返回 null 表示无任何可用快照。
+   */
+  _loadLastClosedSnapshotFromDb(code) {
+    try {
+      const since = Date.now() - 48 * 60 * 60 * 1000;
+      const row = dbHelper.get(
+        `SELECT raw FROM quote_snapshots WHERE code = ? AND captured_at >= ? ORDER BY captured_at DESC LIMIT 1`,
+        [code, since]
+      );
+      if (!row || !row.raw) return null;
+      try { return JSON.parse(row.raw); } catch { return null; }
+    } catch (e) {
+      console.warn(`[realtime] loadLastClosedSnapshotFromDb failed for ${code}:`, e.message);
+      return null;
+    }
   }
 
   _startFetchLoop(code, entry) {
@@ -193,6 +262,23 @@ class ValuationBroker {
         const val = await marketHelper.getFundValuation(code, entry.kind);
         if (!val) return;
         const now = Date.now();
+
+        // ─── 关键：自纠 market ───
+        // watchlist 里 6 位基金常常被粗略存为 'domestic'（前端添加时 market 检测对
+        // QDII 名称敏感度不足），但 fundgz 返回的 val.name 含「全球/纳斯达克/标普」
+        // 等关键词，真实市场为 US。错配的 market 会让 broker 把 10:00 北京时间误判
+        // 为 A 股盘中继续抓取 — 这里用 val.market (上游返回) 覆写一次 entry.market，
+        // 让 _isRecentlyClosed 用正确的市场时段判定。
+        let marketSelfCorrected = false;
+        if (val.market && val.market !== entry.market) {
+          const prev = entry.market;
+          entry.market = val.market;
+          marketSelfCorrected = !!prev && prev !== val.market;
+          if (marketSelfCorrected) {
+            console.log(`[realtime] ${code} market self-correct: ${prev} → ${val.market} (by upstream name)`);
+          }
+        }
+
         // 防止上游返回同一个 gztime 反复 emit（节流 + 去重）
         const sig = `${val.gztime || ''}|${val.gsz || ''}|${val.gszzl || ''}`;
         if (entry.lastEmittedSnapshot === sig) {
@@ -213,8 +299,13 @@ class ValuationBroker {
 
         this.emitter.emit('tick', { code, val, capturedAt: now });
 
-        // emit 完成后做收盘判定
-        if (this._isRecentlyClosed(entry)) {
+        // emit 完成后做收盘判定。
+        // 若本轮刚从错的 market (例如 'domestic') 自纠为正确的 'us'，强制无视
+        // 1 分钟 grace 直接判收 — 否则首次 self-correct 后 _isRecentlyClosed 仍
+        // 因 lastEmitAt 刚刚 set 而放行，broker 继续每 60s 抓取基金接口，UI 仍显示
+        // 上游 fundgz 返回的"今天当前北京时间"。
+        const inTradingNow = marketHelper.isInTradingTime(code, now, entry.market || undefined);
+        if (!inTradingNow && (marketSelfCorrected || this._isRecentlyClosed(entry))) {
           this._stopAndAnnounceClosed(entry);
         }
       } catch (e) {

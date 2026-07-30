@@ -441,28 +441,41 @@ export function buildSeries(
   return { points, source: 'estimated', market, note: '数据不足，仅展示两点' };
 }
 
+function getBeijingParts(t: number) {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(t));
+  return Object.fromEntries(parts.map(p => [p.type, p.value]));
+}
+
 /** X 轴刻度标签：统一用北京时间 HH:MM */
 export function formatTick(t: number, range: RangeKey): string {
+  const m = getBeijingParts(t);
   if (range === 'intraday') {
-    const d = new Date(t);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${m.hour}:${m.minute}`;
   }
-  return `${new Date(t).getMonth() + 1}/${new Date(t).getDate()}`;
+  return `${parseInt(m.month, 10)}/${parseInt(m.day, 10)}`;
 }
 
 /** Tooltip：统一用北京时间 */
 export function formatTooltip(t: number, range: RangeKey): string {
-  const d = new Date(t);
+  const m = getBeijingParts(t);
   if (range === 'intraday') {
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${m.hour}:${m.minute}`;
   }
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `${m.year}-${m.month}-${m.day}`;
 }
 
 /** 把 Unix ms 转成 "HH:MM"（北京时间） */
 function formatHHMM(t: number): string {
-  const d = new Date(t);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const m = getBeijingParts(t);
+  return `${m.hour}:${m.minute}`;
 }
 
 export function changePct(current: number, previous: number) {

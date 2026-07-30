@@ -120,7 +120,14 @@ export function OpenCountdown({
     countdownStr = `${mins}:${String(secs).padStart(2, '0')}`;
   }
 
-  const targetTimeLabel = `${String(nextOpen.getHours()).padStart(2, '0')}:${String(nextOpen.getMinutes()).padStart(2, '0')}`;
+  const targetParts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(nextOpen);
+  const targetMap = Object.fromEntries(targetParts.map(p => [p.type, p.value]));
+  const targetTimeLabel = `${targetMap.hour}:${targetMap.minute}`;
 
   if (rawCountdown) {
     return <span className={`font-mono ${className}`}>{countdownStr}</span>;

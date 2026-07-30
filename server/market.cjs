@@ -303,11 +303,20 @@ async function fetchYahooUSStockValuation(ticker) {
     const lowVal  = meta.regularMarketDayLow;
     const volumeVal = meta.regularMarketVolume;
 
-    // 取最后交易点时间戳转换为 ISO string/北京时间 string
+    // 取最后交易点时间戳转换为 ISO string/北京时间 string (Asia/Shanghai)
     const marketTimeMs = (meta.regularMarketTime || Math.floor(Date.now() / 1000)) * 1000;
-    const d = new Date(marketTimeMs);
-    const jzrq = d.toISOString().slice(0, 10);
-    const gztime = `${jzrq} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(new Date(marketTimeMs));
+    const m = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    const jzrq = `${m.year}-${m.month}-${m.day}`;
+    const gztime = `${jzrq} ${m.hour}:${m.minute}`;
 
     return {
       fundcode: rawSymbol,
