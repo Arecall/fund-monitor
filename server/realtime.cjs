@@ -183,12 +183,25 @@ class ValuationBroker {
   _startFetchLoop(code, entry) {
     const fetchOnce = async () => {
       try {
+        // 如果在非交易时段，但尚未触发收盘停止判定，检查上一帧数据
+        // 如果是美股基金且进入非交易时段已超 1 分钟，或者 fetchOnce 抓取时发现不属于交易时段，则停止
+        if (this._isRecentlyClosed(entry)) {
+          this._stopAndAnnounceClosed(entry);
+          return;
+        }
+
         const val = await marketHelper.getFundValuation(code, entry.kind);
         if (!val) return;
         const now = Date.now();
         // 防止上游返回同一个 gztime 反复 emit（节流 + 去重）
         const sig = `${val.gztime || ''}|${val.gsz || ''}|${val.gszzl || ''}`;
-        if (entry.lastEmittedSnapshot === sig) return;
+        if (entry.lastEmittedSnapshot === sig) {
+          // 数据未变时，若不在交易时段且距离上次 emit 已超 1 分钟，直接停掉抓取
+          if (this._isRecentlyClosed(entry)) {
+            this._stopAndAnnounceClosed(entry);
+          }
+          return;
+        }
         entry.lastEmittedSnapshot = sig;
         entry.lastEmitAt = now;
         entry.lastEmittedVal = val;

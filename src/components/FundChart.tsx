@@ -314,18 +314,12 @@ export function FundChart({
   const xTicks = useMemo(() => {
     if (points.length < 2) return [];
     if (range === 'intraday') {
-      if (fundMarket === 'us') {
-        return [
-          { idx: 0, label: formatTick(points[0].t, range) },
-          { idx: Math.floor((points.length - 1) / 2), label: formatTick(points[Math.floor((points.length - 1) / 2)].t, range) },
-          { idx: points.length - 1, label: formatTick(points[points.length - 1].t, range) },
-        ];
-      }
-      const endLabel = fundMarket === 'hk' ? '16:00' : '15:00';
+      const midIdx = Math.floor((points.length - 1) / 2);
+      const lastIdx = points.length - 1;
       return [
-        { idx: 0, label: '09:30' },
-        { idx: Math.floor((points.length - 1) / 2), label: '11:30/13:00' },
-        { idx: points.length - 1, label: endLabel },
+        { idx: 0, label: formatTick(points[0].t, range) },
+        { idx: midIdx, label: formatTick(points[midIdx].t, range) },
+        { idx: lastIdx, label: formatTick(points[lastIdx].t, range) },
       ];
     }
     const N = 5;
@@ -335,7 +329,7 @@ export function FundChart({
       out.push({ idx, label: formatTick(points[idx].t, range) });
     }
     return out;
-  }, [points, range, fundMarket]);
+  }, [points, range]);
 
   // ─── Hover ───────────────────────────────────────────────────────
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
