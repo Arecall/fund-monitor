@@ -52,7 +52,7 @@ class ValuationBroker {
       for (const [code, entry] of this.codes.entries()) {
         if (entry.closed && entry.subscribers > 0) {
           try {
-            if (marketHelper.isInTradingTime(code, now, entry.market || undefined)) {
+            if (marketHelper.shouldPollValuationNow(code, entry.market || undefined, entry.kind, now)) {
               entry.closed = false;
               console.log(`[realtime] ${code} 交易时段开启（保活检测），自动恢复抓取`);
               this._startFetchLoop(code, entry);
@@ -107,7 +107,7 @@ class ValuationBroker {
     // 检查：如果此前标记为已收盘 (closed = true)，但此时已迎来新交易日/开盘时段 (inSession = true)
     // 则重置 closed 标识并拉起抓取循环（实现跨夜/跨周末长连接的自动开盘恢复）
     const now = new Date();
-    const inSession = marketHelper.isInTradingTime(code, now, entry.market || undefined);
+    const inSession = marketHelper.shouldPollValuationNow(code, entry.market || undefined, entry.kind, now);
 
     if (entry.closed && inSession) {
       entry.closed = false;
@@ -115,11 +115,13 @@ class ValuationBroker {
       this._startFetchLoop(code, entry);
     } else if (entry.closed) {
       // 仍然处于收盘阶段：不再启动循环，立即 emit 一次 closed 让前端感知
+      const closedAt = entry.lastEmitAt || Date.now();
+      entry.lastEmittedVal = this._markClosedProxySnapshot(entry.lastEmittedVal, closedAt);
       const payload = {
         code,
         kind: entry.kind,
         lastVal: entry.lastEmittedVal,
-        closedAt: entry.lastEmitAt || Date.now(),
+        closedAt,
       };
       this.emitter.emit('closed', payload);
     } else if (!entry.timer) {
@@ -155,7 +157,7 @@ class ValuationBroker {
     const now = new Date();
     let inSession;
     try {
-      inSession = marketHelper.isInTradingTime(entry.code, now, entry.market || undefined);
+      inSession = marketHelper.shouldPollValuationNow(entry.code, entry.market || undefined, entry.kind, now);
     } catch (e) {
       return false;  // 判定失败保守放行
     }
@@ -163,6 +165,17 @@ class ValuationBroker {
     // 不在交易时段：距离最近一次 emit > 1 分钟
     if (!entry.lastEmitAt) return true;
     return (Date.now() - entry.lastEmitAt) >= CLOSE_GRACE_MS;
+  }
+
+  _markClosedProxySnapshot(val, closedAt = Date.now()) {
+    if (!val || (!val.proxyTicker && !val.quoteTimestamp)) return val;
+    return {
+      ...val,
+      quoteSession: 'closed',
+      quoteFreshness: 'stale',
+      quoteAgeMs: val.quoteTimestamp ? Math.max(0, closedAt - val.quoteTimestamp) : (val.quoteAgeMs ?? null),
+      proxyFallbackReason: val.proxyFallbackReason || '交易时段已结束，保留最后有效代理报价',
+    };
   }
 
   _stopAndAnnounceClosed(entry) {
@@ -181,7 +194,9 @@ class ValuationBroker {
     //           此前从未 emit 过 tick），也要用 entry.market 判定并构造一个冻结快照推给前端，
     //           否则前端 fundsData 保留着初次加载时的 10:24 上游时间戳，UI 持续误导用户。
     const isUs = entry.market === 'us' || (entry.lastEmittedVal && entry.lastEmittedVal.market === 'us');
-    if (isUs) {
+    // 代理行情已携带真实上游 quoteTime；不能覆写成美股常规盘收盘时间。
+    const hasExplicitProxyQuoteTime = !!entry.lastEmittedVal?.quoteTimestamp;
+    if (isUs && !hasExplicitProxyQuoteTime) {
       try {
         const now = new Date();
         // 冻结的日期与夏/冬令时必须来自同一笔最后行情，避免 DST 切换周末
@@ -212,11 +227,13 @@ class ValuationBroker {
       }
     }
 
+    const closedAt = entry.lastEmitAt || Date.now();
+    entry.lastEmittedVal = this._markClosedProxySnapshot(entry.lastEmittedVal, closedAt);
     const payload = {
       code: entry.code,
       kind: entry.kind,
       lastVal: entry.lastEmittedVal,
-      closedAt: entry.lastEmitAt || Date.now(),
+      closedAt,
     };
     this.emitter.emit('closed', payload);
     console.log(`[realtime] ${entry.code} 已收盘, 停止抓取循环`);
@@ -301,7 +318,7 @@ class ValuationBroker {
         // 1 分钟 grace 直接判收 — 否则首次 self-correct 后 _isRecentlyClosed 仍
         // 因 lastEmitAt 刚刚 set 而放行，broker 继续每 60s 抓取基金接口，UI 仍显示
         // 上游 fundgz 返回的"今天当前北京时间"。
-        const inTradingNow = marketHelper.isInTradingTime(code, now, entry.market || undefined);
+        const inTradingNow = marketHelper.shouldPollValuationNow(code, entry.market || undefined, entry.kind, now);
         if (!inTradingNow && (marketSelfCorrected || this._isRecentlyClosed(entry))) {
           this._stopAndAnnounceClosed(entry);
         }

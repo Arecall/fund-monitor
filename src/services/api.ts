@@ -35,6 +35,23 @@ export interface FundValuation {
   lastUpdated?: number; // 本地获取时间戳
   capturedAt?: number; // SSE broker 抓取并推送的时间戳
   market?: 'domestic' | 'hk' | 'us' | 'other';  // 板块路由用
+  /** 估值/行情来源与时效；capturedAt 仅代表本机获取时间，不代表上游报价时间。 */
+  estimate?: boolean;
+  estimateMethod?: 'holdings' | 'proxy-etf' | 'proxy-futures';
+  navOnly?: boolean;
+  officialNavDate?: string;
+  proxyTicker?: string;
+  proxyIndexName?: string;
+  proxyTencentSymbol?: string;
+  quoteSource?: string;
+  quoteSourceName?: string;
+  quoteSourceSymbol?: string;
+  quoteSession?: 'regular' | 'postmarket' | 'premarket' | 'overnight' | 'closed';
+  quoteTime?: string;
+  quoteTimestamp?: number | null;
+  quoteAgeMs?: number | null;
+  quoteFreshness?: 'fresh' | 'stale' | 'unknown';
+  proxyFallbackReason?: string | null;
   /** 个股当日开盘价（A股个股可用；基金无此概念） */
   open?: string;
   /** 个股专属字段（基金不会有） */

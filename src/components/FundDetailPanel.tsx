@@ -24,6 +24,7 @@ const FundChart = lazy(() => import('./FundChart').then(m => ({ default: m.FundC
 const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.AlertPanel })));
 
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
+import { QuoteSourceBadge } from './QuoteSourceBadge';
 import { formatMarketCap, formatVolume } from '../utils/format';
 import type { MinuteFeed } from '../utils/chartData';
 
@@ -308,10 +309,11 @@ export function FundDetailPanel({
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2.5">
             <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              实时行情
+              <span className={`inline-block w-2 h-2 rounded-full ${fund.navOnly || fund.quoteFreshness === 'stale' ? 'bg-amber-500' : 'bg-blue-500 animate-pulse'}`} />
+              {fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '延迟行情' : '实时行情'}
             </span>
             <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
+            <QuoteSourceBadge fund={fund} />
           </div>
 
           <div className="flex items-baseline gap-3">
@@ -326,17 +328,19 @@ export function FundDetailPanel({
 
         {/* 下层：元数据对齐栏 */}
         <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
-          <div className="flex items-center gap-2">
-            <span>最新净值</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span>{fund.navOnly ? '官方净值' : fund.proxyTicker ? '代理估值' : '最新净值'}</span>
             <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
               {currencyPrefix}{current.toFixed(4)}
             </span>
+            {fund.officialNavDate && <span className="text-[10px] text-slate-400">基准净值 {fund.officialNavDate}</span>}
           </div>
 
           <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
             <RelativeTime timestamp={gzTs} prefix="最近更新 " />
             <span className="opacity-40">·</span>
             <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
+            {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
           </div>
         </div>
       </motion.div>

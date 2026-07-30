@@ -1,6 +1,7 @@
 const axios = require('axios');
 const iconv = require('iconv-lite');
 const marketTime = require('./time.cjs');
+const proxyTickers = require('./proxy-tickers.cjs');
 
 // 内存缓存字典，避免短时间内高频轮询打爆天天基金和新浪接口
 // 结构: { key: { data, timestamp } }
@@ -12,6 +13,9 @@ const cache = {
   market: null,
   marketTimestamp: 0,
   gold: null,
+  // QDII 腾讯 Qt 代理行情缓存（结构: { ticker: { data, timestamp } }）
+  // TTL = PROXY_TICKER_TTL，60s 内复用，避免打爆上游。
+  proxyTicker: {},
 };
 
 // 名称搜索单独存（结构: { 'fund:<q>': { data: [...], timestamp } }）
@@ -25,6 +29,7 @@ const FUND_HOLDINGS_TTL = 60 * 60 * 1000; // 基金持仓缓存 1小时
 const MARKET_CACHE_TTL = 3 * 1000;        // 大盘指数缓存 3秒
 const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
 const GOLD_CACHE_TTL = 30 * 1000;         // 金价缓存 30秒
+const PROXY_TICKER_TTL = 60 * 1000;      // QDII 代理标的 Yahoo 缓存 60秒
 
 /**
  * 转换 JSONP 为 JSON 对象
@@ -139,6 +144,15 @@ function isInTradingTime(code, now, market) {
 
   const nowMin = hour * 60 + minute;
   return sessions.some(([s, e]) => nowMin >= s && nowMin < e);
+}
+
+/** SSE 轮询只给明确注册且已有验证扩展源的 QDII 放宽；普通品种保持原常规盘逻辑。 */
+function shouldPollValuationNow(code, market, kind, now = new Date()) {
+  if (isInTradingTime(code, now, market)) return true;
+  if (kind !== 'fund' || !proxyTickers.isKnownProxyFund(code)) return false;
+  const config = proxyTickers.getKnownProxyConfig(code);
+  if (config?.market !== 'us' || !config.futuresProxy?.enabled) return false;
+  return marketTime.getUsMarketSession(now) !== 'closed';
 }
 
 /**
@@ -1219,8 +1233,193 @@ async function fetchHoldingsBasedEstimate(code) {
     gztime: gzTime,
     market: detectedMarket,
     estimate: true,                                // 标记这是基于持仓的估算
+    estimateMethod: 'holdings',
     holdingsCount: changes.length,
     officialNavDate: nav.jzrq
+  };
+}
+
+/**
+ * QDII 代理标的估值：当 holdings 数据为空时，按基金名/代码匹配到一个公开 ETF
+ *   （如 QQQ / SPY / KWEB），用其盘中涨跌作为基金的近似估值。
+ *
+ * 适用场景：
+ *   - 040046（华安纳斯达克100ETF联接(QDII)A）— 持仓暂时为空（东财 pingzhongdata stockCodes=[]），
+ *     历史上 040046 跟踪 Invesco QQQ Trust，所以代理 = usQQQ
+ *   - 类似持仓数据暂时下架的 QDII 基金
+ *
+ * 误差：基金相对代理 ETF 的跟踪误差通常 < 1%，比"昨日官方净值"有意义得多。
+ *
+ * 数据源：腾讯 qt.gtimg.cn（项目内已验证可用）。
+ *   曾尝试 Yahoo Finance v7/finance/quote 和 v8/finance/chart，国内网络 403
+ *   稳定复现，已弃用 Yahoo。
+ *
+ * 缓存：60s 内存复用，避免打爆上游。
+ *
+ * 失败兜底：任何解析/网络错误都吞掉异常，返回 null（不污染主路径）。
+ *
+ * @param {string} code 6 位基金代码
+ * @param {string} name 基金名（来自 pingzhongdata / 搜索 / LSJZ）
+ * @param {number} lastNav 昨日官方单位净值（必须 > 0；调用方从 fetchEastMoneyLSJZ 取）
+ * @param {string} navDate  昨日官方净值日期 YYYY-MM-DD
+ * @returns {Promise<FundValuation|null>}
+ */
+async function fetchLegacyProxyTickerValuation(code, name, lastNav, navDate) {
+  if (!(lastNav > 0)) return null;
+
+  const match = proxyTickers.matchProxyTicker(name, code);
+  if (!match) return null;
+
+  const { tencentSymbol, market, tickerLabel, indexName } = match;
+  const now = Date.now();
+
+  // 取代理 ETF 实时涨跌（60s 缓存）
+  let changePct = null;
+  let proxyGzTime = '';
+  const cached = cache.proxyTicker[tencentSymbol];
+  if (cached && (now - cached.timestamp < PROXY_TICKER_TTL)) {
+    changePct = cached.data?.changePct;
+    proxyGzTime = cached.data?.gztime || '';
+  } else {
+    const url = `http://qt.gtimg.cn/q=${tencentSymbol}`;
+    try {
+      const r = await axios.get(url, {
+        responseType: 'arraybuffer',
+        headers: { 'Referer': 'https://gu.qq.com/' },
+        family: 4,
+        timeout: 6000,
+      });
+      const text = iconv.decode(Buffer.from(r.data), 'gbk');
+      // 形如: v_usQQQ="200~纳斯达克100ETF-Invesco~QQQ.OQ~661.73~675.49~...~USD~...~2026-07-29 16:00:01~-13.76~-2.04~..."
+      const m = text.match(/v_([A-Za-z0-9]+)="([^"]+)"/);
+      if (m && m[2]) {
+        const parts = m[2].split('~');
+        // 字段索引（实测对齐 fetchStockCapitalFlow / fetchTencentExtraStockInfo 的腾讯字段定义）：
+        //   parts[1]  名称
+        //   parts[3]  现价
+        //   parts[4]  昨收
+        //   parts[30] 行情时间 YYYY-MM-DD HH:MM:SS（实测 usQQQ 用此索引；hk02800 类似）
+        const price = parseFloat(parts[3]);
+        const prevClose = parseFloat(parts[4]);
+        if (Number.isFinite(price) && price > 0 && Number.isFinite(prevClose) && prevClose > 0) {
+          changePct = ((price - prevClose) / prevClose) * 100;
+        }
+        if (parts[30]) {
+          proxyGzTime = parts[30].replace(/\//g, '-');
+        }
+      }
+    } catch (e) {
+      console.warn(`[proxyTicker] tencent quote ${tencentSymbol} 失败:`, e.message);
+    }
+    // 缓存：失败时缓存 null 以避免短时间内反复打上游
+    cache.proxyTicker[tencentSymbol] = {
+      data: { changePct: Number.isFinite(changePct) ? changePct : null, gztime: proxyGzTime },
+      timestamp: now,
+    };
+  }
+
+  if (!Number.isFinite(changePct)) return null;
+
+  // 用代理 ETF 的涨跌幅，结合昨日官方 NAV，得到基金的近似盘中估值
+  const estimatedGsz = lastNav * (1 + changePct / 100);
+  const gzTime = proxyGzTime || marketTime.formatBeijingYmdHm(new Date());
+
+  return {
+    fundcode: code,
+    name: name || `基金 ${code}`,
+    jzrq: navDate || '',
+    dwjz: lastNav.toFixed(4),
+    gsz: estimatedGsz.toFixed(4),
+    gszzl: changePct.toFixed(2),
+    gztime: gzTime,
+    market,
+    estimate: true,
+    proxyTicker: tickerLabel,    // 暴露给前端，便于显示"代理标的：QQQ"等标注
+    proxyIndexName: indexName,
+    proxyTencentSymbol: tencentSymbol,  // 内部留档，便于调试
+    officialNavDate: navDate,
+  };
+}
+
+/** 腾讯 Qt 代理行情。严格匹配请求的 symbol，避免多标的响应误被错误解析。 */
+function parseTencentQtQuote(text, expectedSymbol) {
+  const escaped = String(expectedSymbol).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(text || '').match(new RegExp(`(?:^|\\n)v_${escaped}="([^"]*)"`));
+  if (!match?.[1]) return null;
+  const parts = match[1].split('~');
+  const price = parseFloat(parts[3]);
+  const prevClose = parseFloat(parts[4]);
+  const quoteTime = String(parts[30] || '').replace(/\//g, '-');
+  // 腾讯 us* 的时间字段是纽约市场本地时间；其它现有腾讯标的按北京时间解析。
+  const quoteTimestamp = String(expectedSymbol).toLowerCase().startsWith('us')
+    ? marketTime.parseUsEasternDateTime(quoteTime)
+    : marketTime.parseBeijingDateTime(quoteTime);
+  const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(prevClose) || prevClose <= 0 || !Number.isFinite(changePct) || Math.abs(changePct) >= 20) return null;
+  return { symbol: expectedSymbol, name: parts[1] || expectedSymbol, price, prevClose, changePct, quoteTime, quoteTimestamp };
+}
+
+async function fetchTencentQtProxyQuote(symbol) {
+  const now = Date.now();
+  const cached = cache.proxyTicker[symbol];
+  if (cached && now - cached.timestamp < PROXY_TICKER_TTL) return cached.data;
+  let quote = null;
+  try {
+    const r = await axios.get(`http://qt.gtimg.cn/q=${encodeURIComponent(symbol)}`, {
+      responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 6000,
+    });
+    quote = parseTencentQtQuote(iconv.decode(Buffer.from(r.data), 'gbk'), symbol);
+  } catch (e) {
+    console.warn(`[proxyTicker] tencent quote ${symbol} 失败:`, e.message);
+  }
+  cache.proxyTicker[symbol] = { data: quote, timestamp: now };
+  return quote;
+}
+
+const PROXY_QUOTE_FRESH_MS = Object.freeze({ regular: 5 * 60 * 1000, postmarket: 10 * 60 * 1000, premarket: 10 * 60 * 1000, overnight: 15 * 60 * 1000 });
+
+function quoteFreshness(quote, session, now = Date.now()) {
+  if (!quote?.quoteTimestamp) return { freshness: 'unknown', ageMs: null };
+  const ageMs = Math.max(0, now - quote.quoteTimestamp);
+  const maxAge = PROXY_QUOTE_FRESH_MS[session] || 0;
+  return { freshness: maxAge && ageMs <= maxAge ? 'fresh' : 'stale', ageMs };
+}
+
+/**
+ * 覆盖前面的兼容实现：仅已注册基金可走代理，且只有新鲜上游报价才生成实时估值。
+ */
+async function fetchProxyTickerValuation(code, name, lastNav, navDate) {
+  if (!(lastNav > 0)) return null;
+  const config = proxyTickers.getKnownProxyConfig(code);
+  if (!config) return null;
+
+  const now = Date.now();
+  const session = config.market === 'us' ? marketTime.getUsMarketSession(new Date(now)) : 'regular';
+  const instruments = proxyTickers.selectProxyInstruments(config, session);
+  let selected = null;
+  let fallbackReason = null;
+  for (const instrument of instruments) {
+    const quote = await fetchTencentQtProxyQuote(instrument.tencentSymbol);
+    const { freshness, ageMs } = quoteFreshness(quote, session, now);
+    if (freshness === 'fresh') {
+      selected = { quote, instrument, freshness, ageMs };
+      break;
+    }
+    fallbackReason = quote ? `${instrument.tickerLabel} 行情${freshness === 'stale' ? '已过期' : '时间未知'}` : `${instrument.tickerLabel} 无可用行情`;
+  }
+  if (!selected) return null;
+
+  const { quote, instrument, freshness, ageMs } = selected;
+  const estimatedGsz = lastNav * (1 + quote.changePct / 100);
+  return {
+    fundcode: code, name: name || `基金 ${code}`, jzrq: navDate || '', dwjz: lastNav.toFixed(4),
+    gsz: estimatedGsz.toFixed(4), gszzl: quote.changePct.toFixed(2), gztime: quote.quoteTime,
+    market: config.market, estimate: true, estimateMethod: instrument.type === 'future' ? 'proxy-futures' : 'proxy-etf',
+    quoteSource: 'tencent-qt', quoteSourceName: `Tencent Qt / ${instrument.tickerLabel}`,
+    quoteSourceSymbol: instrument.tickerLabel, quoteSession: session, quoteTime: quote.quoteTime,
+    quoteTimestamp: quote.quoteTimestamp, quoteAgeMs: ageMs, quoteFreshness: freshness,
+    proxyTicker: instrument.tickerLabel, proxyIndexName: config.label, proxyTencentSymbol: instrument.tencentSymbol,
+    proxyFallbackReason: fallbackReason, officialNavDate: navDate,
   };
 }
 
@@ -1353,6 +1552,16 @@ async function getFundValuation(code, kindOverride) {
           result = null;
         }
       }
+      // 已注册 QDII：普通 fundgz / 新浪基金源只有在 15 分钟内才可视为实时。
+      // 否则让它继续走 LSJZ 基准 → 持仓估算 → 严格指数代理，避免滞后泛源阻断专用路径。
+      if (result && proxyTickers.isKnownProxyFund(code) && !result.estimate && !result.proxyTicker) {
+        const dataTime = marketTime.parseBeijingDateTime(result.gztime);
+        const genericFresh = dataTime != null && now - dataTime >= 0 && now - dataTime <= 15 * 60 * 1000;
+        if (!genericFresh) {
+          console.log(`[fund] ${code} generic source not fresh (${result.gztime || 'no time'}), preferring holdings/proxy`);
+          result = null;
+        }
+      }
       // 第 3 级 fallback：东方财富官方净值
       if (!result) {
         console.log(`[fund] Sina fu_ miss/stale for ${code}, fallback to EastMoney f10/lsjz`);
@@ -1365,6 +1574,21 @@ async function getFundValuation(code, kindOverride) {
         if (estimate) {
           // 优先用估算（实时）覆盖官方净值（滞后）
           result = estimate;
+        }
+      }
+      // 第 5 级 fallback：代理标的（proxy ticker）路径
+      //   适用：东财 pingzhongdata stockCodes 暂时为空、holdings 估算无法执行
+      //   的 QDII 基金（如 040046）。按基金名匹配到公开 ETF（QQQ / SPY ...），
+      //   用 Yahoo Finance 的实时涨跌 × 昨日官方 NAV，得到盘中近似估值。
+      //   误差通常 < 1%，远好于 "navOnly=true" 的昨日净值。
+      if (!result || result.navOnly) {
+        const fundName = result?.name || '';
+        const lastNav = parseFloat(result?.dwjz || '');
+        const navDate = result?.jzrq || '';
+        console.log(`[fund] ${code} trying proxy-ticker estimate`);
+        const proxy = await fetchProxyTickerValuation(code, fundName, lastNav, navDate);
+        if (proxy) {
+          result = proxy;
         }
       }
     }
@@ -1795,8 +2019,9 @@ async function fetchStockQuotes(stockList) {
         });
         const text = iconv.decode(Buffer.from(r.data), 'gbk');
         for (const line of text.split('\n').filter(Boolean)) {
-          // v_sh600519="1~..."  v_hk00700="100~..."  v_usAAPL="200~..."
-          const m = line.match(/v_([a-z0-9]+)="([^"]+)"/);
+          // v_sh600519="1~..."  v_hk00700="100~..."  v_usAAPL="200~..."  v_usQQQ="200~..."
+          // 美股 ticker 含大写字母（如 QQQ），所以字符类必须含 A-Z
+          const m = line.match(/v_([A-Za-z0-9]+)="([^"]+)"/);
           if (!m || !m[2]) continue;          // 腾讯对未知代码返回空串
           const sym = m[1];
           const parts = m[2].split('~');
@@ -2397,10 +2622,14 @@ module.exports = {
   getMarketIndices,
   detectCodeKind,
   isInTradingTime,
+  shouldPollValuationNow,
+  parseTencentQtQuote,
+  fetchTencentQtProxyQuote,
   fetchHKStockValuation,
   fetchUSStockValuation,
   fetchSinaFundValuation,
   fetchASHareStockValuation,
+  fetchProxyTickerValuation,
   fetchStockMinuteData,
   fetchEastMoneyFlowStockInfo,
   fetchEastMoneyDelayFlowStockInfo,

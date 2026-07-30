@@ -579,6 +579,22 @@ app.get('/api/market/fund/:code', async (req, res) => {
   }
 });
 
+// 仅开发诊断：探测腾讯 Qt 候选标的。必须显式开启，且不回传原始上游文本。
+app.get('/api/debug/tencent-quote-probe', async (req, res) => {
+  if (process.env.ENABLE_QUOTE_PROBE !== 'true') return res.status(404).end();
+  const symbol = String(req.query.symbol || '').trim();
+  if (!/^[a-z]{2,5}[A-Za-z0-9._-]{1,20}$/.test(symbol)) {
+    return res.status(400).json({ error: 'symbol 格式不正确' });
+  }
+  try {
+    const quote = await marketHelper.fetchTencentQtProxyQuote(symbol);
+    if (!quote) return res.status(404).json({ valid: false, symbol });
+    res.json({ valid: true, symbol, ...quote });
+  } catch (error) {
+    res.status(502).json({ valid: false, symbol, error: '上游行情获取失败' });
+  }
+});
+
 // 获取某只基金历史单位净值（用于走势图）
 // 场外基金每个交易日只公布一个官方净值，没有分时 K 线
 app.get('/api/market/fund/:code/history', async (req, res) => {
@@ -993,6 +1009,11 @@ async function pollAlerts() {
         // 此时计算出来的 changePct 没有意义，跳过本轮不触发。
         if (fund.navOnly) {
           console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — data source navOnly-only (gsz==dwjz), wait for realtime source`);
+          continue;
+        }
+        // 代理行情的上游时间是事实来源，不能因服务器刚抓到旧报价而触发告警。
+        if (fund.quoteFreshness === 'stale' || fund.quoteFreshness === 'unknown') {
+          console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — proxy quote ${fund.quoteFreshness}`);
           continue;
         }
 

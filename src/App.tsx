@@ -46,6 +46,7 @@ import {
   type WatchlistItem,
 } from './services/api';
 import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
+import { QuoteSourceBadge } from './components/QuoteSourceBadge';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
@@ -776,7 +777,13 @@ function App() {
       // 收盘事件：保留最后一次真实行情；无有效报价时不能用伪造的 0 值覆盖 UI。
       setClosedCodes(prev => ({ ...prev, [code]: info }));
       if (hasUsableQuote && info.lastVal) {
-        const next = { ...fundsDataRef.current, [code]: { ...info.lastVal, capturedAt: info.closedAt } };
+        // 防御：旧服务端或滚动发布期间的 closed 事件不能把代理旧价继续标为“实时”。
+        const closedVal = info.lastVal.quoteTimestamp
+          ? { ...info.lastVal, quoteSession: 'closed' as const, quoteFreshness: 'stale' as const,
+              quoteAgeMs: Math.max(0, info.closedAt - info.lastVal.quoteTimestamp),
+              proxyFallbackReason: info.lastVal.proxyFallbackReason || '交易时段已结束，保留最后有效代理报价' }
+          : info.lastVal;
+        const next = { ...fundsDataRef.current, [code]: { ...closedVal, capturedAt: info.closedAt } };
         fundsDataRef.current = next;
         setFundsData(next);
       }
@@ -1956,7 +1963,7 @@ function App() {
                             <div className="flex items-baseline justify-between pt-1">
                               <div>
                                 <div className="text-[10px] text-slate-400">
-                                  {selfTab === 'stock' ? '现价' : '估算净值'}
+                                  {selfTab === 'stock' ? '现价' : fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '估算净值（滞后）' : '估算净值'}
                                 </div>
                                 <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
                                   {parseFloat(fund.gsz).toFixed(4)}
@@ -1964,6 +1971,7 @@ function App() {
                                     {fund.gztime.split(' ')[1] || fund.gztime}
                                   </span>
                                 </div>
+                                <div className="mt-1 font-sans"><QuoteSourceBadge fund={fund} compact /></div>
                               </div>
 
                               <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
@@ -2019,8 +2027,8 @@ function App() {
                           ) : (
                             <>
                               <th className="p-4 text-right">昨日单位净值</th>
-                              <th className="p-4 text-right">实时估算净值</th>
-                              <th className="p-4 text-right">实时估算涨跌</th>
+                              <th className="p-4 text-right">估算净值</th>
+                              <th className="p-4 text-right">估算涨跌</th>
                             </>
                           )}
                           <th className="p-4 text-right">我的持仓预估</th>
@@ -2111,6 +2119,7 @@ function App() {
                                 <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums">
                                   {parseFloat(fund.gsz).toFixed(4)}
                                   <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
+                                  <div className="mt-1 flex justify-end"><QuoteSourceBadge fund={fund} compact /></div>
                                 </td>
                                 <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
                                   {isUp ? '+' : ''}{changeVal.toFixed(2)}%
