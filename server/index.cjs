@@ -28,7 +28,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.8' });
+  res.json({ status: 'ok', version: '1.3.9' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -1065,8 +1065,8 @@ async function pollAlerts() {
         }
 
         // 发送 + 落库 — 防御性：再次确认非交易时间，防止未来的回归
-        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code)) {
-          console.log(`[alerts] safety-skip #${alert.id} (defensive double-check) at BJT=${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}`);
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, undefined, fund.market)) {
+          console.log(`[alerts] safety-skip #${alert.id} market=${fund.market || 'unknown'} (defensive double-check) at BJT=${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}`);
           continue;
         }
 

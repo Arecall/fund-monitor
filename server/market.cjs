@@ -2036,19 +2036,9 @@ async function getMarketIndices() {
     const lines = text.split('\n');
     const indices = [];
 
-    // 时间状态粗估
+    // 状态与 broker 复用同一套目标交易所时区/session 规则，避免服务器本地时区和 DST 偏差。
     const date = new Date();
-    const hour = date.getHours();
-    const min = date.getMinutes();
-    const day = date.getDay();
-    const isWeekend = day === 0 || day === 6;
-
-    const isChinaTradingTime = !isWeekend && (
-      (hour === 9 && min >= 30) ||
-      (hour > 9 && hour < 11) ||
-      (hour === 11 && min <= 30) ||
-      (hour >= 13 && hour < 15)
-    );
+    const isChinaTradingTime = isInTradingTime('000001', date, 'domestic');
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -2081,19 +2071,9 @@ async function getMarketIndices() {
           if (code.startsWith('s_sh') || code.startsWith('s_sz')) {
             status = isChinaTradingTime ? 'open' : 'closed';
           } else if (code.startsWith('s_hk')) {
-            const isHkTrading = !isWeekend && (
-              (hour === 9 && min >= 30) ||
-              (hour > 9 && hour < 12) ||
-              (hour === 12 && min === 0) ||
-              (hour >= 13 && hour < 16)
-            );
-            status = isHkTrading ? 'open' : 'closed';
+            status = isInTradingTime('00700', date, 'hk') ? 'open' : 'closed';
           } else if (code.startsWith('gb_')) {
-            const isUsTrading = !isWeekend && (
-              (hour >= 21 || hour < 5) ||
-              (hour === 21 && min >= 30)
-            );
-            status = isUsTrading ? 'open' : 'closed';
+            status = isInTradingTime('AAPL', date, 'us') ? 'open' : 'closed';
           }
 
           indices.push({

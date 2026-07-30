@@ -311,7 +311,7 @@ export function FundDetailPanel({
               <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
               实时行情
             </span>
-            <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} className="text-xs" />
+            <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
           </div>
 
           <div className="flex items-baseline gap-3">

@@ -229,8 +229,15 @@ export function deriveMarketStatus(
   const isWeekend = day === 0 || day === 6;
   const min = d.getHours() * 60 + d.getMinutes();
 
-  // 美股 4 阶段判定（盘前/盘中/盘后/夜盘）
+  // 美股 4 阶段判定（盘前/盘中/盘后/夜盘）。交易日必须按纽约日期判断：
+  // 北京周一凌晨仍可能是纽约周日，不能误标为上一交易日盘中。
   if (market === 'us') {
+    const nyWeekday = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', weekday: 'short'
+    }).format(d);
+    if (nyWeekday === 'Sat' || nyWeekday === 'Sun') {
+      return { key: 'offday', label: '美股休市', color: 'text-slate-500', pulse: false, detail: '美股周末休市' };
+    }
     const dst = isUsEasternDst(d);
     // 夏令时: 盘前 16:00-21:30 | 盘中 21:30-04:00(次) | 盘后 04:00-08:00(次) | 夜盘 08:00-16:00
     // 冬令时: 盘前 17:00-22:30 | 盘中 22:30-05:00(次) | 盘后 05:00-09:00(次) | 夜盘 09:00-17:00
@@ -368,11 +375,13 @@ export function MarketStatusBadge({
   gzTs,
   fundName,
   fundCode,
+  market,
   className = ''
 }: {
   gzTs: number;
   fundName?: string;
   fundCode?: string;
+  market?: FundMarket;
   className?: string;
 }) {
   const [now, setNow] = useState(Date.now());
@@ -382,8 +391,8 @@ export function MarketStatusBadge({
     return () => clearInterval(id);
   }, []);
 
-  const market = detectFundMarket(fundName, fundCode);
-  const status = deriveMarketStatus(gzTs, now, market);
+  const resolvedMarket = market || detectFundMarket(fundName, fundCode);
+  const status = deriveMarketStatus(gzTs, now, resolvedMarket);
   const isClosedOrPreopen = status.key === 'closed' || status.key === 'preopen' || status.key === 'lunch' || status.key === 'offday';
 
   return (
@@ -406,7 +415,7 @@ export function MarketStatusBadge({
       )}
       <span>{status.label}</span>
       {isClosedOrPreopen && (
-        <OpenCountdown market={market} prefix="· " className="text-[10px] opacity-80" />
+        <OpenCountdown market={resolvedMarket} prefix="· " className="text-[10px] opacity-80" />
       )}
     </span>
   );

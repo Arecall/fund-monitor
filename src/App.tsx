@@ -832,22 +832,47 @@ function App() {
     // eslint-disable-next-line react-hooks-exhaustive-deps
   }, [currentUser, watchlist.join('|')]);
 
-  // 兜底轮询：仅在 SSE 长时间未推时启用
+  // 兜底轮询：SSE 静默失效时才按对应市场和品种回退 REST，收盘市场不会请求。
   useEffect(() => {
     if (!currentUser) return;
     const timer = setInterval(() => {
-      // 如果 fundsData 在过去 30 秒完全没变（用户已在界面上看到陈旧数据），触发一次兜底拉取
-      // 简单判定：fundsData 的 capturedAt 字段缺失则视为陈旧
+      if (document.visibilityState !== 'visible') return;
       const data = fundsDataRef.current;
-      const isStale = Object.values(data).some((v: any) =>
-        typeof v?.capturedAt === 'number' && Date.now() - v.capturedAt > 30_000
-      );
-      if (isStale) {
-        refreshOneKind('stock');
+      const items = watchlistItemsRef.current;
+      const now = Date.now();
+      const staleKinds = new Set<'stock' | 'fund'>();
+      for (const code of watchlistRef.current) {
+        const item = items.find(w => w.fund_code === code);
+        const kind = item?.kind || 'fund';
+        const value = data[code];
+        const ttl = kind === 'stock' ? 30_000 : 120_000;
+        if (!value || typeof value.capturedAt !== 'number' || now - value.capturedAt > ttl) {
+          staleKinds.add(kind);
+        }
       }
+      staleKinds.forEach(kind => refreshOneKind(kind));
     }, 30_000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks-exhaustive-deps
+  }, [currentUser]);
+
+  // 顶部全球大盘在可见时持续刷新，离开页面时不产生额外请求。
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    const refreshIndices = async () => {
+      if (document.visibilityState !== 'visible') return;
+      const indices = await fetchMarketIndices();
+      if (!cancelled && indices.length > 0) setMarketIndices(indices);
+    };
+    const timer = window.setInterval(refreshIndices, 30_000);
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') void refreshIndices(); };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [currentUser]);
 
   /* ---------- Toast ---------- */

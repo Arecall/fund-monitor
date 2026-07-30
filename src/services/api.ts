@@ -276,7 +276,8 @@ export async function fetchGoldHistory(
 export async function fetchFundValuation(code: string, kind?: 'fund' | 'stock'): Promise<FundValuation | null> {
   try {
     const q = kind ? `?kind=${kind}` : '';
-    return await request(`/api/market/fund/${code}${q}`);
+    const value = await request(`/api/market/fund/${code}${q}`) as FundValuation | null;
+    return value ? { ...value, capturedAt: value.capturedAt ?? Date.now() } : null;
   } catch (error) {
     console.error(`获取基金 ${code} 失败:`, error);
     return null;
