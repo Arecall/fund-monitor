@@ -28,7 +28,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.9' });
+  res.json({ status: 'ok', version: '1.3.10' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -194,24 +194,41 @@ app.get('/api/watchlist', async (req, res) => {
   }
 });
 
-// 添加自选（支持基金 + 个股）
+// 添加自选（支持基金 + 个股）。服务端会验证 Fund tab 提交的场内 ETF，并以交易所路径保存。
 app.post('/api/watchlist', async (req, res) => {
-  const { code, kind, market, sector, note } = req.body || {};
+  const { code: rawCode, kind: requestedKind, market, sector, note } = req.body || {};
+  const code = String(rawCode || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ error: '代码不能为空' });
+  if (!/^(\d{6}|\d{4,5}|[A-Z]{1,5})$/.test(code)) return res.status(400).json({ error: '代码格式不正确' });
 
-  // 100% 严格以添加时的 Tab/请求 kind 为准（默认 'fund'）
-  const isStock = kind === 'stock';
-  const isFund = !isStock;
-
-  // 自动推断 sector
-  let finalSector = sector;
-  if (!finalSector) {
-    if (isStock) finalSector = inferStockSector(code);
-    else finalSector = inferFundSector('');    // name 可能为空，调用方可以 PUT 再更新
-  }
-
-  // 自动推断 market
+  let finalKind = requestedKind === 'stock' ? 'stock' : 'fund';
   let finalMarket = market;
+  let resolvedAs = null;
+  let verifiedQuote = null;
+  const listedCandidate = finalKind === 'fund' &&
+    marketHelper.getMainlandExchangeSymbol(code, { includeListedEtf: true })?.instrumentType === 'listed_etf';
+
+  // 16xxxx 等有歧义代码也必须真实拿到交易所报价才会切换，绝不按前缀盲改。
+  if (listedCandidate) {
+    try {
+      const quote = await marketHelper.getFundValuation(code, 'stock');
+      const price = parseFloat(quote?.gsz);
+      if (quote?.market === 'domestic' && quote?.stockSpecific && Number.isFinite(price) && price > 0) {
+        // Fund tab 只提示正确归属，绝不静默插入或迁移到股票 Tab。
+        return res.json({
+          success: false, added: false, duplicate: false, moved: false,
+          requestedKind: 'fund', expectedKind: 'stock', code, kind: 'fund', market: 'domestic',
+          resolvedAs: 'listed_etf_stock', quote,
+          message: '检测到这是场内 ETF，请切换到股票自选后添加以使用交易所实时行情',
+          prompt: { type: 'listed_etf_wrong_tab', title: '这是场内 ETF', message: '该代码应在「股票」Tab 添加，是否切换并保留代码？' },
+        });
+      } else {
+        resolvedAs = 'listed_etf_candidate_unverified';
+      }
+    } catch {
+      resolvedAs = 'listed_etf_candidate_unverified';
+    }
+  }
   if (!finalMarket) {
     if (/^\d{6}$/.test(code)) finalMarket = 'domestic';
     else if (/^\d{4,5}$/.test(code)) finalMarket = 'hk';
@@ -219,25 +236,31 @@ app.post('/api/watchlist', async (req, res) => {
   }
 
   try {
-    // 自动算出当前最大 sort_order，防止插入 NULL 排序值
-    const orderCol = isFund ? 'fund_sort_order' : 'stock_sort_order';
-    const maxRow = await dbHelper.get(
-      `SELECT COALESCE(MAX(${orderCol}), 0) AS max_order FROM watchlist WHERE user_id = ?`,
-      [req.userId]
-    );
-    const nextOrder = (maxRow?.max_order || 0) + 1;
+    const existing = await dbHelper.get('SELECT kind, market, sector FROM watchlist WHERE user_id = ? AND fund_code = ?', [req.userId, code]);
+    if (existing) {
+      const shouldMove = existing.kind === 'fund' && finalKind === 'stock' && resolvedAs === 'listed_etf_stock';
+      if (shouldMove) {
+        const maxRow = await dbHelper.get('SELECT COALESCE(MAX(stock_sort_order), 0) AS max_order FROM watchlist WHERE user_id = ?', [req.userId]);
+        await dbHelper.run(
+          "UPDATE watchlist SET kind = 'stock', market = 'domestic', stock_sort_order = ? WHERE user_id = ? AND fund_code = ?",
+          [(maxRow?.max_order || 0) + 1, req.userId, code]
+        );
+      }
+      return res.json({ success: true, added: false, duplicate: !shouldMove, moved: shouldMove, requestedKind: requestedKind || 'fund', code, kind: shouldMove ? 'stock' : existing.kind, market: shouldMove ? 'domestic' : existing.market, sector: existing.sector, resolvedAs, quote: verifiedQuote, message: shouldMove ? '检测到场内 ETF，已切换到股票自选并使用交易所实时行情' : `该代码已在${existing.kind === 'stock' ? '股票' : '基金'}自选中` });
+    }
 
+    const finalSector = sector || (finalKind === 'stock' ? inferStockSector(code) : inferFundSector(''));
+    const orderCol = finalKind === 'stock' ? 'stock_sort_order' : 'fund_sort_order';
+    const maxRow = await dbHelper.get(`SELECT COALESCE(MAX(${orderCol}), 0) AS max_order FROM watchlist WHERE user_id = ?`, [req.userId]);
+    const nextOrder = (maxRow?.max_order || 0) + 1;
     await dbHelper.run(
-      `INSERT OR IGNORE INTO watchlist (user_id, fund_code, kind, market, sector, note, fund_sort_order, stock_sort_order)
+      `INSERT INTO watchlist (user_id, fund_code, kind, market, sector, note, fund_sort_order, stock_sort_order)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.userId, code, isFund ? 'fund' : 'stock', finalMarket, finalSector, note || null, isFund ? nextOrder : nextOrder, isFund ? nextOrder : nextOrder]
+      [req.userId, code, finalKind, finalMarket, finalSector, note || null, nextOrder, nextOrder]
     );
-    res.json({
-      success: true,
-      message: isFund ? '成功添加至自选（基金）' : '成功添加至自选（股票）',
-      code, kind: isFund ? 'fund' : 'stock', market: finalMarket, sector: finalSector
-    });
+    res.json({ success: true, added: true, duplicate: false, moved: false, requestedKind: requestedKind || 'fund', code, kind: finalKind, market: finalMarket, sector: finalSector, resolvedAs, quote: verifiedQuote, message: resolvedAs === 'listed_etf_stock' ? '检测到场内 ETF，已添加到股票自选并使用交易所实时行情' : `成功添加至自选（${finalKind === 'stock' ? '股票' : '基金'}）` });
   } catch (error) {
+    console.error('[watchlist] add failed:', error.message);
     res.status(500).json({ error: '添加自选失败' });
   }
 });

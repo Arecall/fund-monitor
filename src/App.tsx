@@ -31,7 +31,6 @@ import {
   addWatchlistItem,
   removeFromWatchlist,
   reorderWatchlist,
-  repairListedEtfWatchlist,
   fetchPositions,
   savePosition,
   removePosition,
@@ -271,6 +270,8 @@ function App() {
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
+  const [listedEtfPrompt, setListedEtfPrompt] = useState<{ code: string; message: string } | null>(null);
+  const preserveCodeOnTabSwitchRef = useRef<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -900,22 +901,8 @@ function App() {
     const generation = sessionGenerationRef.current;
     setLoading(true);
     try {
-      let data = await fetchWatchlist();
+      const data = await fetchWatchlist();
       if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
-
-      // 历史版本可能把场内 ETF 保存为 fund：服务端只会迁移已实际验证到交易所报价的条目。
-      const repair = await repairListedEtfWatchlist();
-      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
-      if (repair.updated > 0) {
-        data = await fetchWatchlist();
-        if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
-        const moved = new Set(repair.updatedCodes);
-        const nextFunds = { ...fundsDataRef.current };
-        moved.forEach(code => delete nextFunds[code]);
-        fundsDataRef.current = nextFunds;
-        setFundsData(nextFunds);
-        showToast(`已修复 ${repair.updated} 个场内 ETF，已切换为实时行情`);
-      }
 
       // 自选先发布：列表会立即用现有 Skeleton 行渲染，首帧报价交给 SSE 回填。
       setWatchlist(data.codes);
@@ -1032,37 +1019,28 @@ function App() {
    * 直接通过名称搜索结果添加：跳过 regex 校验、走带 kind 的拉取
    */
   const addFromSearchResult = async (result: SearchResult) => {
-    if (watchlist.includes(result.code)) {
-      setSearchError('该代码已在自选列表中');
-      setDropdownOpen(false);
-      return;
-    }
     setSearchLoading(true);
     setSearchError('');
     setDropdownOpen(false);
     try {
-      const fund = await fetchFundValuation(result.code, result.kind);
-      if (fund) {
-        const res = await addWatchlistItem({
-          code: result.code,
-          kind: result.kind,
-          market: fund.market as any,
-        });
-        setWatchlist(prev => [...prev, result.code]);
-        setWatchlistItems(prev => [...prev, {
-          fund_code: result.code,
-          kind: result.kind,
-          market: fund.market as any,
-          sector: (res as any).sector,
-          created_at: new Date().toISOString()
-        }]);
-        setFundsData(prev => ({ ...prev, [result.code]: fund }));
-        setNewCode('');
-        setSearchResults([]);
-        showToast(`已订阅${result.kind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
-      } else {
-        setSearchError('未找到该代码，请确认是否正确');
+      const res = await addWatchlistItem({ code: result.code, kind: result.kind, market: result.market });
+      if (!res.success && res.prompt?.type === 'listed_etf_wrong_tab') {
+        setListedEtfPrompt({ code: result.code, message: res.message });
+        return;
       }
+      const finalKind = res.kind;
+      const fund = res.quote || await fetchFundValuation(result.code, finalKind);
+      if (!fund) throw new Error('未找到该代码，请确认是否正确');
+      setWatchlist(prev => prev.includes(result.code) ? prev : [...prev, result.code]);
+      setWatchlistItems(prev => {
+        const item = { fund_code: result.code, kind: finalKind, market: res.market, sector: res.sector, created_at: new Date().toISOString() } as WatchlistItem;
+        const existing = prev.findIndex(x => x.fund_code === result.code);
+        return existing >= 0 ? prev.map((x, i) => i === existing ? { ...x, ...item } : x) : [...prev, item];
+      });
+      setFundsData(prev => ({ ...prev, [result.code]: fund }));
+      setNewCode('');
+      setSearchResults([]);
+      showToast(res.message || `已订阅${finalKind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
     } catch (err: any) {
       setSearchError(err.message || '获取数据失败，请确认代码');
     } finally {
@@ -1101,7 +1079,9 @@ function App() {
     }
     setSearchResults([]);
     setDropdownOpen(false);
-    setNewCode('');
+    const preservedCode = preserveCodeOnTabSwitchRef.current;
+    preserveCodeOnTabSwitchRef.current = null;
+    setNewCode(preservedCode || '');
     setSearchError('');
   }, [selfTab]);
 
@@ -1133,33 +1113,28 @@ function App() {
       setSearchError('请输入 A 股 6 位 / 港股 5 位 / 美股 ticker，或输入中文名搜索');
       return;
     }
-    if (watchlist.includes(code)) {
-      setSearchError('该代码已在自选列表中');
-      return;
-    }
-    // 根据 selfTab 决定 kind（基金/股票）
+    // 根据 selfTab 决定请求分类；后端会验证场内 ETF 后返回最终分类。
     const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
     setSearchLoading(true);
     setSearchError('');
     try {
-      const fund = await fetchFundValuation(code, kind);
-      if (fund) {
-        const res = await addWatchlistItem({
-          code,
-          kind,
-          market: fund.market as any,
-        });
-        setWatchlist(prev => [...prev, code]);
-        setWatchlistItems(prev => [...prev, {
-          fund_code: code, kind,
-          market: fund.market as any, sector: (res as any).sector, created_at: new Date().toISOString()
-        }]);
-        setFundsData(prev => ({ ...prev, [code]: fund }));
-        setNewCode('');
-        showToast(`已订阅${kind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
-      } else {
-        setSearchError('未找到该代码，请确认是否正确');
+      const res = await addWatchlistItem({ code, kind });
+      if (!res.success && res.prompt?.type === 'listed_etf_wrong_tab') {
+        setListedEtfPrompt({ code, message: res.message });
+        return;
       }
+      const finalKind = res.kind;
+      const fund = res.quote || await fetchFundValuation(code, finalKind);
+      if (!fund) throw new Error('未找到该代码，请确认是否正确');
+      setWatchlist(prev => prev.includes(code) ? prev : [...prev, code]);
+      setWatchlistItems(prev => {
+        const item = { fund_code: code, kind: finalKind, market: res.market, sector: res.sector, created_at: new Date().toISOString() } as WatchlistItem;
+        const existing = prev.findIndex(x => x.fund_code === code);
+        return existing >= 0 ? prev.map((x, i) => i === existing ? { ...x, ...item } : x) : [...prev, item];
+      });
+      setFundsData(prev => ({ ...prev, [code]: fund }));
+      setNewCode('');
+      showToast(res.message || `已订阅${finalKind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
     } catch (err: any) {
       setSearchError(err.message || '获取数据失败，请确认代码');
     } finally {
@@ -2229,6 +2204,36 @@ function App() {
         </div>
       </div>
       )}
+
+      <AnimatePresence>
+        {listedEtfPrompt && (
+          <ModalShell key="listed-etf-tab" onDismiss={() => setListedEtfPrompt(null)} ariaLabel="场内 ETF 添加提示">
+            <motion.div
+              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 6 }}
+              transition={SPRING.sheet}
+              className="bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-2xl rounded-[28px] max-w-sm w-full p-6 border border-[var(--hairline-border)] shadow-2xl space-y-4"
+            >
+              <div>
+                <div className="apple-eyebrow text-blue-600 dark:text-blue-400 text-[10px] mb-1">场内交易品种</div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-slate-50">这是场内 ETF</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">{listedEtfPrompt.message}</p>
+                <p className="mt-2 text-xs font-mono text-slate-400">代码：{listedEtfPrompt.code}</p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setListedEtfPrompt(null)} className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl">取消</button>
+                <button onClick={() => {
+                  preserveCodeOnTabSwitchRef.current = listedEtfPrompt.code;
+                  setListedEtfPrompt(null);
+                  setSelfTab('stock');
+                  try { localStorage.setItem('fund_self_tab', 'stock'); } catch {}
+                }} className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl">切换到股票</button>
+              </div>
+            </motion.div>
+          </ModalShell>
+        )}
+      </AnimatePresence>
 
       {/* ─────────────────────────────────────────────────────────────────
          Edit Position Modal — Apple Materialize (scrim + sheet spring in)

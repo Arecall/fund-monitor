@@ -604,13 +604,30 @@ export async function fetchWatchlist(kind?: 'fund' | 'stock'): Promise<{ codes: 
 /**
  * 添加自选（支持基金 + 个股）
  */
+export interface AddWatchlistResult {
+  success: boolean;
+  expectedKind?: 'stock';
+  prompt?: { type: 'listed_etf_wrong_tab'; title: string; message: string };
+  added: boolean;
+  duplicate: boolean;
+  moved: boolean;
+  requestedKind: 'fund' | 'stock';
+  code: string;
+  kind: 'fund' | 'stock';
+  market: 'domestic' | 'hk' | 'us' | 'other';
+  sector?: string;
+  resolvedAs?: 'listed_etf_stock' | 'listed_etf_candidate_unverified' | null;
+  quote?: FundValuation | null;
+  message: string;
+}
+
 export async function addWatchlistItem(params: {
   code: string;
   kind?: 'fund' | 'stock';
   market?: 'domestic' | 'hk' | 'us' | 'other';
   sector?: string;
   note?: string;
-}) {
+}): Promise<AddWatchlistResult> {
   return request('/api/watchlist', { method: 'POST', body: JSON.stringify(params) });
 }
 
