@@ -31,6 +31,7 @@ import {
   addWatchlistItem,
   removeFromWatchlist,
   reorderWatchlist,
+  repairListedEtfWatchlist,
   fetchPositions,
   savePosition,
   removePosition,
@@ -741,7 +742,12 @@ function App() {
     })();
   };
 
-  /** SSE 实时订阅：登录 / 自选变更时自动重新建立连接 */
+  const watchlistSubscriptionKey = useMemo(
+    () => watchlistItems.map(item => `${item.fund_code}:${item.kind}:${item.market || ''}`).join('|'),
+    [watchlistItems]
+  );
+
+  /** SSE 实时订阅：登录 / 自选分类或市场变更时自动重新建立连接 */
   useEffect(() => {
     if (!currentUser) return;
     const codes = watchlistRef.current.map(s => s.trim()).filter(Boolean);
@@ -837,7 +843,7 @@ function App() {
       disposers.forEach(d => d());
     };
     // eslint-disable-next-line react-hooks-exhaustive-deps
-  }, [currentUser, watchlist.join('|')]);
+  }, [currentUser, watchlistSubscriptionKey]);
 
   // 兜底轮询：SSE 静默失效时才按对应市场和品种回退 REST，收盘市场不会请求。
   useEffect(() => {
@@ -894,8 +900,22 @@ function App() {
     const generation = sessionGenerationRef.current;
     setLoading(true);
     try {
-      const data = await fetchWatchlist();
+      let data = await fetchWatchlist();
       if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+
+      // 历史版本可能把场内 ETF 保存为 fund：服务端只会迁移已实际验证到交易所报价的条目。
+      const repair = await repairListedEtfWatchlist();
+      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+      if (repair.updated > 0) {
+        data = await fetchWatchlist();
+        if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+        const moved = new Set(repair.updatedCodes);
+        const nextFunds = { ...fundsDataRef.current };
+        moved.forEach(code => delete nextFunds[code]);
+        fundsDataRef.current = nextFunds;
+        setFundsData(nextFunds);
+        showToast(`已修复 ${repair.updated} 个场内 ETF，已切换为实时行情`);
+      }
 
       // 自选先发布：列表会立即用现有 Skeleton 行渲染，首帧报价交给 SSE 回填。
       setWatchlist(data.codes);

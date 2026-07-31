@@ -57,6 +57,24 @@ function parseJsonp(jsonpStr) {
  *   - 含 "HK"/"hk" 前缀 → 港股
  *   - 含 "US"/"us" 前缀 → 美股
  */
+/**
+ * 解析大陆交易所代码。场内 ETF/LOF 前缀仅在 includeListedEtf=true（用户明确选择股票）
+ * 时生效，避免把普通场外基金自动改走交易所行情。
+ */
+function getMainlandExchangeSymbol(code, { includeListedEtf = false } = {}) {
+  const c = String(code || '').trim().toUpperCase().replace(/^(SH|SZ|BJ)/, '');
+  if (!/^\d{6}$/.test(c)) return null;
+  let exchange = null;
+  let instrumentType = 'stock';
+  if (/^(60|68)/.test(c)) exchange = 'sh';
+  else if (/^(00|30)/.test(c)) exchange = 'sz';
+  else if (/^(8|4)/.test(c)) exchange = 'bj';
+  else if (includeListedEtf && /^(51|52|56|58)/.test(c)) { exchange = 'sh'; instrumentType = 'listed_etf'; }
+  else if (includeListedEtf && /^(15|16)/.test(c)) { exchange = 'sz'; instrumentType = 'listed_etf'; }
+  if (!exchange) return null;
+  return { code: c, exchange, symbol: `${exchange}${c}`, market: exchange === 'bj' ? 'other' : 'domestic', instrumentType };
+}
+
 function detectCodeKind(code) {
   if (!code) return 'unknown';
   const c = code.trim().toUpperCase();
@@ -164,16 +182,9 @@ function shouldPollValuationNow(code, market, kind, now = new Date()) {
  *         bid1(6) | ask1(7) | volume(8) | turnover(9) | ... | date(30) | time(31)
  */
 async function fetchASHareStockValuation(code) {
-  const c = code.toUpperCase();
-  let symbol = c;
-  if (/^\d{6}$/.test(c)) {
-    if (c.startsWith('60') || c.startsWith('68')) symbol = 'sh' + c;
-    else if (c.startsWith('00') || c.startsWith('30')) symbol = 'sz' + c;
-    else if (c.startsWith('8')) symbol = 'bj' + c;
-    else return null;
-  } else {
-    return null;
-  }
+  const resolved = getMainlandExchangeSymbol(code, { includeListedEtf: true });
+  if (!resolved) return null;
+  const { code: c, symbol } = resolved;
   const url = `http://hq.sinajs.cn/list=${symbol.toLowerCase()}`;
   const response = await axios.get(url, {
     responseType: 'arraybuffer',
@@ -185,8 +196,19 @@ async function fetchASHareStockValuation(code) {
   if (!m) return null;
   const parts = m[1].split(',');
   if (parts.length < 32) return null;
-  const name = parts[0];
-  if (!name) return null;
+  const sinaName = parts[0];
+  if (!sinaName) return null;
+  // 场内 ETF 的 Sina 名称通常只是盘口简称（如“半导设备”）。优先复用小时级
+  // 东财基础资料缓存的 fS_name；缓存冷启动仅后台预热，绝不阻塞 10 秒行情循环。
+  let name = sinaName;
+  if (resolved.instrumentType === 'listed_etf') {
+    const basicCached = cache.fundBasic[c];
+    if (basicCached && Date.now() - basicCached.timestamp < FUND_BASIC_TTL && basicCached.data?.name) {
+      name = basicCached.data.name;
+    } else {
+      getFundBasicInfo(c).catch(() => {});
+    }
+  }
   const open = parseFloat(parts[1]);
   const prevClose = parseFloat(parts[2]);
   const current = parseFloat(parts[3]);
@@ -471,10 +493,7 @@ async function fetchTencentExtraStockInfo(code, market) {
 
   let sym;
   if (market === 'domestic') {
-    if (c.startsWith('60') || c.startsWith('68')) sym = 'sh' + c;
-    else if (c.startsWith('00') || c.startsWith('30')) sym = 'sz' + c;
-    else if (c.startsWith('8')) sym = 'bj' + c;
-    else sym = null;
+    sym = getMainlandExchangeSymbol(c, { includeListedEtf: true })?.symbol || null;
   } else if (market === 'hk') {
     sym = 'hk' + c.padStart(5, '0');
   } else if (market === 'us') {
@@ -768,9 +787,7 @@ async function fetchStockMinuteData(code, market) {
     // 1. 优先使用腾讯分钟数据 API（覆盖 A 股、港股、美股，速度快且格式统一）
     let tencentSym = null;
     if (market === 'domestic') {
-      if (c.startsWith('60') || c.startsWith('68')) tencentSym = `sh${c}`;
-      else if (c.startsWith('00') || c.startsWith('30')) tencentSym = `sz${c}`;
-      else if (c.startsWith('8') || c.startsWith('4') || c.startsWith('BJ')) tencentSym = `bj${c.replace('BJ', '')}`;
+      tencentSym = getMainlandExchangeSymbol(c, { includeListedEtf: true })?.symbol || null;
     } else if (market === 'hk') {
       tencentSym = `hk${c.padStart(5, '0')}`;
     } else if (market === 'us') {
@@ -868,10 +885,7 @@ async function fetchStockMinuteData(code, market) {
     }
 
     if (!result && market === 'domestic') {
-      let symbol;
-      if (c.startsWith('60') || c.startsWith('68')) symbol = `sh${c}`;
-      else if (c.startsWith('00') || c.startsWith('30')) symbol = `sz${c}`;
-      else if (c.startsWith('8') || c.startsWith('BJ')) symbol = `bj${c}`;
+      const symbol = getMainlandExchangeSymbol(c, { includeListedEtf: true })?.symbol || null;
 
       if (symbol) {
         const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&datalen=240`;
@@ -1044,9 +1058,9 @@ async function fetchStockKLineHistory(code, days = 30) {
   // 2. A股/港股，或美股 Yahoo 失败时的降级路径：腾讯 AppStock K线接口
   let symbol, url;
   if (/^\d{6}$/.test(c)) {
-    if (c.startsWith('60') || c.startsWith('68')) { symbol = 'sh' + c; }
-    else if (c.startsWith('00') || c.startsWith('30')) { symbol = 'sz' + c; }
-    else return [];
+    const resolved = getMainlandExchangeSymbol(c, { includeListedEtf: true });
+    if (!resolved) return [];
+    symbol = resolved.symbol;
     url = 'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
   } else if (isUS) {
     symbol = 'us.' + c.toUpperCase();
@@ -1473,7 +1487,9 @@ async function fetchSinaFundValuation(code) {
  */
 async function getFundValuation(code, kindOverride) {
   const now = Date.now();
-  const cached = cache.fund[code];
+  // 同一 6 位代码可被明确按 stock 或 fund 路由，缓存不能跨路径复用。
+  const cacheKey = `${kindOverride || 'auto'}:${String(code).toUpperCase()}`;
+  const cached = cache.fund[cacheKey];
   if (cached && (now - cached.timestamp < FUND_CACHE_TTL)) {
     return cached.data;
   }
@@ -1532,8 +1548,9 @@ async function getFundValuation(code, kindOverride) {
         }
       } catch {}
 
-      // 仅在 fundgz 未命中时，尝试测试是否为 A 股个股（如深市 002050）
-      if (!result) {
+      // 仅在默认已识别为 A 股个股时探测交易所报价。场内 ETF 必须由显式 kind=stock
+      // 进入该路径，避免 Fund tab 的普通基金被无声改成交易所价格语义。
+      if (!result && detectCodeKind(code) === 'stock_a') {
         try {
           result = await fetchASHareStockValuation(code);
           if (result) console.log(`[fund] ${code} matched as A-share stock (fundgz miss, Sina fallback)`);
@@ -1615,7 +1632,7 @@ async function getFundValuation(code, kindOverride) {
           } catch {}
         }
       }
-      cache.fund[code] = { data: result, timestamp: now };
+      cache.fund[cacheKey] = { data: result, timestamp: now };
       return result;
     }
   } catch (error) {
@@ -2621,6 +2638,7 @@ module.exports = {
   getFundHoldings,
   getMarketIndices,
   detectCodeKind,
+  getMainlandExchangeSymbol,
   isInTradingTime,
   shouldPollValuationNow,
   parseTencentQtQuote,

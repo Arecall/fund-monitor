@@ -618,6 +618,25 @@ export async function updateWatchlistItem(code: string, params: { sector?: strin
   return request(`/api/watchlist/${code}`, { method: 'PATCH', body: JSON.stringify(params) });
 }
 
+export interface ListedEtfRepairResult {
+  success: boolean;
+  applied: boolean;
+  scanned: number;
+  candidates: number;
+  verified: number;
+  updated: number;
+  updatedCodes: string[];
+  skipped: Array<{ code: string; reason: string }>;
+}
+
+/** 修复旧版本中误归为基金的、已通过交易所报价验证的场内 ETF。 */
+export async function repairListedEtfWatchlist(): Promise<ListedEtfRepairResult> {
+  return request('/api/watchlist/repair-listed-etfs', {
+    method: 'POST',
+    body: JSON.stringify({ apply: true }),
+  });
+}
+
 /**
  * 拖动排序：把指定 kind 下的 codes 数组批量持久化为新的 sort_order
  * 服务端单事务原子写入；调用失败时调用方应回滚本地顺序。

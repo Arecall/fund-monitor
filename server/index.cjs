@@ -242,6 +242,59 @@ app.post('/api/watchlist', async (req, res) => {
   }
 });
 
+// 修复历史版本错误归类的场内 ETF：仅当前用户、仅原 fund 条目、仅在真实交易所报价验证成功后切换。
+app.post('/api/watchlist/repair-listed-etfs', async (req, res) => {
+  const apply = req.body?.apply !== false;
+  try {
+    const rows = await dbHelper.all(
+      `SELECT fund_code, kind, market FROM watchlist
+       WHERE user_id = ? AND kind = 'fund' AND fund_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+         AND (market IS NULL OR market = '' OR market = 'domestic')`,
+      [req.userId]
+    );
+    const candidates = rows.filter(row =>
+      marketHelper.getMainlandExchangeSymbol(row.fund_code, { includeListedEtf: true })?.instrumentType === 'listed_etf'
+    );
+    const verified = [];
+    const skipped = [];
+    for (const row of candidates) {
+      try {
+        const quote = await marketHelper.getFundValuation(row.fund_code, 'stock');
+        const price = parseFloat(quote?.gsz);
+        if (quote?.market === 'domestic' && quote?.stockSpecific && Number.isFinite(price) && price > 0) {
+          verified.push(row.fund_code);
+        } else {
+          skipped.push({ code: row.fund_code, reason: 'exchange_quote_unavailable' });
+        }
+      } catch {
+        skipped.push({ code: row.fund_code, reason: 'exchange_quote_failed' });
+      }
+    }
+    let updated = 0;
+    if (apply && verified.length) {
+      await dbHelper.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const code of verified) {
+          const result = await dbHelper.run(
+            `UPDATE watchlist SET kind = 'stock', market = 'domestic'
+             WHERE user_id = ? AND fund_code = ? AND kind = 'fund'`,
+            [req.userId, code]
+          );
+          updated += result.changes || 0;
+        }
+        await dbHelper.db.exec('COMMIT');
+      } catch (error) {
+        await dbHelper.db.exec('ROLLBACK');
+        throw error;
+      }
+    }
+    res.json({ success: true, applied: apply, scanned: rows.length, candidates: candidates.length, verified: verified.length, updated, updatedCodes: apply ? verified : [], skipped });
+  } catch (error) {
+    console.error('[watchlist] repair listed ETFs failed:', error.message);
+    res.status(500).json({ error: '修复场内 ETF 分类失败' });
+  }
+});
+
 // 更新自选条目（用于设置 sector / note 等）
 app.patch('/api/watchlist/:code', async (req, res) => {
   const { code } = req.params;
@@ -362,7 +415,7 @@ app.get('/api/sectors/breakdown', async (req, res) => {
     const items = [];
     for (const w of watchRows) {
       try {
-        const fund = await marketHelper.getFundValuation(w.fund_code);
+        const fund = await marketHelper.getFundValuation(w.fund_code, w.kind || 'fund');
         if (!fund) continue;
         const pos = posMap[w.fund_code];
         const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
