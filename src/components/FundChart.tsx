@@ -216,30 +216,27 @@ export function FundChart({
 
   // 均价折线（VWAP — 成交量加权均价），参考东方财富/同花顺分时图：
   //   VWAP[t] = Σ(price[i] × volume[i]) / Σ(volume[i])   for i ≤ t
-  // 分时 ('intraday') 和 1日 ('1D') 维度均使用 VWAP；若缺失 volume 数据，回退为价格的算术累积均值。
+  // 分时 ('intraday') 和 1日 ('1D') 维度均使用 VWAP；仅当存在真实逐分钟 volume 时才绘制，
+  // 否则整条线不渲染——基金等没有分时 volume 的数据，算术均值会被误当成"均价"。
   const vwapSeries = useMemo(() => {
     if ((range !== 'intraday' && range !== '1D') || points.length < 2) {
       return { path: '', last: 0, perPoint: [] as number[] };
     }
 
-    const vwaps: number[] = new Array(points.length);
+    // 没有真实逐分钟 volume → 不画均价线
     const hasVol = points.some(p => typeof p.volume === 'number' && p.volume > 0);
+    if (!hasVol) {
+      return { path: '', last: 0, perPoint: [] as number[] };
+    }
 
-    if (hasVol) {
-      let pvSum = 0;
-      let vSum = 0;
-      for (let i = 0; i < points.length; i++) {
-        const vol = points[i].volume || 1;
-        pvSum += points[i].v * vol;
-        vSum += vol;
-        vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
-      }
-    } else {
-      let pSum = 0;
-      for (let i = 0; i < points.length; i++) {
-        pSum += points[i].v;
-        vwaps[i] = pSum / (i + 1);
-      }
+    const vwaps: number[] = new Array(points.length);
+    let pvSum = 0;
+    let vSum = 0;
+    for (let i = 0; i < points.length; i++) {
+      const vol = points[i].volume || 1;
+      pvSum += points[i].v * vol;
+      vSum += vol;
+      vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
     }
 
     const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));

@@ -5,7 +5,8 @@
  * 场外公募基金每个交易日只有 1 个官方净值，没有分时 K 线：
  *   - 1D / 1W / 1M → 真实日净值（来自天天基金 Lsjz 接口）
  *   - 分时（intraday）→ 起点=昨日真实 dwjz，终点=今日 gsz（实时估算），
- *                       中间用平滑插值生成连续曲线，并标注为"估算"
+ *                       两者之间用等时间间隔直线相连（仅反映累计涨跌，
+ *                       不伪造随机游走），并标注为"估算"
  *
  * 走势图的时段按 `market` 切换（决定曲线起止时间），X 轴标签**统一用北京时间**。
  *   - A 股：09:30 - 15:00（北京时间）
@@ -75,40 +76,31 @@ function hashCode(s: string) {
 }
 
 /**
- * Mean-reverting random walk around the linear trend. The walk drifts toward
- * the linear interpolation each step (so it stays anchored on the trend) plus
- * a small jitter. This keeps both directions of fluctuation visible:
- *   - UP trend: line goes from prev → current but you still see mid-day dips below prev
- *   - DOWN trend: line goes from prev → current but you still see mid-day rises above prev
- *
- * (Previously the old multiplicative-walk + bias logic produced negative scales
- *  when the random walk happened to go opposite the desired span — flipping the
- *  walk and erasing the "below prev / above prev" data.)
+ * 场外基金分时专用：无真实分钟 K 线，用真实锚点（昨收/今开 → 当前实时估值）
+ * 生成等时间间隔的直线。不做随机游走插值——中间值只有线性趋势，
+ * 避免把伪造的随机抖动误读为真实盘中走势。
  */
-function interpolate(
+function buildFundIntradayLine(
   startValue: number,
   endValue: number,
-  steps: number,
-  volatility: number,
-  rand: () => number
-): number[] {
-  const series: number[] = new Array(steps);
-  const span = endValue - startValue;
-  const jitterScale = startValue * volatility * 8; // 抖幅 ≈ ±0.5% of baseline per step
-  const revertRate = 0.18;                         // 多少比例拉向线性趋势（每步）
-
-  series[0] = startValue;
-  for (let i = 1; i < steps; i++) {
-    const linearHere = startValue + span * (i / (steps - 1));
-    const shock = (rand() - 0.5) * 2 * jitterScale;
-    const drift = (linearHere - series[i - 1]) * revertRate;
-    series[i] = series[i - 1] + drift + shock;
+  startTs: number,
+  endTs: number
+): ChartPoint[] {
+  const minutes = Math.max(2, Math.round((endTs - startTs) / 60_000));
+  const n = Math.min(minutes, 480);
+  const pts: ChartPoint[] = [];
+  for (let i = 0; i < n; i++) {
+    const ratio = i / (n - 1);
+    pts.push({
+      t: startTs + ratio * (endTs - startTs),
+      v: startValue + (endValue - startValue) * ratio,
+      real: i === 0,
+    });
   }
-
-  // 强制端点对齐到精确 startValue / endValue
-  series[0] = startValue;
-  series[steps - 1] = endValue;
-  return series;
+  // 起点为真实昨收/今开；终点为当前实时估值（real:false → 触发右侧脉冲动画）
+  pts[0] = { t: startTs, v: startValue, real: true };
+  pts[pts.length - 1] = { t: endTs, v: endValue, real: false };
+  return pts;
 }
 
 /**
@@ -366,51 +358,53 @@ export function buildSeries(
           }
         }
       } else {
-        const steps = 240;
-        let series: number[];
+        // 无真实分钟数据时的兜底：
+        //   - 股票且已知真实盘中区间 [low, high]：在区间内生成"有涨跌"的合成曲线
+        //     （仅曲线形状为合成，起终点与区间边界是真实的）
+        //   - 其余情况（场外基金、无盘中区间的股票）：画"昨收/今开 → 今价"的诚实直线，
+        //     不做随机游走插值——场外基金没有分钟级数据，伪造的抖动会被误读为真实盘中走势
         if (useStockAnchor && highPrice && lowPrice && highPrice > lowPrice) {
-          series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
-        } else {
-          series = interpolate(startValue, current, steps, 0.0006, rand);
-        }
-        // 合成数据时仍用权重让 hover 不同位置看到不同数字
-        const totalMinutes = (endTs - startTs) / 60_000;
-        const weightRand = mulberry32(hashCode(code + 'vw-' + range));
-        const weights: number[] = new Array(steps);
-        let weightSum = 0;
-        for (let i = 0; i < steps; i++) {
-          const minute = (i / (steps - 1)) * totalMinutes;
-          let timeFactor = 1.0;
-          if (minute < 30) timeFactor = 1.6;
-          else if (minute > totalMinutes - 30) timeFactor = 1.5;
-          else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5;
-          const noise = 0.3 + weightRand() * 1.4;
-          const w = timeFactor * noise;
-          weights[i] = w;
-          weightSum += w;
-        }
-        const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
-        const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
+          const steps = 240;
+          const series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
+          // 合成数据时仍用权重让 hover 不同位置看到不同数字
+          const totalMinutes = (endTs - startTs) / 60_000;
+          const weightRand = mulberry32(hashCode(code + 'vw-' + range));
+          const weights: number[] = new Array(steps);
+          let weightSum = 0;
+          for (let i = 0; i < steps; i++) {
+            const minute = (i / (steps - 1)) * totalMinutes;
+            let timeFactor = 1.0;
+            if (minute < 30) timeFactor = 1.6;
+            else if (minute > totalMinutes - 30) timeFactor = 1.5;
+            else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5;
+            const noise = 0.3 + weightRand() * 1.4;
+            const w = timeFactor * noise;
+            weights[i] = w;
+            weightSum += w;
+          }
+          const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
+          const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
 
-        points = series.map((v, i) => {
-          const ratio = i / (steps - 1);
-          const point: ChartPoint = {
-            t: startTs + ratio * (endTs - startTs),
-            v,
-          };
-          if (isStock) {
+          points = series.map((v, i) => {
+            const ratio = i / (steps - 1);
+            const point: ChartPoint = {
+              t: startTs + ratio * (endTs - startTs),
+              v,
+            };
             if (volPerWeight > 0) point.volume = volPerWeight * weights[i];
             if (turnPerWeight > 0) point.turnover = turnPerWeight * weights[i];
+            return point;
+          });
+          if (points.length > 0) {
+            const firstVol = points[0].volume;
+            const firstTurn = points[0].turnover;
+            const lastVol = points[points.length - 1].volume;
+            const lastTurn = points[points.length - 1].turnover;
+            points[0] = { t: startTs, v: startValue, real: true, volume: firstVol, turnover: firstTurn };
+            points[points.length - 1] = { t: endTs, v: current, real: true, volume: lastVol, turnover: lastTurn };
           }
-          return point;
-        });
-        if (points.length > 0) {
-          const firstVol = points[0].volume;
-          const firstTurn = points[0].turnover;
-          const lastVol = points[points.length - 1].volume;
-          const lastTurn = points[points.length - 1].turnover;
-          points[0] = { t: startTs, v: startValue, real: true, volume: firstVol, turnover: firstTurn };
-          points[points.length - 1] = { t: endTs, v: current, real: true, volume: lastVol, turnover: lastTurn };
+        } else {
+          points = buildFundIntradayLine(startValue, current, startTs, endTs);
         }
       }
     }
@@ -418,8 +412,8 @@ export function buildSeries(
       ? `分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
       : '分时曲线为基于昨日收盘与今日实时行情的插值（仅供趋势参考）';
     const fundNote = market === 'us'
-      ? `场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
-      : '场外基金无分时 K 线，曲线为基于昨日收盘与今日实时估值的插值（仅供趋势参考）';
+      ? `场外基金无分时 K 线，直线连接昨日收盘与当前实时估值（仅反映累计涨跌，非分钟级走势）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
+      : '场外基金无分时 K 线，直线连接昨日收盘与当前实时估值（仅反映累计涨跌，非分钟级走势）';
 
     return {
       points,

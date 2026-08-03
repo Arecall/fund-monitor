@@ -151,11 +151,30 @@ async function sendViaSmtp({ cfg, from, to, subject, html }) {
 
 /* ─────── Dev mode 邮件模板 ─────── */
 
-function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, currentPrice, referencePrice }) {
+function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, currentPrice, referencePrice, openPrice }) {
   const dirText = direction === 'up' ? '上涨' : '下跌';
   const dirColor = direction === 'up' ? '#ff453a' : '#30d158';
   const dirBg = direction === 'up' ? '#fff1f0' : '#f0fff4';
   const dirBorder = direction === 'up' ? '#ffccc7' : '#b7eb8f';
+
+  // 相对开盘价的累计涨跌
+  const op = typeof openPrice === 'number' && Number.isFinite(openPrice) && openPrice > 0 ? openPrice : referencePrice;
+  const cumDiff = currentPrice - op;
+  const cumPct = op > 0 ? (cumDiff / op) * 100 : 0;
+
+  let cumText = '';
+  let cumColor = '#1d1d1f';
+  if (cumDiff > 0) {
+    cumText = `累计涨 +${cumDiff.toFixed(4)} (+${cumPct.toFixed(2)}%)`;
+    cumColor = '#ff453a';
+  } else if (cumDiff < 0) {
+    cumText = `累计跌 -${Math.abs(cumDiff).toFixed(4)} (-${Math.abs(cumPct).toFixed(2)}%)`;
+    cumColor = '#30d158';
+  } else {
+    cumText = `累计平 0.0000 (0.00%)`;
+    cumColor = '#86868b';
+  }
+
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${dirText}提醒</title></head>
 <body style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f5f7;padding:24px;margin:0;">
@@ -171,8 +190,10 @@ function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, cur
     </div>
   </div>
   <table style="width:100%;margin-top:16px;border-collapse:collapse;font-size:13px;">
-    <tr><td style="color:#86868b;padding:6px 0;">最新净值</td><td style="text-align:right;font-family:monospace;font-weight:600;color:#1d1d1f;padding:6px 0;">${currentPrice.toFixed(4)}</td></tr>
-    <tr><td style="color:#86868b;padding:6px 0;">基准净值</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${referencePrice.toFixed(4)}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">最新价格</td><td style="text-align:right;font-family:monospace;font-weight:600;color:#1d1d1f;padding:6px 0;">${currentPrice.toFixed(4)}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">开盘价格</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${op.toFixed(4)}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">较开盘涨跌</td><td style="text-align:right;font-family:monospace;font-weight:600;color:${cumColor};padding:6px 0;">${cumText}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">基准参考价</td><td style="text-align:right;font-family:monospace;color:#86868b;padding:6px 0;">${referencePrice.toFixed(4)}</td></tr>
     <tr><td style="color:#86868b;padding:6px 0;">触发时间</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</td></tr>
   </table>
   <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f0f0f0;font-size:11px;color:#86868b;">
@@ -190,7 +211,7 @@ function escapeHtml(s) {
 /* ─────── 公共发送入口 ─────── */
 
 async function sendAlertEmail({
-  to, fundCode, fundName, direction, changePct, currentPrice, referencePrice
+  to, fundCode, fundName, direction, changePct, currentPrice, referencePrice, openPrice
 }) {
   const cfg = await loadConfig();
   const mode = effectiveMode(cfg);
@@ -201,7 +222,7 @@ async function sendAlertEmail({
     appName: cfg.appName,
     fundName: escapeHtml(fundName),
     fundCode,
-    direction, changePct, currentPrice, referencePrice
+    direction, changePct, currentPrice, referencePrice, openPrice
   });
 
   /* ── dev mode: 直接 console.log 完整邮件 ── */

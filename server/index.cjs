@@ -28,7 +28,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.10' });
+  res.json({ status: 'ok', version: '1.3.11' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -981,7 +981,8 @@ app.post('/api/alerts/test-email', async (req, res) => {
       direction: 'up',
       changePct: 0.01,
       currentPrice: 1.0000,
-      referencePrice: 1.0000
+      referencePrice: 1.0000,
+      openPrice: 0.9900
     });
     res.json({
       success: true,
@@ -1169,6 +1170,7 @@ async function pollAlerts() {
 
         // 计算本轮邮件里展示用的"参考价"（用户在邮件里看到的是相对哪个值的涨跌）
         const displayRef = triggered === 'up' ? highWater : lowWater;
+        const openPrice = (fund.open ? parseFloat(fund.open) : undefined) || (fund.stockSpecific && typeof fund.stockSpecific.open === 'number' ? fund.stockSpecific.open : undefined) || parseFloat(fund.dwjz) || displayRef;
 
         const sendResult = await mailer.sendAlertEmail({
           to: alert.email,
@@ -1177,7 +1179,8 @@ async function pollAlerts() {
           direction: triggered,
           changePct,
           currentPrice: current,
-          referencePrice: displayRef
+          referencePrice: displayRef,
+          openPrice
         }).catch(e => ({ error: e.message, messageId: null, previewUrl: null }));
 
         const nowIso = new Date().toISOString();
