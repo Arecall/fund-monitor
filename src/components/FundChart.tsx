@@ -26,11 +26,11 @@ const RANGES: { key: RangeKey; label: string }[] = [
 
 // Apple design fluid interface springs — critically damped by default (bounce 0).
 // Reserve slight overshoot only for momentum-driven interactions (hover flick).
-const SPRING_TAB  = { type: 'spring' as const, bounce: 0,    duration: 0.36 };  // default UI spring (no overshoot)
-const SPRING_FLIP = { type: 'spring' as const, bounce: 0.12, duration: 0.32 };  // layoutId pill — small bounce on commit
-const SPRING_DRAW = { type: 'spring' as const, bounce: 0,    duration: 0.55 };  // line path draw
-const SPRING_FILL = { type: 'spring' as const, bounce: 0,    duration: 0.6  };  // area mask-reveal (slightly slower than line)
-const SPRING_HOVER= { type: 'spring' as const, bounce: 0.15, duration: 0.22 };  // hover dot — slight overshoot OK (momentum)
+const SPRING_TAB   = { type: 'spring' as const, bounce: 0,    duration: 0.36 };  // default UI spring (no overshoot)
+const SPRING_FLIP  = { type: 'spring' as const, bounce: 0.12, duration: 0.32 };  // layoutId pill — small bounce on commit
+const SPRING_DRAW  = { type: 'spring' as const, stiffness: 100, damping: 20, mass: 0.8 }; // Apple fluid stroke draw
+const SPRING_FILL  = { type: 'spring' as const, stiffness: 85,  damping: 19, mass: 0.9 }; // Area sweep reveal
+const SPRING_HOVER = { type: 'spring' as const, bounce: 0.15, duration: 0.22 };  // hover dot — slight overshoot OK (momentum)
 
 interface FundChartProps {
   fundCode: string;
@@ -401,6 +401,9 @@ export function FundChart({
     : (!isCurrentlyOpen && range === 'intraday' && series.preMarket);
   const showLines = !isPreMarketState;
 
+  // 动态 Key 用于在切换基金、时间范围或点集变动时触发 Apple 经典流体笔触描边/面积揭示动画
+  const animKey = `${fundCode}-${range}-${points.length}-${points[points.length - 1]?.v ?? 0}`;
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
@@ -634,16 +637,16 @@ export function FundChart({
             />
           )}
 
-          {/* 面积填充：从下往上渐变（底浓顶淡），clipPath mask-reveal 动画 */}
+          {/* 面积填充：从左至右横向流体揭示（Apple Fluid Sweep Reveal），跟随折线笔触展开 */}
           <defs>
-            <clipPath id="fundChartAreaReveal">
+            <clipPath id={`fundChartAreaReveal-${fundCode}`}>
               <motion.rect
-                key={`area-reveal-${range}`}
+                key={`area-reveal-${animKey}`}
                 x={padding.left}
                 y={padding.top}
-                width={innerW}
-                initial={prefersReducedMotion ? false : { height: 0 }}
-                animate={{ height: innerH }}
+                height={innerH}
+                initial={prefersReducedMotion ? false : { width: 0 }}
+                animate={{ width: innerW }}
                 transition={SPRING_FILL}
               />
             </clipPath>
@@ -651,18 +654,18 @@ export function FundChart({
           {showLines && (
             <>
               <motion.path
-                key={`area-${range}`}
+                key={`area-${animKey}`}
                 d={areaPath}
                 fill={`url(#${colorId})`}
-                clipPath="url(#fundChartAreaReveal)"
+                clipPath={`url(#fundChartAreaReveal-${fundCode})`}
                 initial={prefersReducedMotion ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ type: 'spring' as const, bounce: 0, duration: 0.5 }}
+                transition={{ type: 'spring' as const, bounce: 0, duration: 0.4 }}
               />
 
-              {/* Line glow — 柔光层（高斯模糊）让线条有"发光"质感 */}
+              {/* Line glow — 柔光层（高斯模糊）带笔触动画 */}
               <motion.path
-                key={`line-glow-${range}`}
+                key={`line-glow-${animKey}`}
                 d={smoothLinePath}
                 fill="none"
                 stroke={colorVar}
@@ -673,12 +676,12 @@ export function FundChart({
                 filter="url(#lineGlow)"
                 initial={prefersReducedMotion ? false : { pathLength: 0 }}
                 animate={{ pathLength: 1 }}
-                transition={{ ...SPRING_DRAW, duration: 0.7 }}
+                transition={{ ...SPRING_DRAW, duration: 0.6 }}
               />
 
-              {/* Line — 用平滑曲线（Catmull-Rom），纯色 + 下方柔光层营造发光质感 */}
+              {/* Line — Apple 经典的物理弹簧笔触（Path Length Sweep Draw） */}
               <motion.path
-                key={`line-${range}`}
+                key={`line-${animKey}`}
                 d={smoothLinePath}
                 fill="none"
                 stroke={colorVar}
@@ -688,7 +691,7 @@ export function FundChart({
                 initial={
                   prefersReducedMotion
                     ? false
-                    : { pathLength: 0, opacity: 0 }
+                    : { pathLength: 0, opacity: 0.2 }
                 }
                 animate={{ pathLength: 1, opacity: 1 }}
                 transition={SPRING_DRAW}
@@ -731,10 +734,9 @@ export function FundChart({
             />
           )}
 
-          {/* Real data points — visible dots only on real daily closes.
-              Skipped during intraday (every interpolated minute would be
-              a dot, which is noise). */}
-          {series.source !== 'estimated' && points.map((p, i) => {
+          {/* Real data points — visible dots ONLY on daily closes (1D / 1W / 1M).
+              STRICTLY skipped during intraday to ensure no intermediate dots are drawn on the intraday line. */}
+          {range !== 'intraday' && points.map((p, i) => {
             if (!p.real) return null;
             return (
               <motion.circle
@@ -753,20 +755,17 @@ export function FundChart({
             );
           })}
 
-          {/* Today's live tick — emphasized ring on the rightmost point.
-              盘前时跳过脉冲动画：gsz 与昨日 dwjz 相等，脉冲暗示"实时跳动"是误导。
-              静态中心点由曲线已能看见，所以这里直接不渲染。 */}
-          {points.length > 0 && !series.preMarket && (() => {
+          {/* Today's live tick — emphasized ring ONLY on the rightmost (latest) point during intraday. */}
+          {range === 'intraday' && points.length > 0 && !isPreMarketState && (() => {
             const last = points[points.length - 1];
-            if (last.real) return null;
             const lx = x(points.length - 1);
             const ly = y(last.v);
             return (
               <motion.g
-                key="live-tick"
-                initial={prefersReducedMotion ? false : { scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={SPRING_TAB}
+                key={`live-tick-${animKey}`}
+                initial={prefersReducedMotion ? false : { scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring' as const, stiffness: 220, damping: 16, delay: prefersReducedMotion ? 0 : 0.3 }}
                 style={{ transformOrigin: `${lx}px ${ly}px` }}
               >
                 <motion.circle
