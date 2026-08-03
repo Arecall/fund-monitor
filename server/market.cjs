@@ -2,6 +2,7 @@ const axios = require('axios');
 const iconv = require('iconv-lite');
 const marketTime = require('./time.cjs');
 const proxyTickers = require('./proxy-tickers.cjs');
+const dbHelper = require('./db.cjs');
 
 // 内存缓存字典，避免短时间内高频轮询打爆天天基金和新浪接口
 // 结构: { key: { data, timestamp } }
@@ -912,12 +913,70 @@ async function fetchStockMinuteData(code, market) {
         }
       }
     }
+
+    // 3. Fallback：从系统打点快照（quote_snapshots）读取今日记录的真实估值轨迹（适用于场外基金等）
+    if (!result || result.length === 0) {
+      result = await fetchSnapshotMinuteData(code);
+    }
   } catch (e) {
     console.warn(`[minute] ${c} (${market}) 获取异常:`, e.message);
   }
 
   _minuteCache[cacheKey] = { ts: now, data: result };
   return result;
+}
+
+/**
+ * 从 SQLite quote_snapshots 读取系统今日抓取的真实快照数据（按时间升序）
+ * 适合场外基金或无传统 K 线的品种，用于前端 0 伪造绘制真实盘中变动轨迹
+ */
+async function fetchSnapshotMinuteData(code) {
+  try {
+    const c = String(code).toUpperCase();
+    const ymd = marketTime.formatBeijingYmd(new Date());
+    const dayStartTs = Date.parse(`${ymd}T00:00:00+08:00`);
+
+    const rows = await dbHelper.all(
+      `SELECT captured_at, gztime, current, pct FROM quote_snapshots
+       WHERE (code = ? OR code = ?) AND captured_at >= ?
+       ORDER BY captured_at ASC`,
+      [code, c, dayStartTs - 12 * 3600 * 1000]
+    );
+
+    if (!rows || rows.length === 0) return null;
+
+    const points = [];
+    let lastTimeStr = '';
+    for (const r of rows) {
+      if (typeof r.current !== 'number' || !Number.isFinite(r.current) || r.current <= 0) continue;
+
+      const d = new Date(r.captured_at);
+      const timeStr = marketTime.formatBeijingYmdHm(d) + ':00';
+
+      // 去重：同 10 秒以内的重复打点更新覆盖
+      const timeKey = timeStr.slice(0, 18);
+      const item = {
+        time: timeStr,
+        open: r.current,
+        high: r.current,
+        low: r.current,
+        close: r.current,
+        volume: 0,
+        amount: 0
+      };
+      if (timeKey === lastTimeStr && points.length > 0) {
+        points[points.length - 1] = item;
+      } else {
+        lastTimeStr = timeKey;
+        points.push(item);
+      }
+    }
+
+    return points.length > 0 ? points : null;
+  } catch (e) {
+    console.warn(`[snapshotMinute] ${code} fetch failed:`, e.message);
+    return null;
+  }
 }
 
 /**
@@ -1495,7 +1554,7 @@ async function getFundValuation(code, kindOverride) {
   }
 
   // 前端可指定 kind（按 tab 强制走某条路径）；否则按 code 格式自动判
-  const kind = kindOverride || detectCodeKind(code);
+  const kind = (kindOverride === 'fund' ? null : kindOverride) || detectCodeKind(code);
   let result = null;
 
   try {
@@ -1632,6 +1691,19 @@ async function getFundValuation(code, kindOverride) {
           } catch {}
         }
       }
+
+      if (result && !result.navOnly) {
+        const cur = parseFloat(result.gsz);
+        const p = parseFloat(result.gszzl);
+        if (Number.isFinite(cur) && cur > 0) {
+          dbHelper.run(
+            `INSERT OR REPLACE INTO quote_snapshots (code, captured_at, gztime, current, pct, raw)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [code, now, result.gztime || '', cur, Number.isFinite(p) ? p : null, JSON.stringify(result)]
+          ).catch(() => {});
+        }
+      }
+
       cache.fund[cacheKey] = { data: result, timestamp: now };
       return result;
     }
@@ -2649,6 +2721,7 @@ module.exports = {
   fetchASHareStockValuation,
   fetchProxyTickerValuation,
   fetchStockMinuteData,
+  fetchSnapshotMinuteData,
   fetchEastMoneyFlowStockInfo,
   fetchEastMoneyDelayFlowStockInfo,
   fetchStockCapitalFlow,

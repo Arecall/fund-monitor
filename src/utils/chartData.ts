@@ -323,6 +323,7 @@ export function buildSeries(
     }
 
     let points: ChartPoint[];
+    let isRealSnapshot = false;
     const isStock = kind === 'stock';
     // 股票分时优先用 open 作为起点（避免发行价 8.66 那种"直线起飞"）
     // 仅当 open 合理（>0 且接近 current 量级）时才使用，否则 fallback 到 previous
@@ -337,11 +338,12 @@ export function buildSeries(
         { t: endTs,   v: current,   real: false },
       ];
     } else {
-      // 优先用真实分钟数据（Sina / 腾讯），缺失则 fallback 到合成插值
+      // 优先用真实分钟数据 / 系统采集的打点快照（Sina / 腾讯 / 后端 quote_snapshots）
       const realBars = minuteFeed?.bars || [];
-      if (realBars.length >= 2 && isStock) {
-        // 把真实分钟数据映射到 [startTs, endTs] 窗口；当前时间之后的数据截掉
-        points = realBars
+      const hasRealBars = realBars.length >= 2;
+      if (hasRealBars) {
+        // 把真实分钟数据/打点轨迹映射到 [startTs, endTs] 窗口；当前时间之后的数据截掉
+        const filtered = realBars
           .filter(b => b.t >= startTs && b.t <= endTs)
           .map(b => ({
             t: b.t,
@@ -350,6 +352,14 @@ export function buildSeries(
             turnover: b.turnover,
             real: true,
           }));
+        // 如果打点首项晚于 startTs，在起点补充昨收/今开基准点
+        if (filtered.length > 0 && filtered[0].t > startTs + 60_000) {
+          filtered.unshift({ t: startTs, v: startValue, volume: undefined, turnover: undefined, real: true });
+        }
+        points = filtered;
+        if (points.length >= 2) {
+          isRealSnapshot = true;
+        }
         // 末尾追加"当前实时 tick"（如最后一条分钟数据的时间戳 < endTs 且 current 更新）
         if (points.length > 0) {
           const last = points[points.length - 1];
@@ -415,14 +425,18 @@ export function buildSeries(
       ? `场外基金无分时 K 线，直线连接昨日收盘与当前实时估值（仅反映累计涨跌，非分钟级走势）。时段：${formatHHMM(startTs)} - ${formatHHMM(endTs)}（北京时间，对应美股 09:30 - 16:00 美东时间）。`
       : '场外基金无分时 K 线，直线连接昨日收盘与当前实时估值（仅反映累计涨跌，非分钟级走势）';
 
+    const realNote = isStock
+      ? '数据来源：交易所真实分钟 K 线行情'
+      : '分时走势由系统采集的真实盘中估值打点轨迹生成（真实记录，0 伪造）';
+
     return {
       points,
-      source: 'estimated',
+      source: isRealSnapshot ? 'real' : 'estimated',
       market,
       preMarket,
       note: preMarket
         ? `今日尚未开盘 — 平台线为昨日收盘 ¥${previous.toFixed(4)} 基准，右侧 tick 为当前估值；等待 ${formatHHMM(rawEndTs)} 开盘`
-        : (isStock ? stockNote : fundNote),
+        : (isRealSnapshot ? realNote : (isStock ? stockNote : fundNote)),
     };
   }
 

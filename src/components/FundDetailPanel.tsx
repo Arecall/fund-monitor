@@ -64,18 +64,17 @@ export function FundDetailPanel({
   const prefersReducedMotion = useReducedMotion();
   const [chartKey, setChartKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  // 真实分钟 K 线（仅 stock 时拉取；美股接口缺失 → null → fallback 合成）
-  // 定时器节拍：股票 10s（匹配 Sina tick 节奏），基金不走本路径
+  // 真实分钟级数据/系统采样轨迹点（股票来自 Sina/腾讯，基金/无 K 线品种来自后端 quote_snapshots 快照）
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   useEffect(() => {
-    if (kind !== 'stock' || !fund.fundcode) {
+    if (!fund.fundcode) {
       setMinuteData(null);
       return;
     }
     let cancelled = false;
     const loadMinuteData = async () => {
       try {
-        const res = await fetchStockMinute(fund.fundcode, 'stock', fund.market);
+        const res = await fetchStockMinute(fund.fundcode, kind, fund.market);
         if (cancelled) return;
         if (res?.data && res.data.length > 0) {
           const bars = res.data.map(d => ({
@@ -888,11 +887,11 @@ function AssetAllocationPie({
     { key: 'cash',  label: '现金', value: cash,  color: '#64748b' },  // 灰 = 现金
   ].filter(s => typeof s.value === 'number' && s.value > 0);
 
+  const [hovered, setHovered] = useState<string | null>(null);
+
   if (segments.length === 0) return null;
   // 归一化（防合计略偏离 100 导致圆环缺口）
   const total = segments.reduce((a, s) => a + (s.value as number), 0);
-
-  const [hovered, setHovered] = useState<string | null>(null);
 
   const size = 140;
   const cx = size / 2;
