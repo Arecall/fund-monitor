@@ -401,8 +401,8 @@ export function FundChart({
     : (!isCurrentlyOpen && range === 'intraday' && series.preMarket);
   const showLines = !isPreMarketState;
 
-  // 动态 Key 用于在切换基金、时间范围或点集变动时触发 Apple 经典流体笔触描边/面积揭示动画
-  const animKey = `${fundCode}-${range}-${points.length}-${points[points.length - 1]?.v ?? 0}`;
+  // 动态 Key 用于在切换基金或时间范围时触发首次加载物理过渡动画（后续数据刷新不重播）
+  const animKey = `${fundCode}-${range}`;
 
   return (
     <div className="w-full" ref={containerRef}>

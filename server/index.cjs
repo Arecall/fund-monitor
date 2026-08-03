@@ -1,4 +1,5 @@
 const express = require('express');
+const compression = require('compression');
 const cors = require('cors');
 const path = require('path');
 const dbHelper = require('./db.cjs');
@@ -14,6 +15,15 @@ const PORT = process.env.PORT || 3001;
 // 禁用 ETag，防止浏览器把 API 动态数据误判定为 304 Not Modified
 app.disable('etag');
 
+// 开启 HTTP Gzip 响应压缩（大幅提升 HTML/JS/CSS/JSON 网络传输速率）
+app.use(compression({
+  filter: (req, res) => {
+    // SSE 流式响应不启用 Gzip 压缩，避免消息延迟滞留
+    if (req.path.startsWith('/api/stream/')) return false;
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(cors());
 app.use(express.json());
 app.set('trust proxy', 1);
@@ -28,7 +38,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.16' });
+  res.json({ status: 'ok', version: '1.3.17' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,

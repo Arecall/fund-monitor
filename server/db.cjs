@@ -220,6 +220,8 @@ function initTables() {
       ) WITHOUT ROWID
     `);
     db.run(`CREATE INDEX IF NOT EXISTS idx_quote_snapshots_code_time ON quote_snapshots (code, captured_at DESC)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_quote_snapshots_time ON quote_snapshots (captured_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_user_active ON alerts (user_id, is_active)`);
 
     console.log('数据库表结构初始化/验证完成');
   });
