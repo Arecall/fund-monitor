@@ -354,7 +354,7 @@ export function FundChart({
   const baselineLabel = '昨收';
 
   const changeAmt = lastPoint ? lastPoint.v - baselineValue : 0;
-  const changePercent = baselineValue > 0 ? changePct(lastPoint.v, baselineValue) : 0;
+  const changePercent = lastPoint && baselineValue > 0 ? changePct(lastPoint.v, baselineValue) : 0;
   const isUp = changeAmt > 0;
   const isDown = changeAmt < 0;
   const colorVar = isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)';
@@ -1103,7 +1103,7 @@ export function FundChart({
           {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%
         </span>
         <span className="text-slate-500">
-          区间内 {points[0].v.toFixed(4)} → {lastPoint.v.toFixed(4)}
+          区间内 {points[0]?.v.toFixed(4) ?? '—'} → {lastPoint?.v.toFixed(4) ?? '—'}
           {baselineValue > 0 && (
             <span className="ml-2 text-slate-400">· {baselineLabel} {baselineValue.toFixed(4)}</span>
           )}

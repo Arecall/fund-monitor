@@ -78,7 +78,7 @@ export function FundDetailPanel({
         if (cancelled) return;
         if (res?.data && res.data.length > 0) {
           const bars = res.data.map(d => ({
-            t: Date.parse(d.time.replace(' ', 'T')),
+            t: Date.parse(d.time.replace(' ', 'T') + '+08:00'),
             v: d.close,
             volume: d.volume,
             turnover: d.amount,

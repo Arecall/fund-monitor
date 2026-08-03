@@ -933,14 +933,14 @@ async function fetchStockMinuteData(code, market) {
 async function fetchSnapshotMinuteData(code) {
   try {
     const c = String(code).toUpperCase();
-    const ymd = marketTime.formatBeijingYmd(new Date());
-    const dayStartTs = Date.parse(`${ymd}T00:00:00+08:00`);
-
+    // 往前查 48 小时，覆盖任意市场（美股/港股/A股）的上一个完整 session，
+    // 前端 buildSeries 会按各自 session 窗口（startTs/endTs）做精确过滤
+    const since = Date.now() - 48 * 3600 * 1000;
     const rows = await dbHelper.all(
       `SELECT captured_at, gztime, current, pct FROM quote_snapshots
        WHERE (code = ? OR code = ?) AND captured_at >= ?
        ORDER BY captured_at ASC`,
-      [code, c, dayStartTs - 12 * 3600 * 1000]
+      [code, c, since]
     );
 
     if (!rows || rows.length === 0) return null;

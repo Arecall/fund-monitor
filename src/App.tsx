@@ -54,6 +54,25 @@ const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ def
 const loadFundDetailPanel = () => import('./components/FundDetailPanel').then(m => ({ default: m.FundDetailPanel }));
 const FundDetailPanel = React.lazy(loadFundDetailPanel);
 
+class DetailErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null };
+  static getDerivedStateFromError(e: Error) { return { error: e }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-6 text-sm text-red-600 bg-red-50 dark:bg-red-950/30 rounded-2xl border border-red-200 dark:border-red-800/50">
+          <div className="font-bold mb-1">详情面板渲染出错</div>
+          <pre className="text-xs whitespace-pre-wrap break-all opacity-80">{String(this.state.error)}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /* ───────────────────────────────────────────────────────────────────
    Apple Motion tokens — derived from WWDC Designing Fluid Interfaces
    damping 1.0 / response 0.3–0.4 → "bounce:0, duration:0.3" in Motion API
@@ -2920,6 +2939,7 @@ function App() {
             title={isStock ? '股票详情' : '基金详情'}
           >
             <React.Suspense fallback={<DetailPanelSkeleton />}>
+            <DetailErrorBoundary>
             <FundDetailPanel
               key={selectedFundCode}
               fund={fundsData[selectedFundCode]}
@@ -2935,6 +2955,7 @@ function App() {
               }}
               onToast={showToast}
             />
+            </DetailErrorBoundary>
             </React.Suspense>
           </DetailDrawer>
           );

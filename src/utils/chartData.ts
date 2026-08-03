@@ -367,6 +367,11 @@ export function buildSeries(
             points.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
           }
         }
+        // 过滤后为空（快照时间在 session 窗口外，如 QDII 基金白天估值 vs 美股夜间 session）
+        // 无法重建真实走势，降级为诚实直线
+        if (points.length === 0) {
+          points = buildFundIntradayLine(startValue, current, startTs, endTs);
+        }
       } else {
         // 无真实分钟数据时的兜底：
         //   - 股票且已知真实盘中区间 [low, high]：在区间内生成"有涨跌"的合成曲线
