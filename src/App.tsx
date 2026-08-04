@@ -246,6 +246,20 @@ function SkeletonTableRow({ code }: { code: string }) {
   );
 }
 
+/**
+ * 前端涨跌幅强校验与自动纠错策略：
+ * 某些上游数据源或历史 SSE 快照可能推送错误/陈旧的 gszzl 字段（例如现价 27.94 > 昨收 27.86 但算出了 -0.07%）。
+ * 此时以 现价(gsz/dwjz) 与 昨收价(dwjz) 作为最高优先级，强制使用数学公式 `(current - prev) / prev * 100` 重算。
+ */
+function getRealtimeChangeVal(fund: FundValuation): number {
+  const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
+  const prevPrice = parseFloat(fund.dwjz) || 0;
+  if (currentPrice > 0 && prevPrice > 0) {
+    return ((currentPrice - prevPrice) / prevPrice) * 100;
+  }
+  return parseFloat(fund.gszzl) || 0;
+}
+
 /* ───────────────────────────────────────────────────────────────────
    判定持仓 updated_at 是否为北京时间今天（今日修改/新建按 pos.cost 算今日盈亏）
    ─────────────────────────────────────────────────────────────────── */
@@ -1934,7 +1948,7 @@ function App() {
                           return <SkeletonCard key={code} code={code} />;
                         }
 
-                        const changeVal = parseFloat(fund.gszzl);
+                        const changeVal = getRealtimeChangeVal(fund);
                         const isUp = changeVal > 0;
                         const isDown = changeVal < 0;
                         const changeBg = isUp
@@ -2111,7 +2125,7 @@ function App() {
                               return <SkeletonTableRow key={code} code={code} />;
                             }
 
-                            const changeVal = parseFloat(fund.gszzl);
+                            const changeVal = getRealtimeChangeVal(fund);
                             const isUp = changeVal > 0;
                             const isDown = changeVal < 0;
                             const changeColor = isUp

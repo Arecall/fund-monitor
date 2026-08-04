@@ -247,11 +247,78 @@ async function fetchASHareStockValuation(code) {
 }
 
 /**
- * 通过 Sina 行情接口获取港股实时数据
- *   接口：hq.sinajs.cn/list=rt_hk{code}
- *   返回：fundcode=code, name=中文名, gsz=现价, dwjz=昨收, gszzl=涨跌幅(%), gztime=行情时间
+ * 通过腾讯 Qt 接口获取港股实时数据（优先首选）
+ *   接口：http://qt.gtimg.cn/q=r_hk{code}
  */
-async function fetchHKStockValuation(code) {
+async function fetchTencentHKStockValuation(code) {
+  const symbol = code.toLowerCase().replace(/^r_hk/, '').replace(/^hk/, '');
+  const url = `http://qt.gtimg.cn/q=r_hk${symbol}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'https://gu.qq.com/' },
+    family: 4,
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  const m = text.match(/="([^"]+)"/);
+  if (!m || !m[1]) return null;
+  const parts = m[1].split('~');
+  if (parts.length < 38) return null;
+
+  const nameZh = parts[1] || '';
+  const nameEn = parts[46] || '';
+  const current = parseFloat(parts[3]);
+  const openVal = parseFloat(parts[4]);
+  const prevClose = parseFloat(parts[5]);
+  const highVal = parseFloat(parts[33]);
+  const lowVal  = parseFloat(parts[34]);
+  const volumeVal = parseFloat(parts[36]);
+  const turnoverVal = parseFloat(parts[37]);
+  const datetime = parts[30] || ''; // YYYY/MM/DD HH:MM:SS
+
+  if (isNaN(current) || current <= 0) return null;
+
+  let calcChange = !isNaN(prevClose) && prevClose > 0 ? current - prevClose : parseFloat(parts[31]);
+  let calcChangePct = !isNaN(prevClose) && prevClose > 0 ? ((current - prevClose) / prevClose) * 100 : parseFloat(parts[32]);
+  if (isNaN(calcChange)) calcChange = 0;
+  if (isNaN(calcChangePct)) calcChangePct = 0;
+
+  let jzrq = '';
+  let gztime = '';
+  if (datetime) {
+    const formatted = datetime.replace(/\//g, '-');
+    gztime = formatted;
+    jzrq = formatted.split(' ')[0] || '';
+  }
+
+  const displayName = nameEn ? `${nameZh} (${nameEn})` : nameZh;
+
+  return {
+    fundcode: code.toUpperCase(),
+    name: displayName,
+    jzrq,
+    dwjz: isNaN(prevClose) || prevClose <= 0 ? '0' : prevClose.toFixed(4),
+    gsz: current.toFixed(4),
+    gszzl: calcChangePct.toFixed(2),
+    gztime,
+    market: 'hk',
+    open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
+    stockSpecific: {
+      open: isNaN(openVal) || openVal <= 0 ? null : openVal,
+      high: isNaN(highVal) || highVal <= 0 ? null : highVal,
+      low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
+      turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
+      change: calcChange,
+    }
+  };
+}
+
+/**
+ * 通过 Sina 行情接口获取港股实时数据（备选降级）
+ *   接口：hq.sinajs.cn/list=rt_hk{code}
+ */
+async function fetchSinaHKStockValuation(code) {
   const symbol = code.toLowerCase().replace(/^rt_hk/, '').replace(/^hk/, '');
   const url = `http://hq.sinajs.cn/list=rt_hk${symbol}`;
   const response = await axios.get(url, {
@@ -260,16 +327,10 @@ async function fetchHKStockValuation(code) {
     timeout: 5000
   });
   const text = iconv.decode(Buffer.from(response.data), 'gbk');
-  // var hq_str_rt_hk00700="TENCENT,腾讯控股,465.600,461.600,481.800,465.600,477.800,16.200,3.510,..."
   const m = text.match(/="([^"]+)"/);
   if (!m) return null;
   const parts = m[1].split(',');
   if (parts.length < 10) return null;
-  // Sina 港股 rt_hk 接口字段顺序（实测 00700）：
-  //   parts[0]=nameEn, parts[1]=nameZh, parts[2]=prevClose,
-  //   parts[3]=open, parts[4]=high, parts[5]=low, parts[6]=current,
-  //   parts[7]=change, parts[8]=changePct, parts[9]=bid1, parts[10]=ask1,
-  //   parts[11]=turnover(元), parts[12]=volume(股), parts[17]=date, parts[18]=time
   const nameEn = parts[0];
   const nameZh = parts[1];
   const prevClose = parseFloat(parts[2]);
@@ -277,20 +338,22 @@ async function fetchHKStockValuation(code) {
   const highVal = parseFloat(parts[4]);
   const lowVal  = parseFloat(parts[5]);
   const current = parseFloat(parts[6]);
-  const change = parseFloat(parts[7]);
-  const changePct = parseFloat(parts[8]);
-  const turnoverVal = parseFloat(parts[11]);
-  const volumeVal = parseFloat(parts[12]);
   const date = parts[17];    // YYYY/MM/DD
   const time = parts[18];    // HH:MM:SS
   if (isNaN(current) || current <= 0) return null;
+
+  let calcChange = !isNaN(prevClose) && prevClose > 0 ? current - prevClose : parseFloat(parts[7]);
+  let calcChangePct = !isNaN(prevClose) && prevClose > 0 ? ((current - prevClose) / prevClose) * 100 : parseFloat(parts[8]);
+  if (isNaN(calcChange)) calcChange = 0;
+  if (isNaN(calcChangePct)) calcChangePct = 0;
+
   return {
     fundcode: code.toUpperCase(),
     name: `${nameZh} (${nameEn})`,
     jzrq: date ? date.replace(/\//g, '-') : '',
     dwjz: isNaN(prevClose) || prevClose <= 0 ? '0' : prevClose.toFixed(4),
     gsz: current.toFixed(4),
-    gszzl: isNaN(changePct) ? '0' : changePct.toFixed(2),
+    gszzl: calcChangePct.toFixed(2),
     gztime: date && time ? `${date.replace(/\//g, '-')} ${time}` : '',
     market: 'hk',
     open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
@@ -300,9 +363,22 @@ async function fetchHKStockValuation(code) {
       low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
       volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
       turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
-      change: isNaN(change) ? 0 : change,
+      change: calcChange,
     }
   };
+}
+
+/**
+ * 港股实时估值统一入口：优先腾讯 Qt 接口，网络超时或失败时无缝降级回退 Sina 接口
+ */
+async function fetchHKStockValuation(code) {
+  try {
+    const tencentRes = await fetchTencentHKStockValuation(code);
+    if (tencentRes) return tencentRes;
+  } catch (e) {
+    console.warn(`[TencentHK] Fetch ${code} 失败, 降级至 Sina... (${e.message})`);
+  }
+  return await fetchSinaHKStockValuation(code);
 }
 
 /**
@@ -376,20 +452,80 @@ async function fetchYahooUSStockValuation(ticker) {
       }
     };
   } catch (e) {
-    console.warn(`[Yahoo] Fetch ${rawSymbol} failed (${e.message}), falling back to Sina...`);
+    console.warn(`[Yahoo] Fetch ${rawSymbol} failed (${e.message}), falling back to Tencent/Sina...`);
     return null;
   }
 }
 
 /**
- * 获取美股估值（优先 Yahoo Finance 接口，失败降级使用 Sina）
+ * 通过腾讯 Qt 接口获取美股实时数据（降级第一优先）
+ *   接口：http://qt.gtimg.cn/q=us{ticker}
  */
-async function fetchUSStockValuation(ticker) {
-  // 1. 尝试 Yahoo Finance 接口 (方案 B)
-  const yahooRes = await fetchYahooUSStockValuation(ticker);
-  if (yahooRes) return yahooRes;
+async function fetchTencentUSStockValuation(ticker) {
+  const symbol = ticker.toUpperCase().replace(/^GB_/, '').replace(/^US/, '');
+  const url = `http://qt.gtimg.cn/q=us${symbol}`;
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: { 'Referer': 'https://gu.qq.com/' },
+    family: 4,
+    timeout: 5000
+  });
+  const text = iconv.decode(Buffer.from(response.data), 'gbk');
+  const m = text.match(/="([^"]+)"/);
+  if (!m || !m[1]) return null;
+  const parts = m[1].split('~');
+  if (parts.length < 35) return null;
 
-  // 2. 降级回退 Sina 美股接口
+  const nameZh = parts[1] || symbol;
+  const current = parseFloat(parts[3]);
+  const prevClose = parseFloat(parts[4]);
+  const openVal = parseFloat(parts[5]);
+  const highVal = parseFloat(parts[33]);
+  const lowVal  = parseFloat(parts[34]);
+  const volumeVal = parseFloat(parts[36]);
+  const turnoverVal = parseFloat(parts[37]);
+  const datetime = parts[30] || '';
+
+  if (isNaN(current) || current <= 0) return null;
+
+  let calcChange = !isNaN(prevClose) && prevClose > 0 ? current - prevClose : parseFloat(parts[31]);
+  let calcChangePct = !isNaN(prevClose) && prevClose > 0 ? ((current - prevClose) / prevClose) * 100 : parseFloat(parts[32]);
+  if (isNaN(calcChange)) calcChange = 0;
+  if (isNaN(calcChangePct)) calcChangePct = 0;
+
+  let jzrq = '';
+  let gztime = '';
+  if (datetime) {
+    const formatted = datetime.replace(/\//g, '-');
+    gztime = formatted.length > 16 ? formatted.slice(0, 16) : formatted;
+    jzrq = formatted.split(' ')[0] || '';
+  }
+
+  return {
+    fundcode: symbol,
+    name: nameZh,
+    jzrq,
+    dwjz: isNaN(prevClose) || prevClose <= 0 ? '0' : prevClose.toFixed(4),
+    gsz: current.toFixed(4),
+    gszzl: calcChangePct.toFixed(2),
+    gztime,
+    market: 'us',
+    open: isNaN(openVal) || openVal <= 0 ? undefined : openVal.toFixed(4),
+    stockSpecific: {
+      open: isNaN(openVal) || openVal <= 0 ? null : openVal,
+      high: isNaN(highVal) || highVal <= 0 ? null : highVal,
+      low:  isNaN(lowVal)  || lowVal  <= 0 ? null : lowVal,
+      volume: isNaN(volumeVal) || volumeVal < 0 ? null : volumeVal,
+      turnover: isNaN(turnoverVal) || turnoverVal < 0 ? null : turnoverVal,
+      change: calcChange,
+    }
+  };
+}
+
+/**
+ * 通过 Sina 接口获取美股实时数据（降级第二优先）
+ */
+async function fetchSinaUSStockValuation(ticker) {
   const symbol = ticker.toLowerCase().replace(/^gb_/, '').replace(/^us/, '');
   const url = `http://hq.sinajs.cn/list=gb_${symbol}`;
   try {
@@ -455,6 +591,26 @@ async function fetchUSStockValuation(ticker) {
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * 获取美股估值（优先 Yahoo Finance 接口，失败降级依次尝试 腾讯 Qt 接口 和 Sina 接口）
+ */
+async function fetchUSStockValuation(ticker) {
+  // 1. 优先尝试 Yahoo Finance 接口
+  const yahooRes = await fetchYahooUSStockValuation(ticker);
+  if (yahooRes) return yahooRes;
+
+  // 2. 降级第一优先：腾讯 Qt 美股接口
+  try {
+    const tencentRes = await fetchTencentUSStockValuation(ticker);
+    if (tencentRes) return tencentRes;
+  } catch (e) {
+    console.warn(`[TencentUS] Fetch ${ticker} 失败, 降级至 Sina... (${e.message})`);
+  }
+
+  // 3. 降级第二优先：Sina 美股接口
+  return await fetchSinaUSStockValuation(ticker);
 }
 
 /**
