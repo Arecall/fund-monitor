@@ -10,7 +10,7 @@ import {
   type ChartPoint,
   type DataSource
 } from '../utils/chartData';
-import { detectFundMarket, isMarketOpen } from '../utils/fundMarket';
+import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
 import { OpenCountdown } from './RelativeTime';
 import { useAppEnv } from '../utils/env';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
@@ -48,6 +48,8 @@ interface FundChartProps {
   totalTurnover?: number;
   /** 真实分钟级 K 线（来自 Sina/腾讯），用于分时图价格 + 真实每分钟成交量/成交额 */
   minuteFeed?: MinuteFeed | null;
+  /** Persisted market classification from the watchlist/API. */
+  market?: FundMarket;
   kind?: 'fund' | 'stock';
   height?: number;
   /** Real daily NAV history from the backend, ascending by date */
@@ -70,6 +72,7 @@ export function FundChart({
   totalVolume,
   totalTurnover,
   minuteFeed,
+  market,
   kind = 'fund',
   height = 280,
   history = [],
@@ -119,8 +122,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed),
-    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, timeTick]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, market),
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, market, timeTick]
   );
   const points = series.points;
 
@@ -294,7 +297,7 @@ export function FundChart({
   }, [points, range, x, y]);
 
   // 判断当下时刻该资产所在市场是否开盘
-  const fundMarket = useMemo(() => detectFundMarket(fundName, fundCode), [fundName, fundCode]);
+  const fundMarket = useMemo(() => market ?? detectFundMarket(fundName, fundCode), [market, fundName, fundCode]);
   const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
   const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
 

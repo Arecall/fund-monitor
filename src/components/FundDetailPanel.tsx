@@ -351,6 +351,7 @@ export function FundDetailPanel({
           key={`${chartKey}-${(fund as any).dataDate || fund.gztime?.split(' ')[0] || ''}`}
           fundCode={fund.fundcode}
           fundName={fund.name}
+          market={fund.market}
           kind={kind}
           current={current}
           previous={previous}

@@ -38,7 +38,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.17' });
+  res.json({ status: 'ok', version: '1.3.19' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -489,7 +489,7 @@ app.get('/api/sectors/breakdown', async (req, res) => {
 app.get('/api/positions', async (req, res) => {
   try {
     const rows = await dbHelper.all(
-      'SELECT fund_code, shares, cost FROM positions WHERE user_id = ?',
+      'SELECT fund_code, shares, cost, updated_at FROM positions WHERE user_id = ?',
       [req.userId]
     );
     res.json(rows);

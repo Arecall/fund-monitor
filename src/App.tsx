@@ -247,6 +247,42 @@ function SkeletonTableRow({ code }: { code: string }) {
 }
 
 /* ───────────────────────────────────────────────────────────────────
+   判定持仓 updated_at 是否为北京时间今天（今日修改/新建按 pos.cost 算今日盈亏）
+   ─────────────────────────────────────────────────────────────────── */
+function isUpdatedToday(updatedAt?: string): boolean {
+  if (!updatedAt) return false;
+  try {
+    const updatedDate = new Date(updatedAt);
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
+    return fmt.format(updatedDate) === fmt.format(now);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 计算今日盈亏参考基准价（含数据强制纠错与修正）：
+ * 1. 往日旧持仓：直接以昨日收盘价 (prevPrice) 作为今日基准价。
+ * 2. 当日买入/修改持仓：
+ *    - 若买入单价 posCost < prevPrice（买入价低于开盘/昨收价），强制以开盘/昨收价 (prevPrice) 作为今日盈亏基准价；
+ *    - 若买入单价 posCost >= prevPrice，以买入单价 posCost 作为今日盈亏基准价。
+ * 3. 防爆兜底：若 prevPrice <= 0 或无效，强制以 posCost 兜底修正，确保不计算出 NaN。
+ */
+function getTodayBasePrice(posCost: number, prevPrice: number, updatedToday: boolean): number {
+  const safeCost = Number.isFinite(posCost) && posCost > 0 ? posCost : 0;
+  const safePrev = Number.isFinite(prevPrice) && prevPrice > 0 ? prevPrice : 0;
+
+  if (!updatedToday) {
+    return safePrev > 0 ? safePrev : safeCost;
+  }
+  if (safePrev > 0 && safeCost < safePrev) {
+    return safePrev;
+  }
+  return safeCost > 0 ? safeCost : safePrev;
+}
+
+/* ───────────────────────────────────────────────────────────────────
    Main App
    ─────────────────────────────────────────────────────────────────── */
 
@@ -1280,7 +1316,7 @@ function App() {
       await savePosition(editingCode, finalShares, finalCost);
       setPositions(prev => ({
         ...prev,
-        [editingCode]: { fund_code: editingCode, shares: finalShares, cost: finalCost }
+        [editingCode]: { fund_code: editingCode, shares: finalShares, cost: finalCost, updated_at: new Date().toISOString() }
       }));
       const actionDesc = posActionTab === 'buy' ? '补仓成功' : posActionTab === 'sell' ? '减仓成功' : '持仓更新';
       showToast(`${actionDesc}：持仓变为 ${finalShares.toFixed(2)} 份 @ 均价 ¥${finalCost.toFixed(4)}`);
@@ -1344,8 +1380,11 @@ function App() {
         if (currentPrice > 0) {
           totalValue += pos.shares * currentPrice;
           totalCost += pos.shares * pos.cost;
-          if (prevPrice > 0) {
-            todayProfit += pos.shares * (currentPrice - prevPrice);
+          // 计算今日盈亏基准价：若为当日修改且买入价低于开盘/昨收价，则取开盘/昨收价
+          const updatedToday = isUpdatedToday(pos.updated_at);
+          const basePrice = getTodayBasePrice(pos.cost, prevPrice, updatedToday);
+          if (basePrice > 0) {
+            todayProfit += pos.shares * (currentPrice - basePrice);
           }
         }
       }
@@ -2072,8 +2111,10 @@ function App() {
                               const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
                               const prevPrice = parseFloat(fund.dwjz);
                               holdingValue = pos.shares * currentPrice;
-                              if (prevPrice > 0) {
-                                todayProfit = pos.shares * (currentPrice - prevPrice);
+                              const updatedToday = isUpdatedToday(pos.updated_at);
+                              const basePrice = getTodayBasePrice(pos.cost, prevPrice, updatedToday);
+                              if (basePrice > 0 && currentPrice > 0) {
+                                todayProfit = pos.shares * (currentPrice - basePrice);
                               }
                             }
 
@@ -2363,12 +2404,15 @@ function App() {
                           {(() => {
                             const curS = positions[editingCode]?.shares || 0;
                             const curC = positions[editingCode]?.cost || 0;
-                            const bS = parseFloat(buyShares) || 0;
-                            const bC = parseFloat(buyCost) || 0;
+                            const bS = parseFloat(buyShares);
+                            const bC = parseFloat(buyCost);
+                            if (isNaN(bS) || bS <= 0) {
+                              return '请输入补仓份数';
+                            }
+                            const validBc = isNaN(bC) || bC <= 0 ? curC : bC;
                             const nextS = curS + bS;
-                            if (nextS <= 0) return '—';
-                            const nextC = (curS * curC + bS * bC) / nextS;
-                            return `${nextS.toFixed(2)} 份 @ 新成本 ¥${nextC.toFixed(4)}`;
+                            const nextC = (curS * curC + bS * validBc) / nextS;
+                            return `${nextS.toFixed(2)} 份 @ 新加权成本 ¥${nextC.toFixed(4)}`;
                           })()}
                         </span>
                       </div>

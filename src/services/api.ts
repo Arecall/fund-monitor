@@ -99,6 +99,7 @@ export interface UserPosition {
   fund_code: string;
   shares: number;
   cost: number;
+  updated_at?: string;
 }
 
 // 统一添加用户名请求头的 fetch 包装器

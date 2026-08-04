@@ -248,9 +248,11 @@ export function buildSeries(
   lowPrice?: number,
   totalVolume?: number,
   totalTurnover?: number,
-  minuteFeed?: MinuteFeed | null
+  minuteFeed?: MinuteFeed | null,
+  /** Persisted market classification wins over name-based fallback. */
+  marketOverride?: FundMarket
 ): ChartSeries {
-  const market = detectFundMarket(fundName, fundCode);
+  const market = marketOverride ?? detectFundMarket(fundName, fundCode);
   const rand = mulberry32(hashCode(code + range));
   const now = Date.now();
 
