@@ -263,22 +263,33 @@ function isUpdatedToday(updatedAt?: string): boolean {
 
 /**
  * 计算今日盈亏参考基准价（含数据强制纠错与修正）：
- * 1. 往日旧持仓：直接以昨日收盘价 (prevPrice) 作为今日基准价。
- * 2. 当日买入/修改持仓：
+ * 1. 若买入单价 posCost > currentPrice（买入价高于当前最新净值）：判定为历史高位购买，今日盈亏强制按当日开盘/昨收价 (prevPrice) 计算；
+ * 2. 往日旧持仓（非今日修改）：直接以昨日收盘价 (prevPrice) 作为今日基准价；
+ * 3. 当日买入/修改持仓：
  *    - 若买入单价 posCost < prevPrice（买入价低于开盘/昨收价），强制以开盘/昨收价 (prevPrice) 作为今日盈亏基准价；
- *    - 若买入单价 posCost >= prevPrice，以买入单价 posCost 作为今日盈亏基准价。
- * 3. 防爆兜底：若 prevPrice <= 0 或无效，强制以 posCost 兜底修正，确保不计算出 NaN。
+ *    - 若 posPrice >= prevPrice 且 posCost <= currentPrice，以买入单价 posCost 作为今日盈亏基准价；
+ * 4. 防爆兜底：若 prevPrice <= 0 或无效，强制以 posCost 兜底修正，确保不计算出 NaN。
  */
-function getTodayBasePrice(posCost: number, prevPrice: number, updatedToday: boolean): number {
+function getTodayBasePrice(posCost: number, prevPrice: number, currentPrice: number, updatedToday: boolean): number {
   const safeCost = Number.isFinite(posCost) && posCost > 0 ? posCost : 0;
   const safePrev = Number.isFinite(prevPrice) && prevPrice > 0 ? prevPrice : 0;
+  const safeCurrent = Number.isFinite(currentPrice) && currentPrice > 0 ? currentPrice : 0;
 
+  // 规则1：若购买价格大于当前净值，判定为历史购买的，今日盈亏强制按当日开盘/昨收价计
+  if (safeCost > 0 && safeCurrent > 0 && safeCost > safeCurrent) {
+    return safePrev > 0 ? safePrev : safeCost;
+  }
+
+  // 规则2：非今日修改的历史持仓，直接按昨日收盘/开盘价计
   if (!updatedToday) {
     return safePrev > 0 ? safePrev : safeCost;
   }
+
+  // 规则3：当日修改但买入价低于开盘/昨收价，按开盘/昨收价计
   if (safePrev > 0 && safeCost < safePrev) {
     return safePrev;
   }
+
   return safeCost > 0 ? safeCost : safePrev;
 }
 
@@ -1382,7 +1393,7 @@ function App() {
           totalCost += pos.shares * pos.cost;
           // 计算今日盈亏基准价：若为当日修改且买入价低于开盘/昨收价，则取开盘/昨收价
           const updatedToday = isUpdatedToday(pos.updated_at);
-          const basePrice = getTodayBasePrice(pos.cost, prevPrice, updatedToday);
+          const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
           if (basePrice > 0) {
             todayProfit += pos.shares * (currentPrice - basePrice);
           }
@@ -1938,8 +1949,10 @@ function App() {
                           const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
                           const prevPrice = parseFloat(fund.dwjz);
                           holdingValue = pos.shares * currentPrice;
-                          if (prevPrice > 0) {
-                            todayProfit = pos.shares * (currentPrice - prevPrice);
+                          const updatedToday = isUpdatedToday(pos.updated_at);
+                          const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
+                          if (basePrice > 0 && currentPrice > 0) {
+                            todayProfit = pos.shares * (currentPrice - basePrice);
                           }
                         }
 
@@ -2066,10 +2079,10 @@ function App() {
                   </div>
 
                   {/* ── Desktop Table View ── */}
-                  <div className="hidden md:block overflow-x-auto flex-1">
+                  <div className="hidden md:block overflow-x-auto flex-1 scrollbar-none">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
-                        <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold">
+                        <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold whitespace-nowrap">
                           <th className="p-4 pl-6">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
                           {selfTab === 'stock' ? (
                             <>
@@ -2112,7 +2125,7 @@ function App() {
                               const prevPrice = parseFloat(fund.dwjz);
                               holdingValue = pos.shares * currentPrice;
                               const updatedToday = isUpdatedToday(pos.updated_at);
-                              const basePrice = getTodayBasePrice(pos.cost, prevPrice, updatedToday);
+                              const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
                               if (basePrice > 0 && currentPrice > 0) {
                                 todayProfit = pos.shares * (currentPrice - basePrice);
                               }
@@ -2171,10 +2184,10 @@ function App() {
                                   {parseFloat(fund.dwjz).toFixed(4)}
                                   <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
                                 </td>
-                                <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums">
+                                <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
                                   {parseFloat(fund.gsz).toFixed(4)}
                                   <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
-                                  <div className="mt-1 flex justify-end"><QuoteSourceBadge fund={fund} compact /></div>
+                                  <div className="mt-1 flex justify-end whitespace-nowrap"><QuoteSourceBadge fund={fund} compact /></div>
                                 </td>
                                 <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
                                   {isUp ? '+' : ''}{changeVal.toFixed(2)}%
@@ -2816,8 +2829,10 @@ function App() {
           const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
           const prevPrice = parseFloat(fund.dwjz);
           holdingValue = pos.shares * currentPrice;
-          if (prevPrice > 0) {
-            todayProfit = pos.shares * (currentPrice - prevPrice);
+          const updatedToday = isUpdatedToday(pos.updated_at);
+          const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
+          if (basePrice > 0 && currentPrice > 0) {
+            todayProfit = pos.shares * (currentPrice - basePrice);
           }
         }
 
