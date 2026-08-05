@@ -1605,13 +1605,19 @@ async function fetchTencentQtProxyQuote(symbol) {
   return quote;
 }
 
-const PROXY_QUOTE_FRESH_MS = Object.freeze({ regular: 5 * 60 * 1000, postmarket: 10 * 60 * 1000, premarket: 10 * 60 * 1000, overnight: 15 * 60 * 1000 });
+const PROXY_QUOTE_FRESH_MS = Object.freeze({
+  regular: 5 * 60 * 1000,          // 盘中：5 分钟内为新鲜
+  postmarket: 24 * 3600 * 1000,    // 盘后：24 小时内（保持盘后收盘估值）
+  premarket: 24 * 3600 * 1000,     // 盘前：24 小时内
+  overnight: 24 * 3600 * 1000,     // 隔夜：24 小时内
+  closed: 48 * 3600 * 1000,        // 周末/休市：48 小时内
+});
 
 function quoteFreshness(quote, session, now = Date.now()) {
   if (!quote?.quoteTimestamp) return { freshness: 'unknown', ageMs: null };
   const ageMs = Math.max(0, now - quote.quoteTimestamp);
-  const maxAge = PROXY_QUOTE_FRESH_MS[session] || 0;
-  return { freshness: maxAge && ageMs <= maxAge ? 'fresh' : 'stale', ageMs };
+  const maxAge = PROXY_QUOTE_FRESH_MS[session] || (24 * 3600 * 1000);
+  return { freshness: ageMs <= maxAge ? 'fresh' : 'stale', ageMs };
 }
 
 /**
