@@ -38,7 +38,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.19' });
+  res.json({ status: 'ok', version: '1.3.22' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
