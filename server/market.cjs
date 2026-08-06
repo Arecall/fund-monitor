@@ -76,13 +76,21 @@ function getMainlandExchangeSymbol(code, { includeListedEtf = false } = {}) {
   return { code: c, exchange, symbol: `${exchange}${c}`, market: exchange === 'bj' ? 'other' : 'domestic', instrumentType };
 }
 
+function detectMarketFromName(name) {
+  if (!name) return 'domestic';
+  const n = String(name);
+  if (/港股|恒生|中华|粤港澳|香港/i.test(n)) return 'hk';
+  if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城|半导体|QDII|全球|海外|互联|科技|芯片|软件|云计算|人工智能|AI|巴菲特|伯克希尔|软银/i.test(n)) return 'us';
+  return 'domestic';
+}
+
 function detectCodeKind(code) {
   if (!code) return 'unknown';
   const c = code.trim().toUpperCase();
   if (/^\d{6}$/.test(c)) {
     // A 股个股：仅 60/68/68 严格前缀 → 个股；00/30/8 模糊（基金常见）→ 当基金
     if (/^(60|68)/.test(c)) return 'stock_a';
-    return 'fund_a';                                          // 其他 6 位按基金处理
+    return 'fund_a';                                          // 所有 6 位数字代码按基金路径处理
   }
   if (/^(HK|RT_HK)?\d{4,5}$/.test(c)) return 'fund_hk';     // 港股 5 位
   if (/^(US|GB)?[A-Z]{1,5}$/.test(c)) return 'fund_us';     // 美股 ticker
@@ -1160,9 +1168,7 @@ async function fetchEastMoneyLSJZ(code) {
   // 这是实时源失效时的兜底路径，额外请求只在该低频分支发生。
   const basic = await getFundBasicInfo(code);
   const name = basic?.name || `基金 ${code}`;
-  let market = 'domestic';
-  if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
-  else if (/港股|恒生|中华/i.test(name)) market = 'hk';
+  const market = detectMarketFromName(name);
 
   return {
     fundcode: code,
@@ -1681,9 +1687,7 @@ async function fetchSinaFundValuation(code) {
   if (isNaN(gsz) || gsz <= 0) gsz = parseFloat(parts[9] || '');
   if (isNaN(gsz) || gsz <= 0) return null;
   const name = parts[0] || '';
-  const isUsQDII = /纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name);
-  const isHkQDII = /港股|恒生|中华/i.test(name);
-  const market = isUsQDII ? 'us' : (isHkQDII ? 'hk' : 'domestic');
+  const market = detectMarketFromName(name);
   return {
     fundcode: code,
     name,
@@ -1751,9 +1755,7 @@ async function getFundValuation(code, kindOverride) {
           const rawData = parseJsonp(text);
           if (rawData && rawData.gsz && parseFloat(rawData.gsz) > 0) {
             const name = rawData.name || '';
-            let market = 'domestic';
-            if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城半导体/i.test(name)) market = 'us';
-            else if (/港股|恒生|中华/i.test(name)) market = 'hk';
+            const market = detectMarketFromName(name);
 
             result = {
               fundcode: rawData.fundcode,
@@ -2872,6 +2874,7 @@ module.exports = {
   getFundHoldings,
   getMarketIndices,
   detectCodeKind,
+  detectMarketFromName,
   getMainlandExchangeSymbol,
   isInTradingTime,
   shouldPollValuationNow,

@@ -21,6 +21,7 @@ email_config.json
 # AI tooling caches (regenerated per machine)
 .agents/
 .claude/
+!.claude/skills/
 
 # Editor directories and files
 .vscode/*
