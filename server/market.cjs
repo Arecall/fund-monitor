@@ -80,7 +80,8 @@ function detectMarketFromName(name) {
   if (!name) return 'domestic';
   const n = String(name);
   if (/港股|恒生|中华|粤港澳|香港/i.test(n)) return 'hk';
-  if (/纳斯达克|标普|美股|美国|拜登|道琼斯|罗素|费城|半导体|QDII|全球|海外|互联|科技|芯片|软件|云计算|人工智能|AI|巴菲特|伯克希尔|软银/i.test(n)) return 'us';
+  // 注意：单纯的“半导体/芯片/科技”不能作为美股关键字，因为国内有大量 A 股主题基金（如“国泰半导体”、“中证芯片”）
+  if (/QDII|美股|美国|纳斯达克|标普|道琼斯|罗素|费城半导体|海外|全球/i.test(n)) return 'us';
   return 'domestic';
 }
 

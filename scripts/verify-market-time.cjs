@@ -35,14 +35,16 @@ const usDaytimeClosedTime = new Date('2026-08-06T14:00:00+08:00');
 assert(market.isInTradingTime('AAPL', usTradingTime, 'us') === true, '美股盘中时间判定错误');
 assert(market.isInTradingTime('AAPL', usDaytimeClosedTime, 'us') === false, '美股白天休市时间判定错误');
 
-// 4. QDII 美股基金市场自动识别校验 (例如 040046, 001668 必须判定为 us 市场)
+// 4. QDII 美股基金与国内主题基金（如 025687 国泰半导体）市场自动识别校验
 const qdii1 = market.detectMarketFromName('华安纳斯达克100ETF联接(QDII)A');
 const qdii2 = market.detectMarketFromName('汇添富全球移动互联混合(QDII)人民币A');
 const qdiiHk = market.detectMarketFromName('易方达恒生科技ETF联接(QDII)A');
+const domesticSemi = market.detectMarketFromName('国泰半导体制造精选混合发起C');
 
 assert(qdii1 === 'us', '040046 纳斯达克 QDII 市场未识别为美股 (us)');
 assert(qdii2 === 'us', '001668 全球移动互联 QDII 市场未识别为美股 (us)');
 assert(qdiiHk === 'hk', '恒生科技 QDII 市场未识别为港股 (hk)');
+assert(domesticSemi === 'domestic', '025687 国泰半导体国内 A 股基金误判为美股 (us)');
 
 // 5. QDII 美股基金开盘时间校验 (未指定 market 参数时自动推断为美股)
 assert(market.isInTradingTime('040046', usTradingTime, 'us') === true, '040046 美股盘中时间未识别');
