@@ -80,5 +80,11 @@ assert(isUsPremarketRefreshWindow(new Date('2026-08-07T08:45:00-04:00'), marketT
 assert(isUsPremarketRefreshWindow(new Date('2026-08-07T09:30:00-04:00'), marketTime) === false, '纽约开盘后不应继续持仓刷新窗口');
 assert(isUsPremarketRefreshWindow(new Date('2026-08-08T08:45:00-04:00'), marketTime) === false, '纽约周末不应触发持仓刷新窗口');
 
+// 10. 持仓现价换算统一使用人民币，CNY 直通，外币仅按有效汇率换算。
+assert(market.currencyForExchange('KR') === 'KRW' && market.currencyForExchange('JP') === 'JPY', '日韩持仓币种推断错误');
+assert(market.convertPriceToCny(100, 'USD', { USD: 7.2 }) === 720, '美元人民币换算错误');
+assert(market.convertPriceToCny(100, 'CNY', { CNY: 1 }) === 100, '人民币价格不应重复换算');
+assert(market.convertPriceToCny(100, 'KRW', null) === null, '汇率缺失时不应伪造人民币价格');
+
 console.log('✅ 市场交易时间与规则校验全部通过！');
 process.exit(0);

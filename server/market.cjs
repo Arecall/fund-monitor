@@ -12,6 +12,7 @@ const cache = {
   fundBasic: {},
   fundHoldings: {},
   fundHoldingComposition: {},
+  fx: null,
   market: null,
   marketTimestamp: 0,
   gold: null,
@@ -35,11 +36,46 @@ const MARKET_CACHE_TTL = 3 * 1000;        // 大盘指数缓存 3秒
 const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
 const GOLD_CACHE_TTL = 30 * 1000;         // 金价缓存 30秒
 const PROXY_TICKER_TTL = 60 * 1000;       // QDII 代理标的腾讯行情缓存 60 秒
+const FX_CACHE_TTL = 60 * 60 * 1000;       // 汇率缓存 1 小时
 const GENERIC_QDII_REALTIME_FRESH_MS = 2 * 60 * 1000; // 泛源实时估值最多允许滞后 2 分钟
 
 /**
  * 转换 JSONP 为 JSON 对象
  */
+function currencyForExchange(exchange) {
+  if (exchange === 'HK') return 'HKD';
+  if (exchange === 'US') return 'USD';
+  if (exchange === 'JP') return 'JPY';
+  if (exchange === 'KR') return 'KRW';
+  return 'CNY';
+}
+
+function convertPriceToCny(price, currency, rates) {
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const rate = rates?.[currency];
+  return Number.isFinite(rate) && rate > 0 ? price * rate : null;
+}
+
+async function getFxRates() {
+  const now = Date.now();
+  if (cache.fx && now - cache.fx.timestamp < FX_CACHE_TTL) return { rates: cache.fx.rates, stale: false };
+  try {
+    const response = await axios.get('https://open.er-api.com/v6/latest/CNY', { timeout: 6000 });
+    const usd = response.data?.rates?.USD;
+    const hkd = response.data?.rates?.HKD;
+    const jpy = response.data?.rates?.JPY;
+    const krw = response.data?.rates?.KRW;
+    if (![usd, hkd, jpy, krw].every(rate => Number.isFinite(rate) && rate > 0)) throw new Error('汇率字段不完整');
+    const rates = { CNY: 1, USD: 1 / usd, HKD: 1 / hkd, JPY: 1 / jpy, KRW: 1 / krw };
+    cache.fx = { rates, timestamp: now };
+    return { rates, stale: false };
+  } catch (e) {
+    if (cache.fx?.rates) return { rates: cache.fx.rates, stale: true };
+    console.warn('[fx] 汇率获取失败:', e.message);
+    return { rates: null, stale: true };
+  }
+}
+
 function parseJsonp(jsonpStr) {
   try {
     const startIdx = jsonpStr.indexOf('(');
@@ -2584,7 +2620,7 @@ async function getFundHoldings(code) {
     return [];
   }
 
-  const quotes = await fetchStockQuotes(stocks);
+  const [quotes, fx] = await Promise.all([fetchStockQuotes(stocks), getFxRates()]);
   const merged = stocks.map(s => {
     let quoteKey, displayCode;
     if (s.exchange === 'HK') {
@@ -2615,12 +2651,20 @@ async function getFundHoldings(code) {
       displayCode = s.code;
     }
     const q = quotes.get(quoteKey);
+    const currency = currencyForExchange(s.exchange);
+    const price = q ? q.price : null;
+    const fxRateToCny = fx.rates?.[currency] ?? null;
     return {
       code: s.code,
       exchange: s.exchange || '',
       displayCode,
       name: q ? q.name : '—',
-      price: q ? q.price : null,
+      price,
+      currency,
+      priceCny: convertPriceToCny(price, currency, fx.rates),
+      fxRateToCny,
+      fxStale: fx.stale,
+      quoteSource: q?.source || null,
       changePct: q ? q.changePct : null
     };
   });
@@ -3020,6 +3064,9 @@ module.exports = {
   getMarketIndices,
   detectCodeKind,
   detectMarketFromName,
+  currencyForExchange,
+  convertPriceToCny,
+  getFxRates,
   isRepeatedGenericQdiiData,
   getMainlandExchangeSymbol,
   isInTradingTime,

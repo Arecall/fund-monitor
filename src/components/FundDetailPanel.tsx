@@ -691,7 +691,7 @@ function HoldingsSummaryCard({
                       <tr className="text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)]">
                         <th className="font-semibold px-2 sm:px-3 py-2">#</th>
                         <th className="font-semibold px-2 sm:px-3 py-2">名称</th>
-                        <th className="font-semibold px-2 sm:px-3 py-2 text-right whitespace-nowrap">现价</th>
+                        <th className="font-semibold px-2 sm:px-3 py-2 text-right whitespace-nowrap">现价(RMB)</th>
                         <th className="font-semibold px-2 sm:px-3 py-2 text-right pr-3 sm:pr-4 whitespace-nowrap">当日</th>
                       </tr>
                     </thead>
@@ -710,8 +710,13 @@ function HoldingsSummaryCard({
                               </div>
                               <div className="text-[9px] text-slate-400 font-mono">{s.displayCode}</div>
                             </td>
-                            <td className="px-1 py-1.5 text-right font-mono font-semibold text-slate-700 dark:text-slate-200 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">
-                              {s.price !== null ? s.price.toFixed(s.price > 100 ? 0 : (s.exchange === 'HK' ? 1 : 2)) : '—'}
+                            <td
+                              className="px-1 py-1.5 text-right font-mono font-semibold text-slate-700 dark:text-slate-200 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis"
+                              title={s.price !== null && s.currency && s.fxRateToCny
+                                ? `原价 ${s.price.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${s.currency} · 汇率 ${s.fxRateToCny.toFixed(6)}${s.fxStale ? '（缓存汇率）' : ''}`
+                                : '人民币汇率暂不可用'}
+                            >
+                              {s.priceCny != null ? `¥${s.priceCny.toFixed(s.priceCny >= 1000 ? 0 : 2)}` : '—'}
                             </td>
                             <td className={`px-1 py-1.5 text-right pr-2 font-mono font-semibold tabular-nums whitespace-nowrap ${color}`}>
                               {s.changePct !== null

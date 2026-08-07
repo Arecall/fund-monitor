@@ -413,10 +413,15 @@ export async function fetchFundBasic(code: string): Promise<FundBasicInfo | null
  */
 export interface FundHoldingStock {
   code: string;
-  exchange: 'SH' | 'SZ' | 'HK' | '';
+  exchange: 'SH' | 'SZ' | 'HK' | 'US' | 'JP' | 'KR' | '';
   displayCode: string;
   name: string;
   price: number | null;
+  currency?: 'CNY' | 'HKD' | 'USD' | 'JPY' | 'KRW';
+  priceCny?: number | null;
+  fxRateToCny?: number | null;
+  fxStale?: boolean;
+  quoteSource?: string | null;
   changePct: number | null;
 }
 
