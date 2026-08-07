@@ -32,6 +32,20 @@ function formatBeijingYmdHm(date = new Date()) {
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
 
+function getUsEasternDateTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: US_EASTERN_TIME_ZONE,
+    weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
+    hourCycle: 'h23', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(part => [part.type, part.value]));
+}
+
+function formatUsEasternYmd(date = new Date()) {
+  const p = getUsEasternDateTimeParts(date);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 /**
  * 按纽约本地时钟给美股代理选择报价源。交易日历（节假日）仍由上游行情时效兜底；
  * 常规盘严格 09:30–16:00，盘前/盘后用于选择已验证的代理源。
@@ -91,6 +105,8 @@ module.exports = {
   BEIJING_TIME_ZONE,
   formatBeijingYmd,
   formatBeijingYmdHm,
+  formatUsEasternYmd,
+  getUsEasternDateTimeParts,
   getTimeZoneParts,
   isUsEasternDst,
   getUsMarketSession,

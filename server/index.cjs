@@ -8,6 +8,8 @@ const { broker: valuationBroker } = require('./realtime.cjs');
 const mailer = require('./mailer.cjs');
 const { hashPassword, verifyPassword, passwordMeetsPolicy } = require('./auth.cjs');
 const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldings, aggregateBySector } = require('./sectors.cjs');
+const marketTime = require('./time.cjs');
+const { createHoldingsPrefetch } = require('./holdings-prefetch.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -38,7 +40,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.22' });
+  res.json({ status: 'ok', version: '1.3.24' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -630,6 +632,12 @@ async function pollGoldAndPersist() {
 setInterval(pollGoldAndPersist, GOLD_POLL_MS);
 setTimeout(pollGoldAndPersist, 5000);          // 启动延迟 5s
 console.log(`[gold] 累积循环已启动，每 ${GOLD_POLL_MS / 1000}s 写库，保留 ${GOLD_RETENTION_MS / 86400000} 天`);
+
+// 每个纽约交易日 08:45–09:30 的盘前窗口更新一次自选基金持仓构成。
+const holdingsPrefetch = createHoldingsPrefetch({ dbHelper, marketHelper, marketTime });
+setInterval(() => holdingsPrefetch.refreshIfDue(), 60 * 1000).unref?.();
+setTimeout(() => holdingsPrefetch.refreshIfDue(), 10_000);
+console.log('[holdings-prefetch] 盘前持仓构成刷新已启动（纽约时间 08:45）');
 
 // 名称搜索（用于前端添加自选时的实时下拉）
 app.get('/api/market/search', async (req, res) => {

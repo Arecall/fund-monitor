@@ -11,12 +11,15 @@ const cache = {
   fundHistory: {},
   fundBasic: {},
   fundHoldings: {},
+  fundHoldingComposition: {},
   market: null,
   marketTimestamp: 0,
   gold: null,
   // QDII 腾讯 Qt 代理行情缓存（结构: { ticker: { data, timestamp } }）
   // TTL = PROXY_TICKER_TTL，60s 内复用，避免打爆上游。
   proxyTicker: {},
+  // 已注册 QDII 的 fundgz / Sina 泛源数据状态，用于识别持续返回同一行情的上游。
+  genericQdiiSource: {},
 };
 
 // 名称搜索单独存（结构: { 'fund:<q>': { data: [...], timestamp } }）
@@ -26,11 +29,13 @@ const searchCache = {};
 const FUND_CACHE_TTL = 3 * 1000;          // 基金/股票估值缓存 3秒（小于前端 10s 轮询，确保每次轮询穿透拉取上游最新）
 const FUND_HISTORY_TTL = 60 * 60 * 1000;  // 基金历史净值缓存 1小时
 const FUND_BASIC_TTL = 60 * 60 * 1000;    // 基金基本/资产配置缓存 1小时
-const FUND_HOLDINGS_TTL = 60 * 60 * 1000; // 基金持仓缓存 1小时
+const FUND_HOLDINGS_TTL = 60 * 1000;       // 持仓报价缓存 60 秒
+const FUND_HOLDING_COMPOSITION_TTL = 24 * 60 * 60 * 1000; // 上游持仓构成每日刷新
 const MARKET_CACHE_TTL = 3 * 1000;        // 大盘指数缓存 3秒
 const SEARCH_CACHE_TTL = 5 * 60 * 1000;   // 名称搜索缓存 5分钟
 const GOLD_CACHE_TTL = 30 * 1000;         // 金价缓存 30秒
-const PROXY_TICKER_TTL = 60 * 1000;      // QDII 代理标的 Yahoo 缓存 60秒
+const PROXY_TICKER_TTL = 60 * 1000;       // QDII 代理标的腾讯行情缓存 60 秒
+const GENERIC_QDII_REALTIME_FRESH_MS = 2 * 60 * 1000; // 泛源实时估值最多允许滞后 2 分钟
 
 /**
  * 转换 JSONP 为 JSON 对象
@@ -83,6 +88,34 @@ function detectMarketFromName(name) {
   // 注意：单纯的“半导体/芯片/科技”不能作为美股关键字，因为国内有大量 A 股主题基金（如“国泰半导体”、“中证芯片”）
   if (/QDII|美股|美国|纳斯达克|标普|道琼斯|罗素|费城半导体|海外|全球/i.test(n)) return 'us';
   return 'domestic';
+}
+
+function isGenericKnownQdiiResult(code, result) {
+  return !!result
+    && proxyTickers.isKnownProxyFund(code)
+    && !result.estimate
+    && !result.proxyTicker
+    && (result.quoteSource === 'fundgz' || result.quoteSource === 'sina-fu');
+}
+
+function isRepeatedGenericQdiiData(cacheKey, result, now = Date.now()) {
+  const signature = [
+    result.quoteSource,
+    result.fundcode || '',
+    result.gztime || '',
+    result.gsz || '',
+    result.gszzl || '',
+    result.dwjz || '',
+  ].join('|');
+  const previous = cache.genericQdiiSource[cacheKey];
+
+  if (!previous || previous.signature !== signature) {
+    cache.genericQdiiSource[cacheKey] = { signature, firstSeenAt: now, lastSeenAt: now };
+    return false;
+  }
+
+  previous.lastSeenAt = now;
+  return now - previous.firstSeenAt > GENERIC_QDII_REALTIME_FRESH_MS;
 }
 
 function detectCodeKind(code) {
@@ -1352,85 +1385,35 @@ async function fetchHoldingsBasedEstimate(code) {
     return null;
   }
 
-  // 提取 stockCodes（格式如 ["NVDA105","GOOGL105",...]，最后 1-3 位是市场号：105=US/HK, 106=HK, 0=深, 1=沪）
+  // 提取前十大 stockCodes，并复用统一的新浪优先 / 腾讯补缺报价链。
   const m = pingText.match(/stockCodes\s*=\s*\[([^\]]+)\]/);
   if (!m) return null;
   const codesRaw = m[1].match(/"([^"]+)"/g)?.map(s => s.slice(1, -1)) || [];
-  if (codesRaw.length === 0) return null;
+  const stocks = parseStockCodes(codesRaw.slice(0, 10), { onlyNonAShare: true })
+    .filter(s => s.exchange === 'US' || s.exchange === 'HK' || s.exchange === 'JP' || s.exchange === 'KR');
+  if (stocks.length < 3) return null;
 
-  // 解析：去掉末尾市场号，提取基础代码
-  const stocks = codesRaw.map(raw => {
-    let code, market;
-    if (raw.endsWith('105')) { code = raw.slice(0, -3); market = 'us'; }      // US/HK (Sina 105 = gb_)
-    else if (raw.endsWith('106')) { code = raw.slice(0, -3); market = 'hk'; } // HK (106 = rt_hk)
-    else if (raw.endsWith('1')) { code = raw.slice(0, -1); market = 'sh'; }
-    else if (raw.endsWith('0')) { code = raw.slice(0, -1); market = 'sz'; }
-    else { code = raw; market = 'us'; }
-    return { code, market };
-  });
+  const quotes = await fetchStockQuotes(stocks);
+  const quoteKey = stock => stock.exchange === 'US'
+    ? `gb_${stock.code.toLowerCase()}`
+    : stock.exchange === 'JP'
+      ? `jp_${stock.code.toLowerCase()}`
+      : stock.exchange === 'KR'
+        ? `kr_${stock.code}`
+        : `rt_hk${stock.code}`;
+  const expectedKeys = stocks.map(quoteKey);
+  const validQuotes = expectedKeys.map(key => quotes.get(key)).filter(quote =>
+    quote && Number.isFinite(quote.price) && quote.price > 0
+    && Number.isFinite(quote.changePct) && Math.abs(quote.changePct) < 50
+  );
 
-  // 2. 拉每只实时价（Sina）
-  const symbols = stocks.map(s => s.market === 'us' ? `gb_${s.code.toLowerCase()}` : `rt_hk${s.code}`).join(',');
-  let sinaText;
-  try {
-    const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
-      responseType: 'arraybuffer',
-      headers: { 'Referer': 'http://finance.sina.com.cn' },
-      timeout: 6000
-    });
-    sinaText = iconv.decode(Buffer.from(r.data), 'gbk');
-  } catch {
+  // 美股/港股 QDII 必须由新浪 + 腾讯完整覆盖所有可识别的前十大海外持仓，
+  // 否则放弃持仓估算，交给专用代理 ETF 或官方净值路径处理。
+  if (validQuotes.length !== expectedKeys.length) {
+    console.warn(`[holdings] ${code} 行情覆盖不完整 (${validQuotes.length}/${expectedKeys.length})，放弃持仓估算`);
     return null;
   }
-
-  // 3. 提取每只的涨跌幅
-  //   US stock Sina 字段：parts[1]=现价, parts[2]=涨跌幅%(已带正负号), parts[3]=datetime, parts[26]=昨收
-  //   HK stock Sina 字段：parts[1]=中文名, parts[2]=现价, parts[3]=昨收, parts[6]=现价, parts[7]=涨跌额, parts[8]=涨跌幅%
-  //   ⚠️ 历史 bug：启发式 `Math.abs(parts[2]) < 50` 会把港股「价格」(如港铁 32.84) 误读为 +
-  //   32.84% 涨跌幅。修复：先看 Sina 行前缀（gb_ / rt_hk / 无前缀），按市场选正确字段；
-  //   旧/不匹配数据才回退到 parts[2] 启发式。
-  const changes = [];
-  for (const line of sinaText.split('\n')) {
-    const m2 = line.match(/(?:var\s+)?hq_str_([a-z0-9_]+)="([^"]*)"/);
-    if (!m2) continue;
-    const symbol = m2[1];              // e.g. 'gb_sndk' / 'rt_hk00066' / 'sh600519'
-    const data = m2[2];
-    if (!data) continue;               // Sina 对未识别的代码返回空串
-    const parts = data.split(',');
-    if (parts.length < 5) continue;
-
-    let changePct = NaN;
-    const isUS = symbol.startsWith('gb_') || symbol.startsWith('usr_');
-    const isHK = symbol.startsWith('rt_hk') || symbol.startsWith('hk');
-
-    if (isHK) {
-      // HK：用 parts[8]=涨跌幅%。parts[2]=现价（不能信）
-      if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
-        changePct = parseFloat(parts[8]);
-      } else if (parts.length > 7) {
-        // 兜底：parts[6](现价) vs parts[5](昨收)
-        const c = parseFloat(parts[6]);
-        const y = parseFloat(parts[5]);
-        if (!isNaN(c) && !isNaN(y) && y > 0) changePct = ((c - y) / y) * 100;
-      }
-    } else if (isUS) {
-      // US：用 parts[2]=涨跌幅%（已含正负号）
-      const v = parseFloat(parts[2]);
-      if (!isNaN(v)) changePct = v;
-    } else {
-      // A 股 / 其他（旧 fu_ 格式）— 老启发式
-      if (!isNaN(parseFloat(parts[2])) && Math.abs(parseFloat(parts[2])) < 50) {
-        changePct = parseFloat(parts[2]);
-      } else if (parts.length > 8 && !isNaN(parseFloat(parts[8]))) {
-        changePct = parseFloat(parts[8]);
-      }
-    }
-
-    if (!isNaN(changePct) && Math.abs(changePct) < 50) {
-      changes.push(changePct);
-    }
-  }
-  if (changes.length === 0) return null;
+  const changes = validQuotes.map(quote => quote.changePct);
 
   // 4. 等权平均 + 拉官方名称
   // 异常剔除：单只 change% 偏离 median 超过 15 个百分点（例如港铁 -0.85% / 真实
@@ -1439,7 +1422,13 @@ async function fetchHoldingsBasedEstimate(code) {
   const sorted = [...changes].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   const filtered = changes.filter(v => Math.abs(v - median) <= 15 || sorted.length < 4);
+  // 完整集合中的异常值不能被静默剔除后继续估算，否则仍会变成残缺持仓样本。
+  if (filtered.length !== changes.length) {
+    console.warn(`[holdings] ${code} 存在异常持仓涨跌幅，放弃持仓估算`);
+    return null;
+  }
   const avgChange = filtered.reduce((a, b) => a + b, 0) / filtered.length;
+  const usedTencent = validQuotes.some(quote => quote.source === 'tencent-qt');
   const nameMatch = pingText.match(/fS_name\s*=\s*"([^"]+)"/);
   const fundName = nameMatch ? nameMatch[1] : `基金 ${code}`;
 
@@ -1457,7 +1446,9 @@ async function fetchHoldingsBasedEstimate(code) {
   // 推断主体市场：若前 10 重仓股中有美股/港股，设置对应 market 属性
   const hasUs = stocks.some(s => s.market === 'us');
   const hasHk = stocks.some(s => s.market === 'hk');
-  const detectedMarket = hasUs ? 'us' : (hasHk ? 'hk' : 'domestic');
+  const hasJp = stocks.some(s => s.market === 'jp');
+  const hasKr = stocks.some(s => s.market === 'kr');
+  const detectedMarket = hasUs ? 'us' : (hasHk ? 'hk' : (hasJp ? 'jp' : (hasKr ? 'kr' : 'domestic')));
 
   return {
     fundcode: code,
@@ -1471,6 +1462,8 @@ async function fetchHoldingsBasedEstimate(code) {
     estimate: true,                                // 标记这是基于持仓的估算
     estimateMethod: 'holdings',
     holdingsCount: changes.length,
+    holdingsExpectedCount: expectedKeys.length,
+    quoteSource: usedTencent ? 'holdings-sina-tencent' : 'holdings-sina',
     officialNavDate: nav.jzrq
   };
 }
@@ -1697,7 +1690,8 @@ async function fetchSinaFundValuation(code) {
     gsz: gsz.toFixed(4),
     gszzl: parts[6] || '0',
     gztime: parts[7] && parts[1] ? `${parts[7]} ${parts[1]}` : '',
-    market
+    market,
+    quoteSource: 'sina-fu'
   };
 }
 
@@ -1766,7 +1760,8 @@ async function getFundValuation(code, kindOverride) {
               gsz: rawData.gsz,
               gszzl: rawData.gszzl,
               gztime: rawData.gztime,
-              market
+              market,
+              quoteSource: 'fundgz'
             };
           }
         }
@@ -1793,13 +1788,16 @@ async function getFundValuation(code, kindOverride) {
           result = null;
         }
       }
-      // 已注册 QDII：普通 fundgz / 新浪基金源只有在 15 分钟内才可视为实时。
-      // 否则让它继续走 LSJZ 基准 → 持仓估算 → 严格指数代理，避免滞后泛源阻断专用路径。
-      if (result && proxyTickers.isKnownProxyFund(code) && !result.estimate && !result.proxyTicker) {
+      // 已注册 QDII：普通 fundgz / 新浪基金源最多允许滞后 2 分钟；
+      // 即使时间字段仍新鲜，连续超过 2 分钟返回同一行情也视为上游卡住并降级。
+      if (isGenericKnownQdiiResult(code, result)) {
         const dataTime = marketTime.parseBeijingDateTime(result.gztime);
-        const genericFresh = dataTime != null && now - dataTime >= 0 && now - dataTime <= 15 * 60 * 1000;
-        if (!genericFresh) {
-          console.log(`[fund] ${code} generic source not fresh (${result.gztime || 'no time'}), preferring holdings/proxy`);
+        const genericFresh = dataTime != null && now - dataTime >= 0
+          && now - dataTime <= GENERIC_QDII_REALTIME_FRESH_MS;
+        const repeatedData = genericFresh && isRepeatedGenericQdiiData(cacheKey, result, now);
+        if (!genericFresh || repeatedData) {
+          const reason = repeatedData ? 'repeated for over 2 minutes' : 'not fresh for over 2 minutes';
+          console.log(`[fund] ${code} generic source ${result.quoteSource} ${reason} (${result.gztime || 'no time'}), preferring holdings/proxy`);
           result = null;
         }
       }
@@ -2057,13 +2055,18 @@ function parseStockCodes(codes, opts = {}) {
     if (/^[A-Za-z]+$/.test(stripped)) {
       return { code: stripped.toUpperCase(), market: 'us', exchange: 'US', name: null };
     }
+    // 东京证券交易所的 Growth/新上市股票可使用数字 + 1 个字母，例如铠侠 285A。
+    if (/^\d{3,4}[A-Za-z]$/.test(stripped)) {
+      return { code: stripped.toUpperCase(), market: 'jp', exchange: 'JP', name: null };
+    }
     if (/^\d{3,5}$/.test(stripped)) {
       // 港股代码 1-5 位数字（00066/00700/0285 等），padStart 保证 Sina 识别
       return { code: stripped.padStart(5, '0'), market: 'hk', exchange: 'HK', name: null };
     }
     if (onlyNonAShare && /^\d{6}$/.test(stripped)) {
-      // QDII: 6 位纯数字 = 港股 5 位 + bug 后缀，取前 5 位
-      return { code: stripped.slice(0, 5), market: 'hk', exchange: 'HK', name: null };
+      // 无后缀的 QDII 六位数字可能是韩国交易所代码（000660.KS、005930.KS）；
+      // 不能在解析阶段截成无关的五位港股代码，报价层先按 KR 验证。
+      return { code: stripped, market: 'kr', exchange: 'KR', name: null };
     }
     if (!onlyNonAShare && /^\d{6}$/.test(stripped)) {
       // A 股基金兜底：6 位数字按 A 股处理
@@ -2084,7 +2087,9 @@ async function fetchStockQuotes(stockList) {
   const aCodes  = stockList.filter(s => s.exchange === 'SH' || s.exchange === 'SZ');
   const hkCodes = stockList.filter(s => s.exchange === 'HK');
   const usCodes = stockList.filter(s => s.exchange === 'US');
-  // 没有 exchange 标识的"野码"（如 pingzhongdata 里 285A / 印度股票 ICICIBC 等），
+  const jpCodes = stockList.filter(s => s.exchange === 'JP');
+  const krCodes = stockList.filter(s => s.exchange === 'KR');
+  // 没有 exchange 标识的野码（如印度股票 ICICIBC 等），
   // 兜底尝试三种接口，能命中哪个算哪个。
   const wildCodes = stockList.filter(s => !s.exchange);
 
@@ -2180,6 +2185,104 @@ async function fetchStockQuotes(stockList) {
     }
   }
 
+  // 韩国：腾讯 Qt 优先（kr005930），不支持时交由 Yahoo Finance（005930.KS）补全。
+  if (krCodes.length > 0) {
+    const pendingYahoo = [];
+    try {
+      const symbols = krCodes.map(s => `kr${s.code}`).join(',');
+      const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
+        responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
+      });
+      const text = iconv.decode(Buffer.from(r.data), 'gbk');
+      for (const line of text.split('\n').filter(Boolean)) {
+        const m = line.match(/v_(kr[A-Za-z0-9]+)="([^"]+)"/);
+        if (!m?.[2]) continue;
+        const parts = m[2].split('~');
+        const ticker = m[1].slice(2);
+        const price = parseFloat(parts[3]);
+        const prevClose = parseFloat(parts[4]);
+        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+        if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+          out.set(`kr_${ticker}`, { name: parts[1], price, changePct, source: 'tencent-qt', resolvedExchange: 'KR' });
+        }
+      }
+    } catch (e) {
+      console.warn('[holdings] tencent 韩国行情失败:', e.message);
+    }
+    for (const stock of krCodes) {
+      const key = `kr_${stock.code}`;
+      if (!out.has(key)) pendingYahoo.push(stock);
+    }
+    await Promise.all(pendingYahoo.map(async stock => {
+      const ticker = `${stock.code}.KS`;
+      try {
+        const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
+        });
+        const meta = r.data?.chart?.result?.[0]?.meta;
+        const price = meta?.regularMarketPrice;
+        const prevClose = meta?.chartPreviousClose || meta?.previousClose;
+        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+        if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+          out.set(`kr_${stock.code}`, {
+            name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance', resolvedExchange: 'KR',
+          });
+        }
+      } catch (e) {
+        console.warn(`[holdings] Yahoo 韩国行情 ${ticker} 失败:`, e.message);
+      }
+    }));
+  }
+
+  // 日本：腾讯 Qt 优先（jp285A），不支持时交由 Yahoo Finance（285A.T）补全。
+  if (jpCodes.length > 0) {
+    const pendingYahoo = [];
+    try {
+      const symbols = jpCodes.map(s => `jp${s.code}`).join(',');
+      const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
+        responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
+      });
+      const text = iconv.decode(Buffer.from(r.data), 'gbk');
+      for (const line of text.split('\n').filter(Boolean)) {
+        const m = line.match(/v_(jp[A-Za-z0-9]+)="([^"]+)"/);
+        if (!m?.[2]) continue;
+        const parts = m[2].split('~');
+        const ticker = m[1].slice(2).toUpperCase();
+        const price = parseFloat(parts[3]);
+        const prevClose = parseFloat(parts[4]);
+        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+        if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+          out.set(`jp_${ticker.toLowerCase()}`, { name: parts[1], price, changePct, source: 'tencent-qt' });
+        }
+      }
+    } catch (e) {
+      console.warn('[holdings] tencent 日本行情失败:', e.message);
+    }
+    for (const stock of jpCodes) {
+      const key = `jp_${stock.code.toLowerCase()}`;
+      if (!out.has(key)) pendingYahoo.push(stock);
+    }
+    await Promise.all(pendingYahoo.map(async stock => {
+      const ticker = `${stock.code.toUpperCase()}.T`;
+      try {
+        const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
+        });
+        const meta = r.data?.chart?.result?.[0]?.meta;
+        const price = meta?.regularMarketPrice;
+        const prevClose = meta?.chartPreviousClose || meta?.previousClose;
+        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+        if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+          out.set(`jp_${stock.code.toLowerCase()}`, {
+            name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance',
+          });
+        }
+      } catch (e) {
+        console.warn(`[holdings] Yahoo 日本行情 ${ticker} 失败:`, e.message);
+      }
+    }));
+  }
+
   // 野码（无 exchange）兜底：尝试三种接口，能命中哪个算哪个。
   // 注：避免对每个野码单独发请求，把它们批量塞进三种接口里。
   if (wildCodes.length > 0) {
@@ -2239,7 +2342,7 @@ async function fetchStockQuotes(stockList) {
     const missing = stockList.filter(s => {
       // 计算对应的 Sina quoteKey
       let k;
-      if (s.exchange === 'SH' || s.exchange === 'SZ') k = `${s.market}${s.code}`;
+        if (s.exchange === 'SH' || s.exchange === 'SZ') k = `${s.market}${s.code}`;
       else if (s.exchange === 'HK') k = `rt_hk${s.code}`;
       else if (s.exchange === 'US') k = `gb_${s.code.toLowerCase()}`;
       else {
@@ -2298,17 +2401,19 @@ async function fetchStockQuotes(stockList) {
             changePct = parseFloat(parts[32]);
             quoteKey = `rt_hk${sym.slice(2)}`;
           } else if (sym.startsWith('us')) {
-            // 美股：[1]=现价 [2]=涨跌幅% [3]=时间 [29]=成交量
-            name = parts[0];
-            price = parseFloat(parts[1]);
-            changePct = parseFloat(parts[2]);
-            quoteKey = `gb_${sym.slice(2)}`;
+            // 腾讯美股：名称 [1]、现价 [3]、昨收 [4]；以价格差计算涨跌幅。
+            name = parts[1];
+            price = parseFloat(parts[3]);
+            const prevClose = parseFloat(parts[4]);
+            changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+            quoteKey = `gb_${sym.slice(2).toLowerCase()}`;
           }
           if (name && Number.isFinite(price) && price > 0) {
             out.set(quoteKey, {
               name,
               price,
               changePct: Number.isFinite(changePct) ? changePct : null,
+              source: 'tencent-qt',
             });
           }
         }
@@ -2425,26 +2530,55 @@ async function getFundBasicInfo(code) {
 }
 
 /**
- * 获取基金前十大重仓股票（来自 pingzhongdata 的 stockCodes + 新浪实时行情）。
+ * 获取基金前十大重仓构成。构成每天盘前从上游刷新，实时报价在 getFundHoldings 中单独水合。
+ */
+async function getFundHoldingComposition(code, { force = false } = {}) {
+  if (!/^\d{6}$/.test(code)) return [];
+  const now = Date.now();
+  const cached = cache.fundHoldingComposition[code];
+  if (!force && cached && now - cached.timestamp < FUND_HOLDING_COMPOSITION_TTL) return cached.data;
+
+  if (force) delete cache.fundBasic[code];
+  const basic = await getFundBasicInfo(code);
+  if (!basic) return cached?.data || [];
+
+  const fundName = basic.name || '';
+  const isNonAShareFund = /QDII|海外|全球|港股|美股|纳斯达克|标普|恒生/i.test(fundName);
+  const stocks = parseStockCodes(basic.raw.stockCodes, { onlyNonAShare: isNonAShareFund });
+  if (stocks.length > 0) cache.fundHoldingComposition[code] = { data: stocks, timestamp: now };
+  return stocks.length > 0 ? stocks : (cached?.data || []);
+}
+
+async function refreshFundHoldingCompositions(codes, { concurrency = 3 } = {}) {
+  const uniqueCodes = [...new Set(codes.filter(code => /^\d{6}$/.test(code)))];
+  const results = { total: uniqueCodes.length, success: 0, empty: 0, failed: 0 };
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, uniqueCodes.length) }, async () => {
+    while (cursor < uniqueCodes.length) {
+      const code = uniqueCodes[cursor++];
+      try {
+        const stocks = await getFundHoldingComposition(code, { force: true });
+        if (stocks.length > 0) results.success++;
+        else results.empty++;
+      } catch {
+        results.failed++;
+      }
+    }
+  }));
+  return results;
+}
+
+/**
+ * 获取基金前十大重仓股票（上游构成 + 实时行情）。
  * 自由 API 不提供单只股票的占比；列表中只展示股票代码、名称、当日涨跌幅。
  */
 async function getFundHoldings(code) {
   if (!/^\d{6}$/.test(code)) return [];
   const now = Date.now();
   const cached = cache.fundHoldings[code];
-  if (cached && (now - cached.timestamp < FUND_HOLDINGS_TTL)) {
-    return cached.data;
-  }
+  if (cached && now - cached.timestamp < FUND_HOLDINGS_TTL) return cached.data;
 
-  const basic = await getFundBasicInfo(code);
-  if (!basic) return [];
-
-  // 判断是否 QDII / 海外基金：是的话持仓只可能是港股/美股，
-  // 不走 A 股兜底，避免 "000660"（港股带 bug 后缀）被错切成深证
-  const fundName = basic.name || '';
-  const isNonAShareFund = /QDII|海外|全球|港股|美股|纳斯达克|标普|恒生/i.test(fundName);
-
-  const stocks = parseStockCodes(basic.raw.stockCodes, { onlyNonAShare: isNonAShareFund });
+  const stocks = await getFundHoldingComposition(code);
   if (!stocks.length) {
     cache.fundHoldings[code] = { data: [], timestamp: now };
     return [];
@@ -2456,6 +2590,12 @@ async function getFundHoldings(code) {
     if (s.exchange === 'HK') {
       quoteKey = `rt_hk${s.code}`;
       displayCode = `${s.code}.HK`;
+    } else if (s.exchange === 'JP') {
+      quoteKey = `jp_${s.code.toLowerCase()}`;
+      displayCode = `${s.code}.T`;
+    } else if (s.exchange === 'KR') {
+      quoteKey = `kr_${s.code}`;
+      displayCode = `${s.code}.KS`;
     } else if (s.exchange === 'US') {
       quoteKey = `gb_${s.code.toLowerCase()}`;
       displayCode = s.code;
@@ -2873,9 +3013,14 @@ module.exports = {
   getFundHistory,
   getFundBasicInfo,
   getFundHoldings,
+  getFundHoldingComposition,
+  refreshFundHoldingCompositions,
+  fetchStockQuotes,
+  parseStockCodes,
   getMarketIndices,
   detectCodeKind,
   detectMarketFromName,
+  isRepeatedGenericQdiiData,
   getMainlandExchangeSymbol,
   isInTradingTime,
   shouldPollValuationNow,
@@ -2886,6 +3031,7 @@ module.exports = {
   fetchSinaFundValuation,
   fetchASHareStockValuation,
   fetchProxyTickerValuation,
+  fetchHoldingsBasedEstimate,
   fetchStockMinuteData,
   fetchSnapshotMinuteData,
   fetchEastMoneyFlowStockInfo,

@@ -398,7 +398,7 @@ function App() {
   const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number }>>({});
   const DETAIL_HISTORY_TTL = 30 * 60_000;
   const DETAIL_BASIC_TTL = 24 * 60 * 60_000;
-  const DETAIL_HOLDINGS_TTL = 6 * 60 * 60_000;
+  const DETAIL_HOLDINGS_TTL = 5 * 60_000;
 
   // 详情的实时价格由 SSE、股票分钟线由 FundDetailPanel 自己的 10s 定时器负责。
   // 历史净值/基金资料/重仓属于低频数据，仅在首次打开或客户端 TTL 到期后刷新。

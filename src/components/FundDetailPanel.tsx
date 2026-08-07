@@ -679,43 +679,51 @@ function HoldingsSummaryCard({
                   暂无持仓数据
                 </div>
               ) : (
-                <table className="w-full text-left text-[11px]">
-                  <thead>
-                    <tr className="text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)]">
-                      <th className="font-semibold px-3 py-2 w-8">#</th>
-                      <th className="font-semibold px-3 py-2">名称</th>
-                      <th className="font-semibold px-3 py-2 text-right">现价</th>
-                      <th className="font-semibold px-3 py-2 text-right pr-4">当日</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                    {holdings.map((s, i) => {
-                      const pct = s.changePct ?? 0;
-                      const isUp = pct > 0;
-                      const isDown = pct < 0;
-                      const color = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
-                      return (
-                        <tr key={`${s.exchange}-${s.code}`} className="hover:bg-white/60 dark:hover:bg-white/[0.04] transition-colors">
-                          <td className="px-3 py-1.5 text-slate-400 font-mono tabular-nums">{i + 1}</td>
-                          <td className="px-3 py-1.5">
-                            <div className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[140px]" title={s.name}>
-                              {s.name}
-                            </div>
-                            <div className="text-[9px] text-slate-400 font-mono">{s.displayCode}</div>
-                          </td>
-                          <td className="px-3 py-1.5 text-right font-mono font-semibold text-slate-700 dark:text-slate-200 tabular-nums">
-                            {s.price !== null ? s.price.toFixed(s.price > 100 ? 2 : (s.exchange === 'HK' ? 1 : 2)) : '—'}
-                          </td>
-                          <td className={`px-3 py-1.5 text-right pr-4 font-mono font-semibold tabular-nums ${color}`}>
-                            {s.changePct !== null
-                              ? `${isUp ? '+' : ''}${pct.toFixed(2)}%`
-                              : '—'}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div className="min-w-0 overflow-x-auto">
+                  <table className="w-full table-fixed text-left text-[11px]">
+                    <colgroup>
+                      <col style={{ width: '32px' }} />
+                      <col />
+                      <col style={{ width: '82px' }} />
+                      <col style={{ width: '72px' }} />
+                    </colgroup>
+                    <thead>
+                      <tr className="text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)]">
+                        <th className="font-semibold px-2 sm:px-3 py-2">#</th>
+                        <th className="font-semibold px-2 sm:px-3 py-2">名称</th>
+                        <th className="font-semibold px-2 sm:px-3 py-2 text-right whitespace-nowrap">现价</th>
+                        <th className="font-semibold px-2 sm:px-3 py-2 text-right pr-3 sm:pr-4 whitespace-nowrap">当日</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                      {holdings.map((s, i) => {
+                        const pct = s.changePct ?? 0;
+                        const isUp = pct > 0;
+                        const isDown = pct < 0;
+                        const color = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
+                        return (
+                          <tr key={`${s.exchange}-${s.code}`} className="hover:bg-white/60 dark:hover:bg-white/[0.04] transition-colors">
+                            <td className="px-2 sm:px-3 py-1.5 text-slate-400 font-mono tabular-nums">{i + 1}</td>
+                            <td className="min-w-0 px-2 py-1.5">
+                              <div className="font-semibold text-slate-700 dark:text-slate-200 truncate" title={s.name}>
+                                {s.name}
+                              </div>
+                              <div className="text-[9px] text-slate-400 font-mono">{s.displayCode}</div>
+                            </td>
+                            <td className="px-1 py-1.5 text-right font-mono font-semibold text-slate-700 dark:text-slate-200 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">
+                              {s.price !== null ? s.price.toFixed(s.price > 100 ? 0 : (s.exchange === 'HK' ? 1 : 2)) : '—'}
+                            </td>
+                            <td className={`px-1 py-1.5 text-right pr-2 font-mono font-semibold tabular-nums whitespace-nowrap ${color}`}>
+                              {s.changePct !== null
+                                ? `${isUp ? '+' : ''}${pct.toFixed(2)}%`
+                                : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
               <div className="px-4 py-2 text-[10px] text-slate-400 border-t border-[var(--hairline-border)] flex items-center justify-between">
                 <span>实时行情 · 新浪财经</span>
