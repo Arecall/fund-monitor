@@ -40,7 +40,7 @@ app.use('/api', (_req, res, next) => {
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.24' });
+  res.json({ status: 'ok', version: '1.3.27' });
 });
 app.use(express.static(DIST_DIR, {
   etag: true,
@@ -446,29 +446,33 @@ app.get('/api/sectors/breakdown', async (req, res) => {
     );
     const posMap = Object.fromEntries(positions.map(p => [p.fund_code, p]));
 
-    // 3. 对每只拉实时估值（带超时，避免拖慢）
-    const items = [];
-    for (const w of watchRows) {
-      try {
-        const fund = await marketHelper.getFundValuation(w.fund_code, w.kind || 'fund');
-        if (!fund) continue;
-        const pos = posMap[w.fund_code];
-        const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
-        const prev = parseFloat(fund.dwjz) || 0;
-        const value = pos ? pos.shares * current : 0;
-        const cost = pos ? pos.shares * pos.cost : 0;
-        const todayProfit = pos && prev > 0 ? pos.shares * (current - prev) : 0;
-        items.push({
-          code: w.fund_code,
-          name: w.name || fund.name || w.fund_code,
-          market: w.market || fund.market || 'domestic',
-          kind: w.kind || 'fund',
-          sector: w.sector || (w.kind === 'stock' ? inferStockSector(w.fund_code) : inferFundSector(fund.name || '')),
-          value, cost, todayProfit,
-          changePct: parseFloat(fund.gszzl) || 0,
-        });
-      } catch {}
-    }
+    // 3. 对每只拉实时估值（并发处理，提高响应性能）
+    const itemResults = await Promise.all(
+      watchRows.map(async (w) => {
+        try {
+          const fund = await marketHelper.getFundValuation(w.fund_code, w.kind || 'fund');
+          if (!fund) return null;
+          const pos = posMap[w.fund_code];
+          const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
+          const prev = parseFloat(fund.dwjz) || 0;
+          const value = pos ? pos.shares * current : 0;
+          const cost = pos ? pos.shares * pos.cost : 0;
+          const todayProfit = pos && prev > 0 ? pos.shares * (current - prev) : 0;
+          return {
+            code: w.fund_code,
+            name: w.name || fund.name || w.fund_code,
+            market: w.market || fund.market || 'domestic',
+            kind: w.kind || 'fund',
+            sector: w.sector || (w.kind === 'stock' ? inferStockSector(w.fund_code) : inferFundSector(fund.name || '')),
+            value, cost, todayProfit,
+            changePct: parseFloat(fund.gszzl) || 0,
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+    const items = itemResults.filter(Boolean);
 
     const classified = classifyHoldings(items);
     const aggregated = aggregateBySector(classified);

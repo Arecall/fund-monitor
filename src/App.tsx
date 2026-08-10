@@ -1559,22 +1559,21 @@ function App() {
   return (
     <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
 
-      {/* Toast — spring slide-in from top-right with origin awareness */}
+      {/* Toast — spring slide-in top-center (z-50 高于 Modal 与 Navbar，阴影与深度对比增强) */}
       <AnimatePresence>
         {toastMsg && (
           <motion.div
             key={toastMsg}
-            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -12, scale: 0.96 }}
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -20, scale: 0.92 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -12, scale: 0.96 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -16, scale: 0.94 }}
             transition={SPRING.toast}
-            style={{ originX: 1, originY: 0 }}
-            className="fixed top-4 left-1/2 -translate-x-1/2 md:left-4 md:translate-x-0 z-40 bg-slate-900 text-white dark:bg-white dark:text-slate-900 pl-2 pr-4 py-3 rounded-2xl shadow-2xl text-[11px] font-semibold flex items-center gap-2 border border-slate-800 dark:border-slate-200"
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-slate-900/95 text-white dark:bg-white/95 dark:text-slate-900 backdrop-blur-2xl px-4 py-2.5 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.25)] ring-1 ring-white/10 dark:ring-black/10 text-xs font-medium flex items-center gap-2.5 pointer-events-none"
           >
-            <span className="flex items-center justify-center w-5 h-5 rounded-full bg-blue-500 text-white">
-              <Info size={11} strokeWidth={2.5} />
+            <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-white shrink-0">
+              <Info size={10} strokeWidth={3} />
             </span>
-            {toastMsg}
+            <span>{toastMsg}</span>
           </motion.div>
         )}
       </AnimatePresence>

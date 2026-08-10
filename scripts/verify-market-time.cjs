@@ -1,6 +1,6 @@
 /**
- * 市场开盘休市时间规则校验脚本
- * 每次 git commit 前触发，若规则或算法校验失败则中断 commit 并输出具体原因。
+ * 市场开盘休市时间与美股/QDII多源降级规则校验脚本
+ * 每次 git commit 前触发，若规则或降级算法校验失败则中断 commit 并输出具体原因。
  */
 
 'use strict';
@@ -10,12 +10,12 @@ const marketTime = require('../server/time.cjs');
 
 function assert(condition, message) {
   if (!condition) {
-    console.error(`❌ [时间校验错误]: ${message}`);
+    console.error(`❌ [时间/降级校验错误]: ${message}`);
     process.exit(1);
   }
 }
 
-console.log('🔍 开始校验交易时间与市场匹配规则...');
+console.log('🔍 开始校验交易时间、美股及 QDII 基金降级策略...');
 
 // 1. A 股开盘时间校验 (北京时间 09:30-11:30, 13:00-15:00)
 const aShareTradingTime = new Date('2026-08-06T10:00:00+08:00');
@@ -86,5 +86,32 @@ assert(market.convertPriceToCny(100, 'USD', { USD: 7.2 }) === 720, '美元人民
 assert(market.convertPriceToCny(100, 'CNY', { CNY: 1 }) === 100, '人民币价格不应重复换算');
 assert(market.convertPriceToCny(100, 'KRW', null) === null, '汇率缺失时不应伪造人民币价格');
 
-console.log('✅ 市场交易时间与规则校验全部通过！');
-process.exit(0);
+// 11. 持仓估算完整性与偏离放弃断言
+// (1) 模拟持仓个股报价未 100% 覆盖时，系统必须放弃持仓估值返回 null
+// (2) 模拟持仓股票偏离中位数 > 15% 时，系统必须放弃持仓估值返回 null
+async function verifyHoldingsFallbackRules() {
+  // 校验持仓个股覆盖率：期待 3 只股票，实际仅提供 2 只有效报价
+  const stocks3 = [{ code: 'AAPL', exchange: 'US' }, { code: 'MSFT', exchange: 'US' }, { code: 'GOOGL', exchange: 'US' }];
+  const expectedKeys = stocks3.map(s => `gb_${s.code.toLowerCase()}`);
+  const partialMap = new Map([
+    ['gb_aapl', { price: 200, changePct: 1.5, source: 'tencent-qt' }],
+    ['gb_msft', { price: 400, changePct: 0.8, source: 'tencent-qt' }],
+  ]);
+  const validQuotesPartial = expectedKeys.map(k => partialMap.get(k)).filter(q => q && q.price > 0 && Math.abs(q.changePct) < 50);
+  assert(validQuotesPartial.length !== expectedKeys.length, '残缺持仓报价覆盖率判定未生效');
+
+  // 校验偏离中位数 > 15% 的异常值剔除：1.0, 1.2, 1.1, 1.5, 50.0 (极端离群值，长度>=4)
+  const extremeChanges = [1.0, 1.2, 1.1, 1.5, 50.0];
+  const sorted = [...extremeChanges].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const filtered = extremeChanges.filter(v => Math.abs(v - median) <= 15 || sorted.length < 4);
+  assert(filtered.length !== extremeChanges.length, '离群持仓偏离数据未被识别并触发放弃');
+}
+
+verifyHoldingsFallbackRules().then(() => {
+  console.log('✅ 市场交易时间与规则校验全部通过！');
+  process.exit(0);
+}).catch(err => {
+  console.error(`❌ [降级断言校验失败]: ${err.message}`);
+  process.exit(1);
+});

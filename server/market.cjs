@@ -1,4 +1,13 @@
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
+
+// 配置全局 HTTP / HTTPS Agent 实现 TCP 连接复用 (Keep-Alive)，减少 TLS 握手开销
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
+axios.defaults.httpAgent = httpAgent;
+axios.defaults.httpsAgent = httpsAgent;
+
 const iconv = require('iconv-lite');
 const marketTime = require('./time.cjs');
 const proxyTickers = require('./proxy-tickers.cjs');
@@ -135,10 +144,11 @@ function isGenericKnownQdiiResult(code, result) {
 }
 
 function isRepeatedGenericQdiiData(cacheKey, result, now = Date.now()) {
+  // 忽略随着打点走动的 gztime 时间戳，只针对价格/涨跌幅/单位净值做签名，
+  // 避免上游估值价格死锁但时间走动时重置计数器导致降级判定失效
   const signature = [
     result.quoteSource,
     result.fundcode || '',
-    result.gztime || '',
     result.gsz || '',
     result.gszzl || '',
     result.dwjz || '',
@@ -2125,268 +2135,307 @@ async function fetchStockQuotes(stockList) {
   const usCodes = stockList.filter(s => s.exchange === 'US');
   const jpCodes = stockList.filter(s => s.exchange === 'JP');
   const krCodes = stockList.filter(s => s.exchange === 'KR');
-  // 没有 exchange 标识的野码（如印度股票 ICICIBC 等），
-  // 兜底尝试三种接口，能命中哪个算哪个。
   const wildCodes = stockList.filter(s => !s.exchange);
 
   const out = new Map();
+  const tasks = [];
 
-  // A 股：hq.sinajs.cn
+  // 1. A 股任务
   if (aCodes.length > 0) {
-    const symbols = aCodes.map(s => `${s.market}${s.code}`).join(',');
-    try {
-      const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
-        responseType: 'arraybuffer',
-        headers: { 'Referer': 'http://finance.sina.com.cn' },
-        timeout: 6000
-      });
-      const text = iconv.decode(Buffer.from(r.data), 'gbk');
-      const lines = text.split('\n').filter(Boolean);
-      for (const line of lines) {
-        const m = line.match(/var hq_str_([a-z]{2}\d+)="([^"]+)"/);
-        if (!m) continue;
-        const sym = m[1];
-        const parts = m[2].split(',');
-        if (parts.length < 4) continue;
-        const name = parts[0];
-        const price = parseFloat(parts[1]);
-        const prevClose = parseFloat(parts[2]);
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
-        out.set(sym, { name, price, changePct });
-      }
-    } catch (e) {
-      console.warn('[holdings] sina A股行情失败:', e.message);
-    }
-  }
-
-  // 港股：试一下新浪港股接口 (hqfq.sinajs.cn)
-  if (hkCodes.length > 0) {
-    const symbols = hkCodes.map(s => `rt_hk${s.code}`).join(',');
-    try {
-      const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
-        responseType: 'arraybuffer',
-        headers: { 'Referer': 'http://finance.sina.com.cn' },
-        timeout: 6000
-      });
-      const text = iconv.decode(Buffer.from(r.data), 'gbk');
-      const lines = text.split('\n').filter(Boolean);
-      for (const line of lines) {
-        const m = line.match(/var hq_str_(rt_hk\d+)="([^"]+)"/);
-        if (!m) continue;
-        const sym = m[1];
-        const parts = m[2].split(',');
-        if (parts.length < 4) continue;
-        const name = parts[1];         // 港股 name 在 index 1
-        const price = parseFloat(parts[2]);
-        const prevClose = parseFloat(parts[3]);
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
-        out.set(sym, { name, price, changePct });
-      }
-    } catch (e) {
-      console.warn('[holdings] sina 港股行情失败:', e.message);
-    }
-  }
-
-  // 美股：hq.sinajs.cn/list=gb_<ticker>
-  //   美股字段顺序与 A 股不同：parts[0]=中文名  parts[1]=现价  parts[2]=涨跌幅%
-  //   parts[3]=datetime "YYYY-MM-DD HH:MM:SS"  parts[4]=涨跌额  parts[26]=昨收
-  if (usCodes.length > 0) {
-    const symbols = usCodes.map(s => `gb_${s.code.toLowerCase()}`).join(',');
-    try {
-      const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
-        responseType: 'arraybuffer',
-        headers: { 'Referer': 'http://finance.sina.com.cn' },
-        timeout: 6000
-      });
-      const text = iconv.decode(Buffer.from(r.data), 'gbk');
-      const lines = text.split('\n').filter(Boolean);
-      for (const line of lines) {
-        const m = line.match(/var hq_str_(gb_[a-z]+)="([^"]+)"/);
-        if (!m) continue;
-        const sym = m[1];
-        const parts = m[2].split(',');
-        if (parts.length < 5) continue;
-        const name = parts[0];
-        const price = parseFloat(parts[1]);
-        // 美股 parts[2] 已是带符号的涨跌幅%，直接用
-        const changePct = parseFloat(parts[2]);
-        out.set(sym, {
-          name,
-          price: Number.isFinite(price) ? price : null,
-          changePct: Number.isFinite(changePct) ? changePct : null,
-        });
-      }
-    } catch (e) {
-      console.warn('[holdings] sina 美股行情失败:', e.message);
-    }
-  }
-
-  // 韩国：腾讯 Qt 优先（kr005930），不支持时交由 Yahoo Finance（005930.KS）补全。
-  if (krCodes.length > 0) {
-    const pendingYahoo = [];
-    try {
-      const symbols = krCodes.map(s => `kr${s.code}`).join(',');
-      const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
-        responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
-      });
-      const text = iconv.decode(Buffer.from(r.data), 'gbk');
-      for (const line of text.split('\n').filter(Boolean)) {
-        const m = line.match(/v_(kr[A-Za-z0-9]+)="([^"]+)"/);
-        if (!m?.[2]) continue;
-        const parts = m[2].split('~');
-        const ticker = m[1].slice(2);
-        const price = parseFloat(parts[3]);
-        const prevClose = parseFloat(parts[4]);
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
-        if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
-          out.set(`kr_${ticker}`, { name: parts[1], price, changePct, source: 'tencent-qt', resolvedExchange: 'KR' });
-        }
-      }
-    } catch (e) {
-      console.warn('[holdings] tencent 韩国行情失败:', e.message);
-    }
-    for (const stock of krCodes) {
-      const key = `kr_${stock.code}`;
-      if (!out.has(key)) pendingYahoo.push(stock);
-    }
-    await Promise.all(pendingYahoo.map(async stock => {
-      const ticker = `${stock.code}.KS`;
+    tasks.push((async () => {
+      const symbols = aCodes.map(s => `${s.market}${s.code}`).join(',');
       try {
-        const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
-        });
-        const meta = r.data?.chart?.result?.[0]?.meta;
-        const price = meta?.regularMarketPrice;
-        const prevClose = meta?.chartPreviousClose || meta?.previousClose;
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
-        if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
-          out.set(`kr_${stock.code}`, {
-            name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance', resolvedExchange: 'KR',
-          });
-        }
-      } catch (e) {
-        console.warn(`[holdings] Yahoo 韩国行情 ${ticker} 失败:`, e.message);
-      }
-    }));
-  }
-
-  // 日本：腾讯 Qt 优先（jp285A），不支持时交由 Yahoo Finance（285A.T）补全。
-  if (jpCodes.length > 0) {
-    const pendingYahoo = [];
-    try {
-      const symbols = jpCodes.map(s => `jp${s.code}`).join(',');
-      const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
-        responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
-      });
-      const text = iconv.decode(Buffer.from(r.data), 'gbk');
-      for (const line of text.split('\n').filter(Boolean)) {
-        const m = line.match(/v_(jp[A-Za-z0-9]+)="([^"]+)"/);
-        if (!m?.[2]) continue;
-        const parts = m[2].split('~');
-        const ticker = m[1].slice(2).toUpperCase();
-        const price = parseFloat(parts[3]);
-        const prevClose = parseFloat(parts[4]);
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
-        if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
-          out.set(`jp_${ticker.toLowerCase()}`, { name: parts[1], price, changePct, source: 'tencent-qt' });
-        }
-      }
-    } catch (e) {
-      console.warn('[holdings] tencent 日本行情失败:', e.message);
-    }
-    for (const stock of jpCodes) {
-      const key = `jp_${stock.code.toLowerCase()}`;
-      if (!out.has(key)) pendingYahoo.push(stock);
-    }
-    await Promise.all(pendingYahoo.map(async stock => {
-      const ticker = `${stock.code.toUpperCase()}.T`;
-      try {
-        const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
-        });
-        const meta = r.data?.chart?.result?.[0]?.meta;
-        const price = meta?.regularMarketPrice;
-        const prevClose = meta?.chartPreviousClose || meta?.previousClose;
-        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
-        if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
-          out.set(`jp_${stock.code.toLowerCase()}`, {
-            name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance',
-          });
-        }
-      } catch (e) {
-        console.warn(`[holdings] Yahoo 日本行情 ${ticker} 失败:`, e.message);
-      }
-    }));
-  }
-
-  // 野码（无 exchange）兜底：尝试三种接口，能命中哪个算哪个。
-  // 注：避免对每个野码单独发请求，把它们批量塞进三种接口里。
-  if (wildCodes.length > 0) {
-    const wildSyms = wildCodes.map(s => s.code);
-    // 美股（gb_<lower>）
-    const usTry = wildSyms.filter(c => /^[A-Za-z]+$/.test(c)).map(c => `gb_${c.toLowerCase()}`);
-    // 港股（rt_hk<5位>）
-    const hkTry = wildSyms.filter(c => /^\d{5}$/.test(c)).map(c => `rt_hk${c}`);
-    // A 股（6位带 sh/sz 前缀的，野码里这种情况比较少）
-    const aTry  = wildSyms.filter(c => /^\d{6}$/.test(c)).map(c => `sh${c}`);
-
-    const allTry = [...usTry, ...hkTry, ...aTry].join(',');
-    if (allTry) {
-      try {
-        const r = await axios.get(`http://hq.sinajs.cn/list=${allTry}`, {
+        const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
           responseType: 'arraybuffer',
           headers: { 'Referer': 'http://finance.sina.com.cn' },
-          timeout: 3000
+          timeout: 6000
         });
         const text = iconv.decode(Buffer.from(r.data), 'gbk');
-        for (const line of text.split('\n').filter(Boolean)) {
-          const m = line.match(/var hq_str_([a-z_0-9]+)="([^"]+)"/);
+        const lines = text.split('\n').filter(Boolean);
+        for (const line of lines) {
+          const m = line.match(/var hq_str_([a-z]{2}\d+)="([^"]+)"/);
           if (!m) continue;
           const sym = m[1];
           const parts = m[2].split(',');
-          if (parts.length < 5) continue;
-          let name, price, changePct;
-          if (sym.startsWith('gb_')) {
-            name = parts[0];
-            price = parseFloat(parts[1]);
-            changePct = parseFloat(parts[2]);
-          } else if (sym.startsWith('rt_hk')) {
-            name = parts[1];
-            price = parseFloat(parts[6] >= 0 ? parts[6] : parts[2]);
-            // 港股用 parts[8] 直接拿涨跌幅%
-            changePct = parseFloat(parts[8]);
-          } else if (/^sh\d{6}$/.test(sym)) {
-            name = parts[0];
-            price = parseFloat(parts[1]);
-            const prevClose = parseFloat(parts[2]);
-            changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
-          }
-          if (name && Number.isFinite(price)) {
-            out.set(sym, { name, price, changePct: Number.isFinite(changePct) ? changePct : null });
+          if (parts.length < 4) continue;
+          const name = parts[0];
+          const price = parseFloat(parts[1]);
+          const prevClose = parseFloat(parts[2]);
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+          out.set(sym, { name, price, changePct });
+        }
+      } catch (e) {
+        console.warn('[holdings] sina A股行情失败:', e.message);
+      }
+    })());
+  }
+
+  // 2. 港股任务
+  if (hkCodes.length > 0) {
+    tasks.push((async () => {
+      const symbols = hkCodes.map(s => `rt_hk${s.code}`).join(',');
+      try {
+        const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
+          responseType: 'arraybuffer',
+          headers: { 'Referer': 'http://finance.sina.com.cn' },
+          timeout: 6000
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        const lines = text.split('\n').filter(Boolean);
+        for (const line of lines) {
+          const m = line.match(/var hq_str_(rt_hk\d+)="([^"]+)"/);
+          if (!m) continue;
+          const sym = m[1];
+          const parts = m[2].split(',');
+          if (parts.length < 4) continue;
+          const name = parts[1];
+          const price = parseFloat(parts[2]);
+          const prevClose = parseFloat(parts[3]);
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+          out.set(sym, { name, price, changePct });
+        }
+      } catch (e) {
+        console.warn('[holdings] sina 港股行情失败:', e.message);
+      }
+    })());
+  }
+
+  // 3. 美股任务：优先腾讯 Qt 美股，降级 Sina 美股
+  if (usCodes.length > 0) {
+    tasks.push((async () => {
+      const pendingSina = [];
+      try {
+        const symbols = usCodes.map(s => `us${s.code.toUpperCase()}`).join(',');
+        const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
+          responseType: 'arraybuffer',
+          headers: { 'Referer': 'https://gu.qq.com/' },
+          family: 4,
+          timeout: 6000
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        for (const line of text.split('\n').filter(Boolean)) {
+          const m = line.match(/v_(us[A-Za-z0-9.]+)=(?:"([^"]+)"|'([^']+)')/);
+          if (!m) continue;
+          const body = m[2] || m[3] || '';
+          const parts = body.split('~');
+          if (parts.length < 35) continue;
+          const sym = m[1];
+          const ticker = sym.slice(2).toLowerCase();
+          const name = parts[1] || ticker;
+          const price = parseFloat(parts[3]);
+          const prevClose = parseFloat(parts[4]);
+          let changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : parseFloat(parts[32]);
+          if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+            out.set(`gb_${ticker}`, { name, price, changePct, source: 'tencent-qt' });
           }
         }
       } catch (e) {
-        console.warn('[holdings] sina 野码行情失败:', e.message);
+        console.warn('[holdings] tencent 美股行情失败:', e.message);
       }
-    }
+
+      for (const stock of usCodes) {
+        const key = `gb_${stock.code.toLowerCase()}`;
+        if (!out.has(key)) pendingSina.push(stock);
+      }
+
+      if (pendingSina.length > 0) {
+        const symbols = pendingSina.map(s => `gb_${s.code.toLowerCase()}`).join(',');
+        try {
+          const r = await axios.get(`http://hq.sinajs.cn/list=${symbols}`, {
+            responseType: 'arraybuffer',
+            headers: { 'Referer': 'http://finance.sina.com.cn' },
+            timeout: 6000
+          });
+          const text = iconv.decode(Buffer.from(r.data), 'gbk');
+          const lines = text.split('\n').filter(Boolean);
+          for (const line of lines) {
+            const m = line.match(/var hq_str_(gb_[a-z]+)="([^"]+)"/);
+            if (!m) continue;
+            const sym = m[1];
+            const parts = m[2].split(',');
+            if (parts.length < 5) continue;
+            const name = parts[0];
+            const price = parseFloat(parts[1]);
+            const changePct = parseFloat(parts[2]);
+            out.set(sym, {
+              name,
+              price: Number.isFinite(price) ? price : null,
+              changePct: Number.isFinite(changePct) ? changePct : null,
+              source: 'sina-gb'
+            });
+          }
+        } catch (e) {
+          console.warn('[holdings] sina 美股行情失败:', e.message);
+        }
+      }
+    })());
   }
 
-  // ── 腾讯兜底 ──────────────────────────────────────────
-  // Sina 港股 rt_hk 不覆盖所有小票（如 00593 梦魇建材），美股 gb_ 对部分 OTC 不全。
-  // 找出 out 里还没命中的股票，批量打腾讯 qt.gtimg.cn（覆盖率更广）。
+  // 4. 韩国任务
+  if (krCodes.length > 0) {
+    tasks.push((async () => {
+      const pendingYahoo = [];
+      try {
+        const symbols = krCodes.map(s => `kr${s.code}`).join(',');
+        const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
+          responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        for (const line of text.split('\n').filter(Boolean)) {
+          const m = line.match(/v_(kr[A-Za-z0-9]+)="([^"]+)"/);
+          if (!m?.[2]) continue;
+          const parts = m[2].split('~');
+          const ticker = m[1].slice(2);
+          const price = parseFloat(parts[3]);
+          const prevClose = parseFloat(parts[4]);
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+          if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+            out.set(`kr_${ticker}`, { name: parts[1], price, changePct, source: 'tencent-qt', resolvedExchange: 'KR' });
+          }
+        }
+      } catch (e) {
+        console.warn('[holdings] tencent 韩国行情失败:', e.message);
+      }
+      for (const stock of krCodes) {
+        const key = `kr_${stock.code}`;
+        if (!out.has(key)) pendingYahoo.push(stock);
+      }
+      await Promise.all(pendingYahoo.map(async stock => {
+        const ticker = `${stock.code}.KS`;
+        try {
+          const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
+          });
+          const meta = r.data?.chart?.result?.[0]?.meta;
+          const price = meta?.regularMarketPrice;
+          const prevClose = meta?.chartPreviousClose || meta?.previousClose;
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+          if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+            out.set(`kr_${stock.code}`, {
+              name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance', resolvedExchange: 'KR',
+            });
+          }
+        } catch (e) {
+          console.warn(`[holdings] Yahoo 韩国行情 ${ticker} 失败:`, e.message);
+        }
+      }));
+    })());
+  }
+
+  // 5. 日本任务
+  if (jpCodes.length > 0) {
+    tasks.push((async () => {
+      const pendingYahoo = [];
+      try {
+        const symbols = jpCodes.map(s => `jp${s.code}`).join(',');
+        const r = await axios.get(`http://qt.gtimg.cn/q=${symbols}`, {
+          responseType: 'arraybuffer', headers: { Referer: 'https://gu.qq.com/' }, family: 4, timeout: 8000,
+        });
+        const text = iconv.decode(Buffer.from(r.data), 'gbk');
+        for (const line of text.split('\n').filter(Boolean)) {
+          const m = line.match(/v_(jp[A-Za-z0-9]+)="([^"]+)"/);
+          if (!m?.[2]) continue;
+          const parts = m[2].split('~');
+          const ticker = m[1].slice(2).toUpperCase();
+          const price = parseFloat(parts[3]);
+          const prevClose = parseFloat(parts[4]);
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+          if (parts[1] && Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+            out.set(`jp_${ticker.toLowerCase()}`, { name: parts[1], price, changePct, source: 'tencent-qt' });
+          }
+        }
+      } catch (e) {
+        console.warn('[holdings] tencent 日本行情失败:', e.message);
+      }
+      for (const stock of jpCodes) {
+        const key = `jp_${stock.code.toLowerCase()}`;
+        if (!out.has(key)) pendingYahoo.push(stock);
+      }
+      await Promise.all(pendingYahoo.map(async stock => {
+        const ticker = `${stock.code.toUpperCase()}.T`;
+        try {
+          const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`, {
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, timeout: 6000,
+          });
+          const meta = r.data?.chart?.result?.[0]?.meta;
+          const price = meta?.regularMarketPrice;
+          const prevClose = meta?.chartPreviousClose || meta?.previousClose;
+          const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
+          if (Number.isFinite(price) && price > 0 && Number.isFinite(changePct)) {
+            out.set(`jp_${stock.code.toLowerCase()}`, {
+              name: meta.shortName || meta.longName || ticker, price, changePct, source: 'yahoo-finance',
+            });
+          }
+        } catch (e) {
+          console.warn(`[holdings] Yahoo 日本行情 ${ticker} 失败:`, e.message);
+        }
+      }));
+    })());
+  }
+
+  // 6. 野码任务
+  if (wildCodes.length > 0) {
+    tasks.push((async () => {
+      const wildSyms = wildCodes.map(s => s.code);
+      const usTry = wildSyms.filter(c => /^[A-Za-z]+$/.test(c)).map(c => `gb_${c.toLowerCase()}`);
+      const hkTry = wildSyms.filter(c => /^\d{5}$/.test(c)).map(c => `rt_hk${c}`);
+      const aTry  = wildSyms.filter(c => /^\d{6}$/.test(c)).map(c => `sh${c}`);
+
+      const allTry = [...usTry, ...hkTry, ...aTry].join(',');
+      if (allTry) {
+        try {
+          const r = await axios.get(`http://hq.sinajs.cn/list=${allTry}`, {
+            responseType: 'arraybuffer',
+            headers: { 'Referer': 'http://finance.sina.com.cn' },
+            timeout: 3000
+          });
+          const text = iconv.decode(Buffer.from(r.data), 'gbk');
+          for (const line of text.split('\n').filter(Boolean)) {
+            const m = line.match(/var hq_str_([a-z_0-9]+)="([^"]+)"/);
+            if (!m) continue;
+            const sym = m[1];
+            const parts = m[2].split(',');
+            if (parts.length < 5) continue;
+            let name, price, changePct;
+            if (sym.startsWith('gb_')) {
+              name = parts[0];
+              price = parseFloat(parts[1]);
+              changePct = parseFloat(parts[2]);
+            } else if (sym.startsWith('rt_hk')) {
+              name = parts[1];
+              price = parseFloat(parts[6] >= 0 ? parts[6] : parts[2]);
+              changePct = parseFloat(parts[8]);
+            } else if (/^sh\d{6}$/.test(sym)) {
+              name = parts[0];
+              price = parseFloat(parts[1]);
+              const prevClose = parseFloat(parts[2]);
+              changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+            }
+            if (name && Number.isFinite(price)) {
+              out.set(sym, { name, price, changePct: Number.isFinite(changePct) ? changePct : null });
+            }
+          }
+        } catch (e) {
+          console.warn('[holdings] sina 野码行情失败:', e.message);
+        }
+      }
+    })());
+  }
+
+  // 并发等待各市场主要接口执行完毕
+  await Promise.all(tasks);
+
+  // 7. 腾讯兜底补充未命中小票
   if (stockList.length > 0) {
     const missing = stockList.filter(s => {
-      // 计算对应的 Sina quoteKey
       let k;
-        if (s.exchange === 'SH' || s.exchange === 'SZ') k = `${s.market}${s.code}`;
+      if (s.exchange === 'SH' || s.exchange === 'SZ') k = `${s.market}${s.code}`;
       else if (s.exchange === 'HK') k = `rt_hk${s.code}`;
       else if (s.exchange === 'US') k = `gb_${s.code.toLowerCase()}`;
       else {
-        // 野码：尝试的多种 key 看哪个命中
         const wilds = [`gb_${s.code.toLowerCase()}`, `rt_hk${s.code}`, `sh${s.code}`, `sz${s.code}`, `bj${s.code}`];
         return !wilds.some(wk => out.has(wk));
       }
-      // 已有数据且价格有效 → 不补
       const v = out.get(k);
       return !(v && Number.isFinite(v.price) && v.price > 0);
     });
@@ -2396,7 +2445,6 @@ async function fetchStockQuotes(stockList) {
         if (s.exchange === 'SH' || s.exchange === 'SZ') return `${s.market}${s.code}`;
         if (s.exchange === 'HK') return `hk${s.code.padStart(5, '0')}`;
         if (s.exchange === 'US') return `us${s.code.toLowerCase()}`;
-        // 野码：尝试所有形态
         const c = s.code;
         if (/^[A-Za-z]+$/.test(c)) return `us${c.toLowerCase()}`;
         if (/^\d{5}$/.test(c)) return `hk${c}`;
@@ -2412,32 +2460,23 @@ async function fetchStockQuotes(stockList) {
         });
         const text = iconv.decode(Buffer.from(r.data), 'gbk');
         for (const line of text.split('\n').filter(Boolean)) {
-          // v_sh600519="1~..."  v_hk00700="100~..."  v_usAAPL="200~..."  v_usQQQ="200~..."
-          // 美股 ticker 含大写字母（如 QQQ），所以字符类必须含 A-Z
           const m = line.match(/v_([A-Za-z0-9]+)="([^"]+)"/);
-          if (!m || !m[2]) continue;          // 腾讯对未知代码返回空串
+          if (!m || !m[2]) continue;
           const sym = m[1];
           const parts = m[2].split('~');
           if (parts.length < 50) continue;
           let name, price, changePct, quoteKey;
           if (sym.startsWith('sh') || sym.startsWith('sz') || sym.startsWith('bj')) {
-            // A 股字段：[3]=现价 [4]=昨收 [5]=今开 [32]=涨跌 [33]=涨幅%
-            //           [34]=最高 [35]=最低 [36]=量 [37]=额
-            // 但 parts 长度随市场而异，统一按实测索引
             name = parts[1];
             price = parseFloat(parts[3]);
-            const prevClose = parseFloat(parts[4]);
             changePct = parseFloat(parts[33]);
             quoteKey = sym;
           } else if (sym.startsWith('hk')) {
-            // 港股：[3]=现价 [4]=昨收 [5]=今开 [33]=涨幅% [34]=最高 [35]=最低
-            //       [36]=量 [37]=额 [38]=换手率
             name = parts[1];
             price = parseFloat(parts[3]);
             changePct = parseFloat(parts[32]);
             quoteKey = `rt_hk${sym.slice(2)}`;
           } else if (sym.startsWith('us')) {
-            // 腾讯美股：名称 [1]、现价 [3]、昨收 [4]；以价格差计算涨跌幅。
             name = parts[1];
             price = parseFloat(parts[3]);
             const prevClose = parseFloat(parts[4]);

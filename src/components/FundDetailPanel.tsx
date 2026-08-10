@@ -730,9 +730,9 @@ function HoldingsSummaryCard({
                   </table>
                 </div>
               )}
-              <div className="px-4 py-2 text-[10px] text-slate-400 border-t border-[var(--hairline-border)] flex items-center justify-between">
-                <span>实时行情 · 新浪财经</span>
-                <span>单股占比数据免费 API 暂不可用</span>
+              <div className="px-4 py-2 text-[10px] text-slate-400 border-t border-[var(--hairline-border)] flex items-center justify-between flex-wrap gap-1">
+                <span>持仓报价 · 腾讯/新浪/Yahoo多源行情</span>
+                <span>持仓清单由东财季报提供 (占比数据未公开)</span>
               </div>
             </div>
           </motion.div>
