@@ -1437,7 +1437,7 @@ async function fetchHoldingsBasedEstimate(code) {
   if (!m) return null;
   const codesRaw = m[1].match(/"([^"]+)"/g)?.map(s => s.slice(1, -1)) || [];
   const stocks = parseStockCodes(codesRaw.slice(0, 10), { onlyNonAShare: true })
-    .filter(s => s.exchange === 'US' || s.exchange === 'HK' || s.exchange === 'JP' || s.exchange === 'KR');
+    .filter(s => s.exchange === 'US' || s.exchange === 'HK' || s.exchange === 'JP' || s.exchange === 'KR' || s.exchange === 'SH' || s.exchange === 'SZ');
   if (stocks.length < 3) return null;
 
   const quotes = await fetchStockQuotes(stocks);
@@ -1447,7 +1447,9 @@ async function fetchHoldingsBasedEstimate(code) {
       ? `jp_${stock.code.toLowerCase()}`
       : stock.exchange === 'KR'
         ? `kr_${stock.code}`
-        : `rt_hk${stock.code}`;
+        : stock.exchange === 'SH' || stock.exchange === 'SZ'
+          ? `${stock.market}${stock.code}`
+          : `rt_hk${stock.code}`;
   const expectedKeys = stocks.map(quoteKey);
   const validQuotes = expectedKeys.map(key => quotes.get(key)).filter(quote =>
     quote && Number.isFinite(quote.price) && quote.price > 0
