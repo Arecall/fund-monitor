@@ -39,9 +39,6 @@ app.use('/api', (_req, res, next) => {
 });
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.28' });
-});
 app.use(express.static(DIST_DIR, {
   etag: true,
   setHeaders(res, filePath) {
@@ -71,7 +68,8 @@ app.use((req, res, next) => {
 async function userIsolationMiddleware(req, res, next) {
   // 对于大盘行情 + 登录端点 + 实时推送 SSE，不需要用户隔离
   // （推送流是 anonymous 共享的，每个 code 只保持一份抓取循环）
-  if (req.path.startsWith('/api/market/') ||
+  if (req.path === '/api/health' ||
+      req.path.startsWith('/api/market/') ||
       req.path.startsWith('/api/stream/') ||
       req.path === '/api/auth/login') {
     return next();
