@@ -136,8 +136,9 @@ function detectMarketFromName(name) {
 }
 
 function isGenericKnownQdiiResult(code, result) {
-  return !!result
-    && proxyTickers.isKnownProxyFund(code)
+  if (!result) return false;
+  const isUsQdii = result.market === 'us' || detectMarketFromName(result.name) === 'us';
+  return isUsQdii
     && !result.estimate
     && !result.proxyTicker
     && (result.quoteSource === 'fundgz' || result.quoteSource === 'sina-fu');

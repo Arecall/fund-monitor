@@ -22,7 +22,25 @@ const KNOWN_QDII_PROXIES = Object.freeze({
       sourceName: 'Invesco QQQ Trust (Nasdaq-100)',
       type: 'etf',
     }),
-    // 尚未通过 ENABLE_QUOTE_PROBE 验证 NQ 期货腾讯代码与夜盘更新时间；禁止启用。
+    futuresProxy: Object.freeze({
+      enabled: false,
+      tencentSymbol: null,
+      tickerLabel: 'NQ',
+      sourceName: 'Nasdaq-100 Futures',
+      type: 'future',
+    }),
+  }),
+  '001668': Object.freeze({
+    code: '001668',
+    market: 'us',
+    family: 'global_tech',
+    label: '全球移动互联网',
+    regularProxy: Object.freeze({
+      tencentSymbol: 'usQQQ',
+      tickerLabel: 'QQQ',
+      sourceName: 'Invesco QQQ Trust (Nasdaq-100)',
+      type: 'etf',
+    }),
     futuresProxy: Object.freeze({
       enabled: false,
       tencentSymbol: null,
