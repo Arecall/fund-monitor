@@ -50,16 +50,21 @@ assert(domesticSemi === 'domestic', '025687 国泰半导体国内 A 股基金误
 assert(market.isInTradingTime('040046', usTradingTime, 'us') === true, '040046 美股盘中时间未识别');
 
 // 6. 已注册 QDII 泛源连续返回同一行情超过 2 分钟时必须触发降级；行情改变后重新计时。
+// 白天（非美股开盘时间）A 股开盘推送的 QDII 占位符必须被判定拦截并降级
 const repeatCacheKey = 'verify:040046';
 const genericQuote = {
   quoteSource: 'fundgz', fundcode: '040046', gztime: '2026-08-06 23:00',
-  gsz: '8.1000', gszzl: '1.00', dwjz: '8.0200',
+  gsz: '8.1000', gszzl: '1.00', dwjz: '8.0200', market: 'us', name: '华安纳斯达克100ETF联接(QDII)A'
 };
 const repeatStart = Date.parse('2026-08-06T23:00:00+08:00');
 assert(market.isRepeatedGenericQdiiData(repeatCacheKey, genericQuote, repeatStart) === false, 'QDII 首次泛源数据不应降级');
 assert(market.isRepeatedGenericQdiiData(repeatCacheKey, genericQuote, repeatStart + 119_000) === false, 'QDII 相同泛源数据不足 2 分钟不应降级');
 assert(market.isRepeatedGenericQdiiData(repeatCacheKey, genericQuote, repeatStart + 121_000) === true, 'QDII 相同泛源数据超过 2 分钟未触发降级');
 assert(market.isRepeatedGenericQdiiData(repeatCacheKey, { ...genericQuote, gsz: '8.1010' }, repeatStart + 122_000) === false, 'QDII 泛源数据变化后未重新计时');
+
+// 校验 QDII 美股基金在白天 A 股开盘时间（例如 09:35）下美股休市时的盘中状态拦截
+const daytimeTime = new Date('2026-08-06T09:35:00+08:00');
+assert(market.isInTradingTime('040046', daytimeTime, 'us') === false, '美股 QDII 白天 A 股开盘时间不应判定为美股盘中');
 
 // 7. pingzhongdata 日本 TSE 代码：285A 是铠侠（285A.T），绝不能误判成港股 00285。
 const kioxia = market.parseStockCodes(['285A'], { onlyNonAShare: true })[0];

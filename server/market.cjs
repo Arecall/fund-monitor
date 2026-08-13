@@ -1835,14 +1835,23 @@ async function getFundValuation(code, kindOverride) {
         }
       }
       // 已注册 QDII：普通 fundgz / 新浪基金源最多允许滞后 2 分钟；
-      // 即使时间字段仍新鲜，连续超过 2 分钟返回同一行情也视为上游卡住并降级。
+      // 1) 即使时间字段仍新鲜，连续超过 2 分钟返回同一行情也视为上游卡住并降级。
+      // 2) 白天（非美股交易时间，如 09:30 - 15:00）东财 fundgz / Sina fu_ 经常按 A 股开盘推送全 0 或占位符数据 (例如 09:35 推送 +0.03%/-0.00%)，
+      //    必须在此处直接拦截并放弃 generic 源，避免干扰美股 QDII 的持仓估算/代理标的估值。
       if (isGenericKnownQdiiResult(code, result)) {
         const dataTime = marketTime.parseBeijingDateTime(result.gztime);
         const genericFresh = dataTime != null && now - dataTime >= 0
           && now - dataTime <= GENERIC_QDII_REALTIME_FRESH_MS;
         const repeatedData = genericFresh && isRepeatedGenericQdiiData(cacheKey, result, now);
-        if (!genericFresh || repeatedData) {
-          const reason = repeatedData ? 'repeated for over 2 minutes' : 'not fresh for over 2 minutes';
+
+        // 校验白天非美股交易时间段 (美股休市/非盘中时间) 的通用源占位符拦截
+        const isUsTrading = isInTradingTime(code, new Date(now), 'us');
+        const isDaytimePlaceholder = !isUsTrading && (result.market === 'us' || detectMarketFromName(result.name) === 'us');
+
+        if (!genericFresh || repeatedData || isDaytimePlaceholder) {
+          let reason = 'not fresh for over 2 minutes';
+          if (isDaytimePlaceholder) reason = 'daytime A-share market open placeholder data (US market closed)';
+          else if (repeatedData) reason = 'repeated for over 2 minutes';
           console.log(`[fund] ${code} generic source ${result.quoteSource} ${reason} (${result.gztime || 'no time'}), preferring holdings/proxy`);
           result = null;
         }
