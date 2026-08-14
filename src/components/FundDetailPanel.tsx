@@ -11,7 +11,9 @@ import {
   User,
   TrendingUp,
   TrendingDown,
-  Briefcase
+  Briefcase,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import type {
   FundValuation,
@@ -43,6 +45,8 @@ interface FundDetailPanelProps {
   basic?: FundBasicInfo | null | undefined;
   holdings?: FundHoldingStock[];
   kind?: 'fund' | 'stock';
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
   onEditPosition?: () => void;
   onToast?: (msg: string) => void;
 }
@@ -60,6 +64,8 @@ export function FundDetailPanel({
   basic = null,
   holdings = [],
   kind = 'fund',
+  isExpanded = false,
+  onToggleExpand,
   onEditPosition,
   onToast
 }: FundDetailPanelProps) {
@@ -172,6 +178,18 @@ export function FundDetailPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {onToggleExpand && (
+            <Button
+              type="default"
+              size="small"
+              shape="round"
+              icon={isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              onClick={onToggleExpand}
+              className="hidden md:flex items-center text-xs border-[var(--hairline-border)] shadow-none"
+            >
+              {isExpanded ? '收起弹窗' : '全屏展开'}
+            </Button>
+          )}
           <Button
             type="default"
             size="small"
@@ -381,9 +399,9 @@ export function FundDetailPanel({
 
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
-        <Suspense fallback={<div className="h-[300px] rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse" />}>
+        <Suspense fallback={<div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse`} />}>
           {minuteLoading ? (
-            <div className="h-[300px] rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse flex items-center justify-center">
+            <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse flex items-center justify-center`}>
               <span className="text-xs text-slate-400 dark:text-slate-500">分时数据加载中…</span>
             </div>
           ) : (
@@ -416,7 +434,7 @@ export function FundDetailPanel({
             return typeof v === 'number' && v > 0 ? v : undefined;
           })()}
           minuteFeed={minuteData}
-          height={300}
+          height={isExpanded ? 400 : 300}
           history={history}
           historyLoading={historyLoading}
           refreshing={refreshing}

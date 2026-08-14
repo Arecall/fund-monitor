@@ -19,7 +19,9 @@ import {
   Settings,
   X,
   Loader2,
-  Pencil
+  Pencil,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   loginUser,
@@ -749,6 +751,7 @@ function App() {
 
   /* ---------- Selection state for detail panel ---------- */
   const [selectedFundCode, setSelectedFundCode] = useState<string | null>(null);
+  const [isDetailExpanded, setIsDetailExpanded] = useState(false);
   const [deletingItem, setDeletingItem] = useState<{ code: string; name: string } | null>(null);
   const [historyMap, setHistoryMap] = useState<Record<string, FundHistoryPoint[]>>({});
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -3136,10 +3139,15 @@ function App() {
           return (
           <DetailDrawer
             key="detail-drawer"
-            onDismiss={() => setSelectedFundCode(null)}
+            onDismiss={() => {
+              setSelectedFundCode(null);
+              setIsDetailExpanded(false);
+            }}
             ariaLabel={isStock ? '股票详情' : '基金详情'}
             title={isStock ? '股票详情' : '基金详情'}
             isDarkMode={isDarkMode}
+            isExpanded={isDetailExpanded}
+            onToggleExpand={() => setIsDetailExpanded(v => !v)}
           >
             <React.Suspense fallback={<DetailPanelSkeleton />}>
             <DetailErrorBoundary>
@@ -3152,8 +3160,11 @@ function App() {
               historyLoading={historyLoading}
               basic={basicMap[selectedFundCode]}
               holdings={holdingsMap[selectedFundCode] || []}
+              isExpanded={isDetailExpanded}
+              onToggleExpand={() => setIsDetailExpanded(v => !v)}
               onEditPosition={() => {
                 setSelectedFundCode(null);
+                setIsDetailExpanded(false);
                 setTimeout(() => openEditPosition(selectedFundCode), 280);
               }}
               onToast={showToast}
@@ -3291,12 +3302,16 @@ function DetailDrawer({
   ariaLabel,
   title = '详情',
   isDarkMode = false,
+  isExpanded = false,
+  onToggleExpand,
 }: {
   children: React.ReactNode;
   onDismiss: () => void;
   ariaLabel: string;
   title?: string;
   isDarkMode?: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   const [visible, setVisible] = useState(true);
 
@@ -3321,12 +3336,40 @@ function DetailDrawer({
       }}
     >
       <Drawer
-        title={<span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>}
+        title={
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
+            {isExpanded && (
+              <Tag color="processing" className="text-[10px] rounded-full border-0 font-semibold m-0">
+                全屏视图
+              </Tag>
+            )}
+          </div>
+        }
+        extra={
+          onToggleExpand ? (
+            <div className="flex items-center gap-2 mr-2">
+              <button
+                type="button"
+                onClick={onToggleExpand}
+                title={isExpanded ? '收起弹窗' : '展开全屏视图'}
+                className="hidden md:flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 rounded-full transition-colors cursor-pointer"
+              >
+                {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                <span>{isExpanded ? '收起' : '展开'}</span>
+              </button>
+            </div>
+          ) : null
+        }
         placement="right"
         open={visible}
         onClose={handleClose}
         afterOpenChange={handleAfterOpenChange}
-        width={typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : 640}
+        width={
+          isExpanded
+            ? '100vw'
+            : typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : 640
+        }
         aria-label={ariaLabel}
         styles={{
           header: {
@@ -3334,7 +3377,7 @@ function DetailDrawer({
             borderBottom: '1px solid var(--hairline-border)',
           },
           body: {
-            padding: '12px 16px',
+            padding: isExpanded ? '20px 32px' : '12px 16px',
             backgroundColor: 'var(--canvas-bg)',
           },
           mask: {
