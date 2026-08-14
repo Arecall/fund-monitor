@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Card, Tag, Button, Badge, BorderBeam, Statistic } from 'antd';
+import { Card, Tag, Button, Badge, BorderBeam, Statistic, Row, Col, Divider } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
@@ -28,7 +28,7 @@ const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.Ale
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
 import { QuoteSourceBadge } from './QuoteSourceBadge';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
-import { formatMarketCap, formatVolume } from '../utils/format';
+import { formatMarketCap } from '../utils/format';
 import type { MinuteFeed } from '../utils/chartData';
 
 const SPRING = {
@@ -140,6 +140,7 @@ export function FundDetailPanel({
   const holdingValue = position ? position.shares * current : 0;
   const holdingCost  = position ? position.shares * position.cost : 0;
   const holdingProfit = holdingValue - holdingCost;
+  const holdingProfitPct = holdingCost > 0 ? (holdingProfit / holdingCost) * 100 : 0;
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -202,143 +203,182 @@ export function FundDetailPanel({
         </div>
       </div>
 
-      {/* ── Metric row — funds 6 / stocks 8 cards ─────────────── */}
-      <div className={`grid grid-cols-2 gap-3 ${kind === 'stock' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'}`}>
-        <MetricCard
-          label="当前净值"
-          tone="neutral"
-          title={current.toFixed(6)}
-          value={current}
-          precision={4}
-        />
+      {/* ── Financial Terminal Metric Banner ──────────────────────────── */}
+      <Card
+        size="small"
+        className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-slate-50/50 dark:bg-white/[0.03] overflow-hidden"
+        styles={{
+          body: { padding: '16px 20px' }
+        }}
+      >
+        <Row gutter={[16, 16]}>
+          <Col span={6} xs={12} sm={6}>
+            <Statistic
+              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前净值</span>}
+              value={current}
+              precision={4}
+              valueStyle={{
+                color: 'var(--color-text-main, inherit)',
+                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontWeight: 700,
+                fontSize: '1.25rem'
+              }}
+            />
+          </Col>
 
-        <MetricCard
-          label="实时涨跌"
-          tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}
-          value={Math.abs(changeAmt)}
-          precision={4}
-          prefix={isUp ? <ArrowUpOutlined /> : isDown ? <ArrowDownOutlined /> : null}
-        />
+          <Col span={6} xs={12} sm={6}>
+            <Statistic
+              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">实时涨跌</span>}
+              value={Math.abs(changeAmt)}
+              precision={4}
+              prefix={isUp ? <ArrowUpOutlined style={{ fontSize: 16 }} /> : isDown ? <ArrowDownOutlined style={{ fontSize: 16 }} /> : null}
+              valueStyle={{
+                color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'inherit',
+                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontWeight: 700,
+                fontSize: '1.25rem'
+              }}
+            />
+          </Col>
 
-        <MetricCard
-          label="今日涨跌幅"
-          tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}
-          value={Math.abs(changePct)}
-          precision={2}
-          prefix={isUp ? <ArrowUpOutlined /> : isDown ? <ArrowDownOutlined /> : null}
-          suffix="%"
-        />
+          <Col span={6} xs={12} sm={6}>
+            <Statistic
+              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">今日涨跌幅</span>}
+              value={Math.abs(changePct)}
+              precision={2}
+              prefix={isUp ? <ArrowUpOutlined style={{ fontSize: 16 }} /> : isDown ? <ArrowDownOutlined style={{ fontSize: 16 }} /> : null}
+              suffix="%"
+              valueStyle={{
+                color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'inherit',
+                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontWeight: 700,
+                fontSize: '1.25rem'
+              }}
+            />
+          </Col>
 
-        <MetricCard
-          label="昨收"
-          tone="neutral"
-          title={previous > 0 ? previous.toFixed(6) : '—'}
-          value={previous > 0 ? previous : 0}
-          precision={4}
-        />
+          <Col span={6} xs={12} sm={6}>
+            <Statistic
+              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">昨收</span>}
+              value={previous > 0 ? previous : 0}
+              precision={4}
+              valueStyle={{
+                color: 'var(--color-text-main, inherit)',
+                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                fontWeight: 700,
+                fontSize: '1.25rem'
+              }}
+            />
+            {fund.jzrq && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{fund.jzrq}</div>}
+          </Col>
+        </Row>
 
-        {/* 个股专属：总市值 / 换手率（仅 stock + 东财字段就绪时显示） */}
-        {kind === 'stock' && (() => {
-          const totalMC = (fund as any).stockSpecific?.totalMarketCap;
-          const turnoverRate = (fund as any).stockSpecific?.turnoverRate;
-          if (!totalMC && turnoverRate === undefined && turnoverRate === null) return null;
-          return (
-            <>
-              <MetricCard label="总市值" tone="neutral" title={typeof totalMC === 'number' ? `${totalMC.toFixed(0)} 元` : '—'}>
-                <span className="font-mono font-bold text-sm sm:text-base tabular-nums text-slate-800 dark:text-slate-100 leading-tight whitespace-nowrap truncate">
-                  {typeof totalMC === 'number' && totalMC > 0 ? formatMarketCap(totalMC, fund.market) : '—'}
-                </span>
-                <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums whitespace-nowrap truncate">
-                  {typeof totalMC === 'number' && totalMC > 0 && current > 0 && previous > 0
-                    ? `流通 ${formatMarketCap((fund as any).stockSpecific?.floatMarketCap ?? 0, fund.market)}`
-                    : '—'}
-                </span>
-              </MetricCard>
-              <MetricCard label="换手率" tone="neutral" title={typeof turnoverRate === 'number' ? `${turnoverRate.toFixed(2)}%` : '—'}>
-                <span className="font-mono font-bold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100">
-                  {typeof turnoverRate === 'number' && turnoverRate >= 0 ? `${turnoverRate.toFixed(2)}%` : '—'}
-                </span>
-                {(() => {
-                  const vol = (fund as any).stockSpecific?.volume;
-                  return typeof vol === 'number' && vol > 0 ? (
-                    <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
-                      总量 {formatVolume(vol, fund.market)}
-                    </span>
-                  ) : null;
-                })()}
-              </MetricCard>
-            </>
-          );
-        })()}
+        <Divider className="my-3 border-slate-200/60 dark:border-white/10" />
 
-        <MetricCard label="更新时间" tone="neutral">
-          <span className="font-mono font-semibold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100">
-            {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
-          </span>
-          <span className="text-[10px] text-slate-400 mt-0.5 font-mono">
-            {new Date(gzTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
-          </span>
-        </MetricCard>
+        <Row gutter={[16, 16]}>
+          <Col span={6} xs={12} sm={6}>
+            <div className="flex flex-col justify-between h-full">
+              <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">更新时间</span>
+              <div className="mt-1">
+                <div className="text-base sm:text-lg font-bold font-sans text-slate-800 dark:text-slate-100 leading-tight">
+                  {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                  {new Date(gzTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
+                </div>
+              </div>
+            </div>
+          </Col>
 
-        {basic?.scale?.size != null && (
-          <MetricCard label="当前规模" tone="neutral" title={`${basic.scale.size!.toFixed(2)} 亿`}>
-            <span className="font-mono font-bold text-lg sm:text-xl tabular-nums text-slate-800 dark:text-slate-100 leading-none">
-              {basic.scale.size!.toFixed(2)}
-              <span className="text-xs font-normal text-slate-500 ml-0.5">亿</span>
-            </span>
-            <span
-              className="text-[10px] mt-0.5 flex items-center gap-1 whitespace-nowrap"
-              title={`较上一季度（${basic.scale.reportDate || ''}）规模变化`}
-            >
-              {basic.scale.changePct != null && (
-                <span
-                  className={
-                    'inline-flex items-center gap-0.5 font-mono font-semibold tabular-nums ' +
-                    (basic.scale.changePct > 0
-                      ? 'text-[var(--color-up)]'
-                      : basic.scale.changePct < 0
-                        ? 'text-[var(--color-down)]'
-                        : 'text-slate-400')
-                  }
-                >
-                  {basic.scale.changePct > 0 ? (
-                    <TrendingUp size={11} strokeWidth={2.5} className="shrink-0" />
-                  ) : basic.scale.changePct < 0 ? (
-                    <TrendingDown size={11} strokeWidth={2.5} className="shrink-0" />
-                  ) : null}
-                  {basic.scale.changePct > 0 ? '+' : ''}
-                  {basic.scale.changePct.toFixed(2)}%
-                </span>
-              )}
-              {basic.scale.reportDate && (
-                <span className="font-mono tabular-nums text-slate-400">
-                  · {basic.scale.reportDate.slice(5)}
-                </span>
-              )}
-            </span>
-          </MetricCard>
-        )}
+          <Col span={6} xs={12} sm={6}>
+            {kind === 'stock' && (fund as any).stockSpecific?.totalMarketCap ? (
+              <Statistic
+                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">总市值</span>}
+                value={formatMarketCap((fund as any).stockSpecific.totalMarketCap, fund.market)}
+                valueStyle={{
+                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  fontWeight: 700,
+                  fontSize: '1.125rem'
+                }}
+              />
+            ) : basic?.scale?.size != null ? (
+              <Statistic
+                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前规模</span>}
+                value={basic.scale.size}
+                precision={2}
+                suffix="亿"
+                valueStyle={{
+                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  fontWeight: 700,
+                  fontSize: '1.125rem'
+                }}
+              />
+            ) : (
+              <div className="flex flex-col justify-between h-full">
+                <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前规模</span>
+                <div className="text-sm text-slate-400 font-medium mt-1">—</div>
+              </div>
+            )}
+          </Col>
 
-        <MetricCard
-          label="持有金额"
-          tone={position ? (holdingProfit > 0 ? 'up' : holdingProfit < 0 ? 'down' : 'neutral') : 'muted'}
-          onClick={onEditPosition}
-          className="col-span-2 sm:col-span-1"
-        >
-          {position ? (
-            <>
-              <span className="font-mono font-bold text-lg sm:text-xl tabular-nums">
-                {currencyPrefix}{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <Col span={6} xs={12} sm={6}>
+            <div className="flex flex-col justify-between h-full cursor-pointer group" onClick={onEditPosition}>
+              <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                持有金额 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
               </span>
-              <span className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 truncate">
-                {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)} <Pencil size={9} className="shrink-0" />
-              </span>
-            </>
-          ) : (
-            <span className="text-xs text-slate-400 font-medium">未持仓</span>
-          )}
-        </MetricCard>
-      </div>
+              <div className="mt-1">
+                {position ? (
+                  <>
+                    <div className="text-base sm:text-lg font-bold font-sans text-slate-800 dark:text-slate-100 leading-tight">
+                      {currencyPrefix}{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+                      {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-slate-400 font-medium">未持仓</div>
+                )}
+              </div>
+            </div>
+          </Col>
+
+          <Col span={6} xs={12} sm={6}>
+            {position ? (
+              <Statistic
+                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">估算收益</span>}
+                value={Math.abs(holdingProfit)}
+                precision={2}
+                prefix={holdingProfit > 0 ? '+' : holdingProfit < 0 ? '-' : ''}
+                suffix={`${currencyPrefix} (${holdingProfitPct >= 0 ? '+' : ''}${holdingProfitPct.toFixed(2)}%)`}
+                valueStyle={{
+                  color: holdingProfit > 0 ? 'var(--color-up)' : holdingProfit < 0 ? 'var(--color-down)' : 'inherit',
+                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  fontWeight: 700,
+                  fontSize: '1.125rem'
+                }}
+              />
+            ) : kind === 'stock' && (fund as any).stockSpecific?.turnoverRate != null ? (
+              <Statistic
+                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">换手率</span>}
+                value={(fund as any).stockSpecific.turnoverRate}
+                precision={2}
+                suffix="%"
+                valueStyle={{
+                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  fontWeight: 700,
+                  fontSize: '1.125rem'
+                }}
+              />
+            ) : (
+              <div className="flex flex-col justify-between h-full">
+                <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">持仓收益</span>
+                <div className="text-sm text-slate-400 font-medium mt-1">—</div>
+              </div>
+            )}
+          </Col>
+        </Row>
+      </Card>
 
       {/* ── Real-time change banner ──────────────────────────── */}
       {(() => {
@@ -1122,98 +1162,6 @@ function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
 
 /* ─────────────────────────────────────────────────────────────────── */
 
-function MetricCard({
-  label,
-  tone,
-  value,
-  precision,
-  prefix,
-  suffix,
-  onClick,
-  title,
-  className = '',
-  children
-}: {
-  label: string;
-  tone: 'up' | 'down' | 'neutral' | 'muted';
-  value?: number | string;
-  precision?: number;
-  prefix?: React.ReactNode;
-  suffix?: React.ReactNode;
-  highlight?: boolean;
-  onClick?: () => void;
-  title?: string;
-  className?: string;
-  children?: React.ReactNode;
-}) {
-  const isUp = tone === 'up';
-  const isDown = tone === 'down';
-  const isMuted = tone === 'muted';
-
-  const textColor = isUp
-    ? 'var(--color-up)'
-    : isDown
-      ? 'var(--color-down)'
-      : isMuted ? '#94a3b8' : 'inherit';
-
-  const content = (
-    <Card
-      size="small"
-      title={null}
-      hoverable={!!onClick}
-      className={`min-h-[96px] rounded-2xl border border-[var(--hairline-border)] bg-slate-100/50 dark:bg-white/[0.04] ${onClick ? 'cursor-pointer' : ''} ${className}`}
-      styles={{
-        body: {
-          padding: '12px 14px',
-          height: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'space-between',
-        }
-      }}
-    >
-      <div title={title} className="h-full flex flex-col justify-between">
-        {value !== undefined ? (
-          <Statistic
-            title={<span className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>{label}</span>}
-            value={value}
-            precision={precision}
-            prefix={prefix}
-            suffix={suffix}
-            valueStyle={{
-              color: textColor,
-              fontFamily: 'monospace',
-              fontWeight: 'bold',
-              fontSize: '1.125rem',
-              lineHeight: 1.2,
-            }}
-          />
-        ) : (
-          <>
-            <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
-              {label}
-            </div>
-            <div className={`flex flex-col min-w-0 justify-end flex-1 ${isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50'}`}>
-              {children}
-            </div>
-          </>
-        )}
-      </div>
-    </Card>
-  );
-
-  if (onClick) {
-    return (
-      <PressableButton
-        onClick={onClick}
-        className={`text-left ${className}`}
-      >
-        {content}
-      </PressableButton>
-    );
-  }
-  return content;
-}
 
 /* ─────────────────────────────────────────────────────────────────── */
 
