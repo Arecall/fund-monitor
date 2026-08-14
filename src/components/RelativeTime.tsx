@@ -173,7 +173,7 @@ interface SessionWindows {
 function getSessionWindows(market: FundMarket, d: Date): SessionWindows {
   if (market === 'domestic') {
     return {
-      preopen: [9 * 60, 9 * 60 + 30],
+      preopen: [9 * 60 + 15, 9 * 60 + 30],
       morning: [9 * 60 + 30, 11 * 60 + 30],
       lunch: [11 * 60 + 30, 13 * 60],
       afternoon: [13 * 60, 15 * 60],

@@ -158,12 +158,14 @@ function dateToTs(date: string): number {
 function getIntradayWindow(
   market: FundMarket,
   now: number
-): { startTs: number; endTs: number; xLabelMode: 'local' | 'ny' } {
+): { startTs: number; endTs: number; xLabelMode: 'local' | 'ny'; preMarket: boolean } {
   const d = new Date(now);
   const bjt = getSharedBeijingParts(d);
   const year = Number(bjt.year);
   const month = Number(bjt.month) - 1;
   const day = Number(bjt.day);
+  const weekday = bjt.weekday; // 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'
+  const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
   const today = (y: number, m: number, date: number, h: number, min: number) =>
     beijingWallTimeToTimestamp(y, m, date, h, min);
 
@@ -173,41 +175,56 @@ function getIntradayWindow(
     const startH = dst ? 21 : 22;
     const startM = 30;
     const closeH = dst ? 4 : 5;
+    const preH = dst ? 16 : 17; // 盘前 Pre-Market 起始时间：16:00（夏令）/ 17:00（冬令）
     const DAY = 24 * 3600 * 1000;
 
     const todayStart = today(year, month, day, startH, startM);
     const todayClose = today(year, month, day, closeH, 0);
+    const preMarketStart = today(year, month, day, preH, 0);
 
     let startTs: number;
     let endTs: number;
+    let preMarket = false;
 
     if (now < todayClose) {
       // 凌晨 0–close：US session 从昨天 21:30 持续到今天 close
       startTs = todayStart - DAY;
       endTs = Math.min(now, todayClose);
+      preMarket = false;
+    } else if (now < preMarketStart) {
+      // 白天 close–16:00/17:00：美股盘后 (04:00-08:00) 及夜盘 (08:00-16:00) 阶段
+      // 渲染上一个美股交易日（昨天 21:30 → 今天 04:00）的完整/最新走势，不判定为盘前待开盘
+      startTs = todayStart - DAY;
+      endTs = todayClose;
+      preMarket = false;
     } else if (now < todayStart) {
-      // 白天 close–21:30：处于美股开盘前的【盘前待开盘】阶段
-      // 应指向今晚美股开盘 session 窗口（todayStart 21:30 → 明天 04:00/05:00），
-      // 确保 now < startTs 为 true，准确触发美股盘前待开盘遮罩与 21:30 开盘倒计时
+      // 下午 16:00/17:00–21:30/22:30：处于美股【盘前】阶段
+      // 仅在工作日（Mon-Fri，今晚将有美股交易）时判定为盘前待开盘，触发待开盘蒙层遮罩与开盘倒计时
       startTs = todayStart;
       endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
+      preMarket = isWeekday;
     } else {
       // 21:30–24:00：今天的 US session 正在进行
       startTs = todayStart;
       endTs = now;
+      preMarket = false;
     }
 
-    return { startTs, endTs, xLabelMode: 'ny' };
+    return { startTs, endTs, xLabelMode: 'ny', preMarket };
   }
   if (market === 'hk') {
+    const preStartTs = today(year, month, day, 9, 0); // 港股开市前时段 09:00
     const startTs = today(year, month, day, 9, 30);
     const endTs = today(year, month, day, 16, 0);
-    return { startTs, endTs, xLabelMode: 'local' };
+    const preMarket = isWeekday && now >= preStartTs && now < startTs;
+    return { startTs, endTs, xLabelMode: 'local', preMarket };
   }
   // A 股 / other
+  const preStartTs = today(year, month, day, 9, 15); // A 股集合竞价 09:15
   const startTs = today(year, month, day, 9, 30);
   const endTs = today(year, month, day, 15, 0);
-  return { startTs, endTs, xLabelMode: 'local' };
+  const preMarket = isWeekday && now >= preStartTs && now < startTs;
+  return { startTs, endTs, xLabelMode: 'local', preMarket };
 }
 
 /**
@@ -234,6 +251,52 @@ export interface MinuteBar {
  */
 export interface MinuteFeed {
   bars: MinuteBar[];
+}
+
+/**
+ * 过滤实时打点/分钟 K 线中由估值方法突变引起的孤立针状毛刺（Spike Outliers）
+ */
+function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5): ChartPoint[] {
+  if (!points || points.length < 3) return points;
+  const result: ChartPoint[] = [];
+  const len = points.length;
+
+  for (let i = 0; i < len; i++) {
+    const curr = points[i];
+    const prev = result.length > 0 ? result[result.length - 1] : undefined;
+    let next = i < len - 1 ? points[i + 1] : undefined;
+
+    if (prev && next) {
+      let lookAheadIndex = i + 1;
+      while (lookAheadIndex < len && lookAheadIndex <= i + 3) {
+        const candidate = points[lookAheadIndex];
+        const diffWithPrev = Math.abs((candidate.v - prev.v) / prev.v) * 100;
+        if (diffWithPrev < thresholdPct) {
+          next = candidate;
+          break;
+        }
+        lookAheadIndex++;
+      }
+
+      const prevDiff = Math.abs((curr.v - prev.v) / prev.v) * 100;
+      const nextDiff = next ? Math.abs((curr.v - next.v) / next.v) * 100 : 0;
+      const bridgeDiff = next ? Math.abs((next.v - prev.v) / prev.v) * 100 : 0;
+
+      if (prevDiff > thresholdPct && nextDiff > thresholdPct && bridgeDiff < thresholdPct * 1.2) {
+        continue; // 过滤中间孤立针状 Spike
+      }
+    } else if (prev && !next) {
+      // 尾部针状毛刺检测：末点相比倒数第二点发生 > 1.5% 的离群突变
+      const prevDiff = Math.abs((curr.v - prev.v) / prev.v) * 100;
+      if (prevDiff > thresholdPct) {
+        continue; // 过滤末尾突变点
+      }
+    }
+
+    result.push(curr);
+  }
+
+  return result;
 }
 
 export function buildSeries(
@@ -301,17 +364,15 @@ export function buildSeries(
   // ─── intraday: 按市场时段的插值曲线（X 轴统一北京时间）────
   if (range === 'intraday') {
     const win = getIntradayWindow(market, now);
-    const { startTs: rawStartTs, endTs: rawEndTs } = win;
+    const { startTs: rawStartTs, endTs: rawEndTs, preMarket } = win;
     let startTs = rawStartTs;
     let endTs = rawEndTs;
 
     // 边界处理：
-    //   - 开盘前（now < startTs）：今日 session 尚未开始。当前 gsz ≈ 昨日
-    //     dwjz，不做随机插值（避免被误读为"昨日走势"），而是用整个今日
-    //     session 窗口绘制一条平台线，右侧 tick = current。
+    //   - 开盘前（preMarket 为 true）：今日 session 尚未开始（工作日开盘前）。
+    //     用整个今日 session 窗口绘制平台线，启用盘前待开盘遮罩。
     //   - 盘中（startTs ≤ now ≤ endTs）：startTs → now + interpolate
-    //   - 已收盘（now ≥ endTs）：完整 session + interpolate
-    const preMarket = now < startTs;
+    //   - 已收盘（now ≥ endTs 或 Weekend 休市）：完整 session + interpolate
     if (preMarket) {
       // 完整今日 session 窗口（保留 X 轴标签 09:30–15:00 等）
       endTs = rawEndTs;
@@ -360,17 +421,22 @@ export function buildSeries(
         if (filtered.length > 0 && filtered[0].t > startTs + 60_000) {
           filtered.unshift({ t: startTs, v: startValue, volume: undefined, turnover: undefined, real: true });
         }
-        points = filtered;
-        if (points.length >= 2) {
+        let rawPoints = filtered;
+        if (rawPoints.length >= 2) {
           isRealSnapshot = true;
         }
-        // 末尾追加"当前实时 tick"（如最后一条分钟数据的时间戳 < endTs 且 current 更新）
-        if (points.length > 0) {
-          const last = points[points.length - 1];
+        // 末尾追加"当前实时 tick"（仅在实时盘中且当前估值与末点无暴涨暴跌异动离群时追加）
+        if (rawPoints.length > 0) {
+          const last = rawPoints[rawPoints.length - 1];
           if (last.t < endTs && current > 0 && current !== last.v) {
-            points.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
+            const devPct = Math.abs((current - last.v) / last.v) * 100;
+            // 盘中实时更新且偏离不超过 1.5% 时追加；闭市或白天占位估值跳跃时跳过
+            if (now < endTs && devPct <= 1.5) {
+              rawPoints.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
+            }
           }
         }
+        points = filterSpikeOutliers(rawPoints);
         // 过滤后为空（快照时间在 session 窗口外，如 QDII 基金白天估值 vs 美股夜间 session）
         // 无法重建真实走势，降级为诚实直线
         if (points.length === 0) {

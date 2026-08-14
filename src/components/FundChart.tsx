@@ -11,7 +11,7 @@ import {
   type DataSource
 } from '../utils/chartData';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
-import { OpenCountdown } from './RelativeTime';
+import { OpenCountdown, deriveMarketStatus } from './RelativeTime';
 import { useAppEnv } from '../utils/env';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
 import type { FundHistoryPoint } from '../services/api';
@@ -296,10 +296,14 @@ export function FundChart({
     return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
   }, [points, range, x, y]);
 
-  // 判断当下时刻该资产所在市场是否开盘
+  // 判断当下时刻该资产所在市场是否开盘及当前市场阶段（美股夜盘/盘前/盘中等）
   const fundMarket = useMemo(() => market ?? detectFundMarket(fundName, fundCode), [market, fundName, fundCode]);
   const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
   const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
+  const marketStatus = useMemo(
+    () => deriveMarketStatus(lastPointTime, timeTick, fundMarket),
+    [lastPointTime, timeTick, fundMarket]
+  );
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -398,7 +402,7 @@ export function FundChart({
     return { sameDay, dataStr };
   }, [series.points, series.preMarket]);
 
-  // 是否在盘前等待阶段（处于开盘中 isCurrentlyOpen 时强制为 false，保证盘中 100% 渲染真实/实时分时走势）
+  // 是否在盘前等待阶段（处于开盘前的 preMarket 状态且未开盘时启用待开盘遮罩）
   const isPreMarketState = mockSecLeft !== null
     ? mockSecLeft > 0
     : (!isCurrentlyOpen && range === 'intraday' && series.preMarket);
@@ -421,7 +425,7 @@ export function FundChart({
               className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-sm"
             >
               <Clock size={10} className="text-blue-500 animate-pulse" />
-              <span className="opacity-90">盘前 · </span>
+              <span className="opacity-90">{marketStatus.label} · </span>
               <OpenCountdown market={fundMarket} showTargetTime={true} />
             </span>
           )}
@@ -455,6 +459,8 @@ export function FundChart({
               ? `刷新中…`
               : isCurrentlyOpen
               ? `自动刷新 · ${formatTick(lastPointTime, range)}`
+              : isPreMarketState
+              ? `${marketStatus.label} · 上次收盘 ${formatTick(lastPointTime, range)}`
               : `已休市 · ${formatTick(lastPointTime, range)}`}
           </span>
         </span>
@@ -963,9 +969,9 @@ export function FundChart({
                 <Clock size={22} strokeWidth={1.5} />
               </div>
 
-              {/* 待开盘 */}
+              {/* 美股盘前 / 待开盘 */}
               <div className="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">
-                待开盘
+                {marketStatus.label}
               </div>
 
               {/* 蓝色倒计时 (如 2:56) */}

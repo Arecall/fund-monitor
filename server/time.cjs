@@ -32,6 +32,11 @@ function formatBeijingYmdHm(date = new Date()) {
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
 
+function getBeijingHour(date = new Date()) {
+  const p = getTimeZoneParts(date, BEIJING_TIME_ZONE);
+  return Number(p.hour);
+}
+
 function getUsEasternDateTimeParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: US_EASTERN_TIME_ZONE,
@@ -105,6 +110,7 @@ module.exports = {
   BEIJING_TIME_ZONE,
   formatBeijingYmd,
   formatBeijingYmdHm,
+  getBeijingHour,
   formatUsEasternYmd,
   getUsEasternDateTimeParts,
   getTimeZoneParts,

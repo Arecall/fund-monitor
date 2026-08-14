@@ -333,16 +333,28 @@ class ValuationBroker {
   }
 
   async _persistSnapshot(code, val) {
+    if (!val || val.navOnly || val.isPlaceholder) return;
     const capturedAt = Date.now();
-    const gztime = val.gztime || '';
     const current = parseFloat(val.gsz);
+    if (!Number.isFinite(current) || current <= 0) return;
+
+    // 拦截美股 QDII 基金在白天 A 股开盘阶段上游返回的非交易占位估值
+    if (val.market === 'us') {
+      const d = new Date(capturedAt);
+      const bjtHour = marketTime.getBeijingHour(d);
+      // 北京时间 05:00 - 16:00 属于美股休市/夜盘低频阶段，防注入白天静态占位数据
+      if (!val.quoteTimestamp && bjtHour >= 5 && bjtHour < 16) {
+        return;
+      }
+    }
+
+    const gztime = val.gztime || '';
     const pct = parseFloat(val.gszzl);
     const raw = JSON.stringify(val);
     await dbHelper.run(
       `INSERT OR REPLACE INTO quote_snapshots (code, captured_at, gztime, current, pct, raw)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [code, capturedAt, gztime, Number.isFinite(current) ? current : null,
-       Number.isFinite(pct) ? pct : null, raw]
+      [code, capturedAt, gztime, current, Number.isFinite(pct) ? pct : null, raw]
     );
   }
 

@@ -109,7 +109,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.29' });
+  res.json({ status: 'ok', version: '1.3.30' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -769,7 +769,7 @@ app.get('/api/market/fund/:code/minute', async (req, res) => {
     if (targetMarket === 'other') {
       return res.json({ code, market: targetMarket, data: null });
     }
-    const data = await marketHelper.fetchStockMinuteData(code, targetMarket);
+    const data = await marketHelper.fetchStockMinuteData(code, targetMarket, kindOverride);
     res.json({ code, market: targetMarket, data: data || null });
   } catch (error) {
     res.status(500).json({ error: '获取分钟数据失败' });

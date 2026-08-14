@@ -112,16 +112,20 @@ function parseJsonp(jsonpStr) {
  * 解析大陆交易所代码。场内 ETF/LOF 前缀仅在 includeListedEtf=true（用户明确选择股票）
  * 时生效，避免把普通场外基金自动改走交易所行情。
  */
-function getMainlandExchangeSymbol(code, { includeListedEtf = false } = {}) {
+function getMainlandExchangeSymbol(code, { includeListedEtf = false, isStock = true } = {}) {
   const c = String(code || '').trim().toUpperCase().replace(/^(SH|SZ|BJ)/, '');
   if (!/^\d{6}$/.test(c)) return null;
   let exchange = null;
   let instrumentType = 'stock';
-  if (/^(60|68)/.test(c)) exchange = 'sh';
-  else if (/^(00|30)/.test(c)) exchange = 'sz';
-  else if (/^(8|4)/.test(c)) exchange = 'bj';
-  else if (includeListedEtf && /^(51|52|56|58)/.test(c)) { exchange = 'sh'; instrumentType = 'listed_etf'; }
-  else if (includeListedEtf && /^(15|16)/.test(c)) { exchange = 'sz'; instrumentType = 'listed_etf'; }
+  if (isStock) {
+    if (/^(60|68)/.test(c)) exchange = 'sh';
+    else if (/^(00|30)/.test(c)) exchange = 'sz';
+    else if (/^(8|4)/.test(c)) exchange = 'bj';
+  }
+  if (!exchange && includeListedEtf) {
+    if (/^(50|51|52|56|58)/.test(c)) { exchange = 'sh'; instrumentType = 'listed_etf'; }
+    else if (/^(15|16|18)/.test(c)) { exchange = 'sz'; instrumentType = 'listed_etf'; }
+  }
   if (!exchange) return null;
   return { code: c, exchange, symbol: `${exchange}${c}`, market: exchange === 'bj' ? 'other' : 'domestic', instrumentType };
 }
@@ -1019,21 +1023,22 @@ async function fetchStockCapitalFlow(code, market) {
 const _minuteCache = {};
 const MINUTE_CACHE_TTL = 10 * 1000;
 
-async function fetchStockMinuteData(code, market) {
+async function fetchStockMinuteData(code, market, kind = null) {
   const c = code.toUpperCase();
-  const cacheKey = `${market}:${c}`;
+  const cacheKey = `${market}:${c}:${kind || 'default'}`;
   const now = Date.now();
   const cached = _minuteCache[cacheKey];
   if (cached && now - cached.ts < MINUTE_CACHE_TTL) {
     return cached.data;
   }
 
+  const isStock = kind ? (kind === 'stock') : (detectCodeKind(c) === 'stock_a');
   let result = null;
   try {
     // 1. 优先使用腾讯分钟数据 API（覆盖 A 股、港股、美股，速度快且格式统一）
     let tencentSym = null;
     if (market === 'domestic') {
-      tencentSym = getMainlandExchangeSymbol(c, { includeListedEtf: true })?.symbol || null;
+      tencentSym = getMainlandExchangeSymbol(c, { includeListedEtf: true, isStock })?.symbol || null;
     } else if (market === 'hk') {
       tencentSym = `hk${c.padStart(5, '0')}`;
     } else if (market === 'us') {
@@ -1131,7 +1136,7 @@ async function fetchStockMinuteData(code, market) {
     }
 
     if (!result && market === 'domestic') {
-      const symbol = getMainlandExchangeSymbol(c, { includeListedEtf: true })?.symbol || null;
+      const symbol = getMainlandExchangeSymbol(c, { includeListedEtf: true, isStock })?.symbol || null;
 
       if (symbol) {
         const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/=/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&datalen=240`;
@@ -1161,7 +1166,7 @@ async function fetchStockMinuteData(code, market) {
 
     // 3. Fallback：从系统打点快照（quote_snapshots）读取今日记录的真实估值轨迹（适用于场外基金等）
     if (!result || result.length === 0) {
-      result = await fetchSnapshotMinuteData(code);
+      result = await fetchSnapshotMinuteData(code, market);
     }
   } catch (e) {
     console.warn(`[minute] ${c} (${market}) 获取异常:`, e.message);
@@ -1175,7 +1180,50 @@ async function fetchStockMinuteData(code, market) {
  * 从 SQLite quote_snapshots 读取系统今日抓取的真实快照数据（按时间升序）
  * 适合场外基金或无传统 K 线的品种，用于前端 0 伪造绘制真实盘中变动轨迹
  */
-async function fetchSnapshotMinuteData(code) {
+function sanitizeSnapshotSpikes(points, thresholdPct = 1.5) {
+  if (!points || points.length < 3) return points;
+  const result = [];
+  const len = points.length;
+
+  for (let i = 0; i < len; i++) {
+    const curr = points[i];
+    const prev = result.length > 0 ? result[result.length - 1] : null;
+    let next = i < len - 1 ? points[i + 1] : null;
+
+    if (prev && next) {
+      let lookAheadIndex = i + 1;
+      while (lookAheadIndex < len && lookAheadIndex <= i + 3) {
+        const candidate = points[lookAheadIndex];
+        const diffWithPrev = Math.abs((candidate.close - prev.close) / prev.close) * 100;
+        if (diffWithPrev < thresholdPct) {
+          next = candidate;
+          break;
+        }
+        lookAheadIndex++;
+      }
+
+      const prevDiff = Math.abs((curr.close - prev.close) / prev.close) * 100;
+      const nextDiff = next ? Math.abs((curr.close - next.close) / next.close) * 100 : 0;
+      const bridgeDiff = next ? Math.abs((next.close - prev.close) / prev.close) * 100 : 0;
+
+      if (prevDiff > thresholdPct && nextDiff > thresholdPct && bridgeDiff < thresholdPct * 1.2) {
+        continue; // 过滤中间孤立针状 Spike
+      }
+    } else if (prev && !next) {
+      // 尾部针状毛刺检测：末点相比倒数第二点发生 > 1.5% 的离群突变
+      const prevDiff = Math.abs((curr.close - prev.close) / prev.close) * 100;
+      if (prevDiff > thresholdPct) {
+        continue; // 过滤末尾突变点
+      }
+    }
+
+    result.push(curr);
+  }
+
+  return result;
+}
+
+async function fetchSnapshotMinuteData(code, market = null) {
   try {
     const c = String(code).toUpperCase();
     // 往前查 48 小时，覆盖任意市场（美股/港股/A股）的上一个完整 session，
@@ -1190,12 +1238,19 @@ async function fetchSnapshotMinuteData(code) {
 
     if (!rows || rows.length === 0) return null;
 
-    const points = [];
+    const rawPoints = [];
     let lastTimeStr = '';
     for (const r of rows) {
       if (typeof r.current !== 'number' || !Number.isFinite(r.current) || r.current <= 0) continue;
 
       const d = new Date(r.captured_at);
+      const bjtHour = marketTime.getBeijingHour(d);
+
+      // 如果为美股基金，过滤掉发生在白天 05:00 - 16:00（休市/夜盘低频阶段）的非交易时段离群点
+      if (market === 'us' && bjtHour >= 5 && bjtHour < 16) {
+        continue;
+      }
+
       const timeStr = marketTime.formatBeijingYmdHm(d) + ':00';
 
       // 去重：同 10 秒以内的重复打点更新覆盖
@@ -1209,17 +1264,52 @@ async function fetchSnapshotMinuteData(code) {
         volume: 0,
         amount: 0
       };
-      if (timeKey === lastTimeStr && points.length > 0) {
-        points[points.length - 1] = item;
+      if (timeKey === lastTimeStr && rawPoints.length > 0) {
+        rawPoints[rawPoints.length - 1] = item;
       } else {
         lastTimeStr = timeKey;
-        points.push(item);
+        rawPoints.push(item);
       }
     }
 
+    const points = sanitizeSnapshotSpikes(rawPoints);
     return points.length > 0 ? points : null;
   } catch (e) {
     console.warn(`[snapshotMinute] ${code} fetch failed:`, e.message);
+    return null;
+  }
+}
+
+/**
+ * 读取上一场美股常规交易时段（北京时间 21:30 - 05:00）捕获的最新真实快照。
+ * 用于美股休市/白天非交易时段，防止上游占位符或持仓预估与昨夜收盘估值产生脱节。
+ */
+async function getLastUsSessionSnapshotFromDb(code) {
+  try {
+    const since = Date.now() - 36 * 3600 * 1000;
+    const c = String(code).toUpperCase();
+    const rows = await dbHelper.all(
+      `SELECT raw, captured_at FROM quote_snapshots
+       WHERE (code = ? OR code = ?) AND captured_at >= ?
+       ORDER BY captured_at DESC`,
+      [code, c, since]
+    );
+    if (!rows || rows.length === 0) return null;
+    for (const r of rows) {
+      const d = new Date(r.captured_at);
+      const h = marketTime.getBeijingHour(d);
+      if (h >= 21 || h < 5) {
+        if (r.raw) {
+          try {
+            const parsed = JSON.parse(r.raw);
+            if (parsed && parseFloat(parsed.gsz) > 0) return parsed;
+          } catch {}
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[lastUsSnapshot] ${code} query failed:`, e.message);
     return null;
   }
 }
@@ -1863,6 +1953,18 @@ async function getFundValuation(code, kindOverride) {
       if (!result) {
         console.log(`[fund] Sina fu_ miss/stale for ${code}, fallback to EastMoney f10/lsjz`);
         result = await fetchEastMoneyLSJZ(code);
+      }
+      // 第 3.5 级 fallback：对于美股/QDII 基金，在美股非交易阶段（如白天休市）优先读取昨夜美股盘中捕获的最后一帧真实快照，
+      // 防止白天基于个股/股指盘前波动的估算与昨夜实际美股走势收盘价脱节
+      if (!result || result.navOnly) {
+        const isUsTrading = isInTradingTime(code, new Date(now), 'us');
+        if (!isUsTrading) {
+          const lastSessionVal = await getLastUsSessionSnapshotFromDb(code);
+          if (lastSessionVal) {
+            console.log(`[fund] ${code} 美股非交易时段，成功复用上一交易日收盘真实快照 (${lastSessionVal.gztime}: ${lastSessionVal.gsz})`);
+            result = lastSessionVal;
+          }
+        }
       }
       // 第 4 级 fallback：基于持仓成分股的实时加权估算（QDII 专属，跟踪海外市场实时节奏）
       if (!result || result.navOnly) {
