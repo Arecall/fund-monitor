@@ -3295,6 +3295,18 @@ function DetailDrawer({
   title?: string;
   isDarkMode?: boolean;
 }) {
+  const [visible, setVisible] = useState(true);
+
+  const handleClose = useCallback(() => {
+    setVisible(false);
+  }, []);
+
+  const handleAfterOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      onDismiss();
+    }
+  }, [onDismiss]);
+
   return (
     <ConfigProvider
       theme={{
@@ -3308,8 +3320,9 @@ function DetailDrawer({
       <Drawer
         title={<span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>}
         placement="right"
-        open={true}
-        onClose={onDismiss}
+        open={visible}
+        onClose={handleClose}
+        afterOpenChange={handleAfterOpenChange}
         width={typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : 640}
         aria-label={ariaLabel}
         styles={{
@@ -3322,8 +3335,7 @@ function DetailDrawer({
             backgroundColor: 'var(--canvas-bg)',
           },
           mask: {
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
           },
         }}
         destroyOnClose
