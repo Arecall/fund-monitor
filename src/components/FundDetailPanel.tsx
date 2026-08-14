@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Card, Tag, Button, Badge } from 'antd';
+import { Card, Tag, Button, Badge, BorderBeam } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -26,7 +26,6 @@ const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.Ale
 
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
 import { QuoteSourceBadge } from './QuoteSourceBadge';
-import { BorderBeam } from './BorderBeam';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
 import { formatMarketCap, formatVolume } from '../utils/format';
 import type { MinuteFeed } from '../utils/chartData';
@@ -327,53 +326,58 @@ export function FundDetailPanel({
       </div>
 
       {/* ── Real-time change banner ──────────────────────────── */}
-      <Card
-        size="small"
-        className="relative overflow-hidden rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl"
-        styles={{
-          body: { padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }
-        }}
-      >
-        {isTrading && <BorderBeam colorFrom="#3b82f6" colorTo="#ef4444" duration={4} borderWidth={1.5} />}
-        {/* 上层：主标与实时涨跌数值 */}
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2.5">
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <Badge status={fund.navOnly || fund.quoteFreshness === 'stale' ? 'warning' : 'processing'} />
-              {fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '延迟行情' : '实时行情'}
-            </span>
-            <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
-            <QuoteSourceBadge fund={fund} />
-          </div>
+      {(() => {
+        const bannerCard = (
+          <Card
+            size="small"
+            className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl"
+            styles={{
+              body: { padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }
+            }}
+          >
+            {/* 上层：主标与实时涨跌数值 */}
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <Badge status={fund.navOnly || fund.quoteFreshness === 'stale' ? 'warning' : 'processing'} />
+                  {fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '延迟行情' : '实时行情'}
+                </span>
+                <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
+                <QuoteSourceBadge fund={fund} />
+              </div>
 
-          <div className="flex items-baseline gap-3">
-            <span className={`font-mono font-bold text-2xl tabular-nums ${dirColor}`}>
-              {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
-            </span>
-            <span className={`font-mono font-bold text-lg tabular-nums ${dirColor}`}>
-              {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
-            </span>
-          </div>
-        </div>
+              <div className="flex items-baseline gap-3">
+                <span className={`font-mono font-bold text-2xl tabular-nums ${dirColor}`}>
+                  {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
+                </span>
+                <span className={`font-mono font-bold text-lg tabular-nums ${dirColor}`}>
+                  {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
+                </span>
+              </div>
+            </div>
 
-        {/* 下层：元数据对齐栏 */}
-        <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span>{fund.navOnly ? '官方净值' : fund.proxyTicker ? '代理估值' : '最新净值'}</span>
-            <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
-              {currencyPrefix}{current.toFixed(4)}
-            </span>
-            {fund.officialNavDate && <span className="text-[10px] text-slate-400">基准净值 {fund.officialNavDate}</span>}
-          </div>
+            {/* 下层：元数据对齐栏 */}
+            <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span>{fund.navOnly ? '官方净值' : fund.proxyTicker ? '代理估值' : '最新净值'}</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
+                  {currencyPrefix}{current.toFixed(4)}
+                </span>
+                {fund.officialNavDate && <span className="text-[10px] text-slate-400">基准净值 {fund.officialNavDate}</span>}
+              </div>
 
-          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-            <RelativeTime timestamp={gzTs} prefix="最近更新 " />
-            <span className="opacity-40">·</span>
-            <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
-            {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
-          </div>
-        </div>
-      </Card>
+              <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                <RelativeTime timestamp={gzTs} prefix="最近更新 " />
+                <span className="opacity-40">·</span>
+                <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
+                {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
+              </div>
+            </div>
+          </Card>
+        );
+
+        return isTrading ? <BorderBeam>{bannerCard}</BorderBeam> : bannerCard;
+      })()}
 
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
