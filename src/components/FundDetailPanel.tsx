@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
+import { Card, Tag, Button, Badge } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -25,6 +26,8 @@ const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.Ale
 
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
 import { QuoteSourceBadge } from './QuoteSourceBadge';
+import { BorderBeam } from './BorderBeam';
+import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
 import { formatMarketCap, formatVolume } from '../utils/format';
 import type { MinuteFeed } from '../utils/chartData';
 
@@ -124,6 +127,9 @@ export function FundDetailPanel({
   const dirColor = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
   const currencyPrefix = fund.market === 'us' ? '$' : fund.market === 'hk' ? 'HK$' : '¥';
 
+  const fundMarket: FundMarket = (fund.market as FundMarket) || detectFundMarket(fund.name, fund.fundcode);
+  const isTrading = isMarketOpen(fundMarket);
+
   /** Parse gztime once so the relative-time hook starts from the right anchor. */
   const gzTs = parseGzTime(fund.gztime);
 
@@ -147,34 +153,36 @@ export function FundDetailPanel({
     >
       {/* ── Title row ─────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <h3 className="apple-display-heading text-base font-semibold text-slate-900 dark:text-slate-50">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="apple-display-heading text-base sm:text-lg font-bold text-slate-900 dark:text-slate-50">
             {fund.name}
           </h3>
-          <span className="font-mono text-[11px] text-slate-500 tabular-nums">{fund.fundcode}</span>
+          <Tag className="font-mono text-xs border-0 bg-slate-100 dark:bg-white/10 text-slate-500 font-semibold m-0">{fund.fundcode}</Tag>
           {/* 基金显示风险等级；股票显示市场归属 */}
           {kind === 'fund' ? (
-            <span className="text-[10px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full font-bold border border-blue-100/60 dark:border-blue-900/30">
+            <Tag color="processing" className="font-semibold text-[11px] rounded-full border-0 m-0">
               混合型-中高风险
-            </span>
+            </Tag>
           ) : (
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-              fund.market === 'us'  ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/30'
-            : fund.market === 'hk'  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/30'
-            :                            'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/30'
-            }`}>
+            <Tag
+              color={fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'emerald' : 'gold'}
+              className="font-semibold text-[11px] rounded-full border-0 m-0"
+            >
               {fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股'}
-            </span>
+            </Tag>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <PressableButton
+          <Button
+            type="default"
+            size="small"
+            shape="round"
+            icon={<ReceiptText size={13} />}
             onClick={() => onToast?.('交易记录功能开发中')}
-            className="text-[11px] font-semibold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-3 py-1.5 rounded-full flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-white/10"
+            className="flex items-center text-xs border-[var(--hairline-border)] shadow-none"
           >
-            <ReceiptText size={12} />
             交易记录
-          </PressableButton>
+          </Button>
         </div>
       </div>
 
@@ -319,17 +327,19 @@ export function FundDetailPanel({
       </div>
 
       {/* ── Real-time change banner ──────────────────────────── */}
-      <motion.div
-        initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={SPRING.panel}
-        className="bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl rounded-2xl border border-[var(--hairline-border)] p-4 md:p-5 shadow-sm space-y-3"
+      <Card
+        size="small"
+        className="relative overflow-hidden rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl"
+        styles={{
+          body: { padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }
+        }}
       >
+        {isTrading && <BorderBeam colorFrom="#3b82f6" colorTo="#ef4444" duration={4} borderWidth={1.5} />}
         {/* 上层：主标与实时涨跌数值 */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2.5">
             <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <span className={`inline-block w-2 h-2 rounded-full ${fund.navOnly || fund.quoteFreshness === 'stale' ? 'bg-amber-500' : 'bg-blue-500 animate-pulse'}`} />
+              <Badge status={fund.navOnly || fund.quoteFreshness === 'stale' ? 'warning' : 'processing'} />
               {fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '延迟行情' : '实时行情'}
             </span>
             <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
@@ -363,7 +373,7 @@ export function FundDetailPanel({
             {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
           </div>
         </div>
-      </motion.div>
+      </Card>
 
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
@@ -1113,12 +1123,6 @@ function MetricCard({
   const isDown = tone === 'down';
   const isMuted = tone === 'muted';
 
-  const toneStyles = isUp
-    ? 'border-red-200/50 dark:border-red-900/30'
-    : isDown
-      ? 'border-emerald-200/50 dark:border-emerald-900/30'
-      : 'border-[var(--hairline-border)]';
-
   const textColor = isUp
     ? 'text-[var(--color-up)]'
     : isDown
@@ -1126,17 +1130,30 @@ function MetricCard({
       : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50';
 
   const content = (
-    <div
-      title={title}
-      className={`flex flex-col justify-between p-3.5 h-[96px] rounded-2xl border ${toneStyles} bg-slate-100/50 dark:bg-white/[0.04] transition-all duration-200 ${onClick ? 'cursor-pointer hover:bg-slate-200/60 dark:hover:bg-white/[0.08]' : ''} ${className}`}
+    <Card
+      size="small"
+      title={null}
+      hoverable={!!onClick}
+      className={`h-[96px] rounded-2xl border-[var(--hairline-border)] bg-slate-100/50 dark:bg-white/[0.04] ${onClick ? 'cursor-pointer' : ''} ${className}`}
+      styles={{
+        body: {
+          padding: '12px 14px',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+        }
+      }}
     >
-      <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
-        {label}
+      <div title={title} className="h-full flex flex-col justify-between">
+        <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
+          {label}
+        </div>
+        <div className={`flex flex-col min-w-0 justify-end flex-1 ${textColor}`}>
+          {children}
+        </div>
       </div>
-      <div className={`flex flex-col min-w-0 justify-end flex-1 ${textColor}`}>
-        {children}
-      </div>
-    </div>
+    </Card>
   );
 
   if (onClick) {

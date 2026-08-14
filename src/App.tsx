@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Drawer, ConfigProvider, theme as antdTheme } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -3135,6 +3136,7 @@ function App() {
             onDismiss={() => setSelectedFundCode(null)}
             ariaLabel={isStock ? '股票详情' : '基金详情'}
             title={isStock ? '股票详情' : '基金详情'}
+            isDarkMode={isDarkMode}
           >
             <React.Suspense fallback={<DetailPanelSkeleton />}>
             <DetailErrorBoundary>
@@ -3284,107 +3286,51 @@ function DetailDrawer({
   children,
   onDismiss,
   ariaLabel,
-  title = '详情'
+  title = '详情',
+  isDarkMode = false,
 }: {
   children: React.ReactNode;
   onDismiss: () => void;
   ariaLabel: string;
   title?: string;
+  isDarkMode?: boolean;
 }) {
-  const prefersReducedMotion = useReducedMotion();
-  const drawerRef = useRef<HTMLDivElement>(null);
-  const mountedAtRef = useRef<number>(Date.now());
-
-  // 防点击穿透：刚挂载 350ms 内忽略蒙层点击（防止触屏/Pad 上触发打开的 click 事件落在刚挂载的蒙层上导致闪退）
-  const handleScrimClick = useCallback(() => {
-    if (Date.now() - mountedAtRef.current < 350) return;
-    onDismiss();
-  }, [onDismiss]);
-
-  // ESC dismiss + scroll lock
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss();
-    };
-    document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
-    };
-  }, [onDismiss]);
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={ariaLabel}
-      className="fixed inset-0 z-[60]"
+    <ConfigProvider
+      theme={{
+        algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        token: {
+          fontFamily: 'inherit',
+          colorBgElevated: isDarkMode ? '#1c1c1e' : '#ffffff',
+        },
+      }}
     >
-      {/* Scrim — fades in, tap to dismiss */}
-      <motion.div
-        initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
-        transition={{ duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
-        onClick={handleScrimClick}
-        className="absolute inset-0 bg-slate-950/40"
-        style={{
-          backdropFilter: prefersReducedMotion ? undefined : 'blur(8px)',
-          WebkitBackdropFilter: prefersReducedMotion ? undefined : 'blur(8px)',
+      <Drawer
+        title={<span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>}
+        placement="right"
+        open={true}
+        onClose={onDismiss}
+        width={typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : 640}
+        aria-label={ariaLabel}
+        styles={{
+          header: {
+            padding: '12px 20px',
+            borderBottom: '1px solid var(--hairline-border)',
+          },
+          body: {
+            padding: '12px 16px',
+            backgroundColor: 'var(--canvas-bg)',
+          },
+          mask: {
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+          },
         }}
-      />
-
-      {/* Drawer surface — slides in from right on md+, from bottom on mobile */}
-      <motion.div
-        ref={drawerRef}
-        initial={
-          prefersReducedMotion
-            ? { opacity: 0 }
-            : { x: '100%' }
-        }
-        animate={{ x: 0 }}
-        exit={prefersReducedMotion ? { opacity: 0 } : { x: '100%' }}
-        transition={
-          prefersReducedMotion
-            ? { duration: 0.2 }
-            : { type: 'spring', bounce: 0, duration: 0.42 }
-        }
-        className="absolute top-0 right-0 bottom-0 w-full md:w-[560px] lg:w-[640px] bg-[var(--canvas-bg)] dark:bg-black shadow-2xl overflow-y-auto flex flex-col"
-        onClick={(e) => e.stopPropagation()}
+        destroyOnClose
       >
-        {/* ── Sticky header with always-visible close affordance ── */}
-        <div
-          className="sticky top-0 z-10 bg-[var(--canvas-bg)]/90 dark:bg-black/90 backdrop-blur-xl border-b border-[var(--hairline-border)] px-4 md:px-5 py-3 flex items-center justify-between"
-          data-testid="drawer-header"
-        >
-          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-            {title}
-          </span>
-
-          {/* Close button — uses motion's native whileTap so onClick is
-              never blocked by manual pointer-state capture. */}
-          <motion.button
-            type="button"
-            onClick={onDismiss}
-            whileTap={prefersReducedMotion ? undefined : { scale: 0.85 }}
-            transition={{ type: 'spring', bounce: 0.2, duration: 0.18 }}
-            aria-label="关闭详情"
-            title="关闭 (Esc)"
-            className="group flex items-center gap-1.5 pl-2 pr-3 py-1.5 rounded-full text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
-          >
-            <X size={16} strokeWidth={2.25} />
-            <span className="text-xs font-semibold hidden sm:inline">关闭</span>
-          </motion.button>
-        </div>
-
-        {/* Top edge highlight — light catching the material */}
-        <div className="h-px bg-gradient-to-r from-transparent via-white/40 to-transparent dark:via-white/10 pointer-events-none" />
-        <div className="p-3 md:p-5 flex-1">
-          {children}
-        </div>
-      </motion.div>
-    </div>
+        {children}
+      </Drawer>
+    </ConfigProvider>
   );
 }
 
