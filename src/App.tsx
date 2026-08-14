@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Drawer, ConfigProvider, theme as antdTheme } from 'antd';
+import { Drawer, ConfigProvider, theme as antdTheme, Tag } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -401,17 +401,18 @@ const WatchlistCard = React.memo(function WatchlistCard({
           </div>
           <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
             <span className="tabular-nums">{fund.fundcode}</span>
-            <span className={`text-[9px] px-1.5 py-0.2 rounded font-sans font-medium border ${
-              selfTab === 'stock'
-                ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                  : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                  : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-                : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-            }`}>
+            <Tag
+              color={
+                selfTab === 'stock'
+                  ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
+                  : 'default'
+              }
+              className="font-semibold text-[10px] rounded-full border-0 m-0 leading-none py-0.5 px-2 font-sans"
+            >
               {selfTab === 'stock'
                 ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
                 : '公募场外'}
-            </span>
+            </Tag>
           </div>
         </div>
 
@@ -562,17 +563,18 @@ const WatchlistRow = React.memo(function WatchlistRow({
         </div>
         <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
           <span className="tabular-nums">{fund.fundcode}</span>
-          <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
-            selfTab === 'stock'
-              ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-              : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-          }`}>
+          <Tag
+            color={
+              selfTab === 'stock'
+                ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
+                : 'default'
+            }
+            className="font-semibold text-[10px] rounded-full border-0 m-0 leading-none py-0.5 px-2 font-sans"
+          >
             {selfTab === 'stock'
               ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
               : '公募场外'}
-          </span>
+          </Tag>
         </div>
       </td>
       <td className="p-4 text-right font-mono font-medium tabular-nums">
@@ -3013,17 +3015,18 @@ function App() {
                           </div>
                           <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
                             <span className="tabular-nums">{fund.fundcode}</span>
-                            <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
-                              selfTab === 'stock'
-                                ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                                  : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                                  : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-                                : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-                            }`}>
+                            <Tag
+                              color={
+                                selfTab === 'stock'
+                                  ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
+                                  : 'default'
+                              }
+                              className="font-semibold text-[10px] rounded-full border-0 m-0 leading-none py-0.5 px-2 font-sans"
+                            >
                               {selfTab === 'stock'
                                 ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
                                 : '公募场外'}
-                            </span>
+                            </Tag>
                           </div>
                         </div>
                       </div>

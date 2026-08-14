@@ -1,3 +1,4 @@
+import { Tag } from 'antd';
 import type { FundValuation } from '../services/api';
 
 export function quoteDisplayLabel(fund: FundValuation) {
@@ -16,15 +17,12 @@ export function QuoteSourceBadge({ fund, compact = false }: { fund: FundValuatio
     ? `仅有官方净值${fund.officialNavDate ? `（${fund.officialNavDate}）` : ''}`
     : `${fund.quoteSourceName || `代理标的 ${fund.proxyTicker}`}；${fund.quoteTime ? `上游时间 ${fund.quoteTime}` : '上游时间未知'}；基于官方净值近似估算`;
   return (
-    <span
+    <Tag
       title={title}
-      className={`inline-flex items-center whitespace-nowrap shrink-0 rounded-full border font-medium ${compact ? 'px-1.5 py-px text-[9px]' : 'px-2 py-0.5 text-[10px]'} ${
-        stale
-          ? 'border-amber-200/70 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-400'
-          : 'border-sky-200/70 bg-sky-50 text-sky-700 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-300'
-      }`}
+      color={stale ? 'warning' : 'processing'}
+      className={`border-0 rounded-full font-medium font-sans m-0 ${compact ? 'text-[9px] px-1.5 py-0' : 'text-[10px] px-2 py-0.5'}`}
     >
       {label}
-    </span>
+    </Tag>
   );
 }
