@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Card, Tag, Button, Badge, BorderBeam, Statistic, Row, Col, Divider } from 'antd';
+import { Card, Tag, Button, Badge, BorderBeam, Statistic, Row, Col, Divider, Spin } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
@@ -436,10 +436,14 @@ export function FundDetailPanel({
 
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
-        <Suspense fallback={<div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse`} />}>
-          {minuteLoading ? (
-            <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse flex items-center justify-center`}>
-              <span className="text-xs text-slate-400 dark:text-slate-500">分时数据加载中…</span>
+        <Suspense fallback={
+          <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100/50 dark:bg-white/5 flex flex-col items-center justify-center gap-3`}>
+            <Spin size="large" tip="正在加载图表模块..." />
+          </div>
+        }>
+          {minuteLoading || historyLoading ? (
+            <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100/50 dark:bg-white/5 flex flex-col items-center justify-center gap-3`}>
+              <Spin size="large" tip={kind === 'stock' ? '分时数据加载中...' : '历史走势数据加载中...'} />
             </div>
           ) : (
           <FundChart

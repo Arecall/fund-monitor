@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Drawer, ConfigProvider, theme as antdTheme, Tag } from 'antd';
+import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -198,12 +198,8 @@ function SkeletonCard({ code }: { code: string }) {
 
 function DetailPanelSkeleton() {
   return (
-    <div className="apple-card p-5 md:p-6 space-y-5 animate-pulse">
-      <div className="h-5 w-48 rounded bg-slate-100 dark:bg-white/10" />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {Array.from({ length: 8 }, (_, i) => <div key={i} className="h-24 rounded-2xl bg-slate-100 dark:bg-white/10" />)}
-      </div>
-      <div className="h-[300px] rounded-2xl bg-slate-100 dark:bg-white/10" />
+    <div className="apple-card p-5 md:p-6 space-y-5 min-h-[400px] flex flex-col items-center justify-center">
+      <Spin size="large" tip="正在加载行情详情与走势图..." />
     </div>
   );
 }
@@ -1811,6 +1807,14 @@ function App() {
      Render: Login screen — Apple Materialize entry
      ─────────────────────────────────────────────────────────────────── */
 
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#f5f5f7] dark:bg-black flex flex-col items-center justify-center p-6 gap-4">
+        <Spin size="large" tip="系统初始化数据中..." />
+      </div>
+    );
+  }
+
   if (!isLoggedIn) {
     return (
       <div className="relative min-h-screen bg-[#f5f5f7] dark:bg-black flex items-center justify-center p-4 overflow-hidden">
@@ -2111,7 +2115,11 @@ function App() {
       {/* Main grid — 金价 tab 占满整页时只渲染金价 */}
       {mainTab === 'gold' ? (
         <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
-          <React.Suspense fallback={<div className="p-8 text-center text-xs text-slate-400 font-mono">加载黄金分析看板…</div>}>
+          <React.Suspense fallback={
+            <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
+              <Spin size="large" tip="正在加载黄金行情分析看板..." />
+            </div>
+          }>
             <GoldTab />
           </React.Suspense>
         </div>
@@ -2861,7 +2869,7 @@ function App() {
                       <div className="text-[10px] text-slate-400">配置邮件警报接收箱</div>
                     </div>
                   </div>
-                  <React.Suspense fallback={<div className="text-xs text-slate-400">加载中…</div>}>
+                  <React.Suspense fallback={<div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium"><Spin size="small" /> 正在加载...</div>}>
                     <EmailConfigPanel
                       isAdmin={currentUser.toLowerCase() === 'admin'}
                       currentUser={currentUser}
