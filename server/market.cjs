@@ -173,7 +173,7 @@ function detectCodeKind(code) {
   if (!code) return 'unknown';
   const c = code.trim().toUpperCase();
   if (/^\d{6}$/.test(c)) {
-    // A 股个股：仅 60/68/68 严格前缀 → 个股；00/30/8 模糊（基金常见）→ 当基金
+    // A 股个股：仅 60/68 严格前缀 → 个股；00/30/8 模糊（基金常见）→ 当基金
     if (/^(60|68)/.test(c)) return 'stock_a';
     return 'fund_a';                                          // 所有 6 位数字代码按基金路径处理
   }
@@ -1226,9 +1226,10 @@ function sanitizeSnapshotSpikes(points, thresholdPct = 1.5) {
 async function fetchSnapshotMinuteData(code, market = null) {
   try {
     const c = String(code).toUpperCase();
-    // 往前查 48 小时，覆盖任意市场（美股/港股/A股）的上一个完整 session，
-    // 前端 buildSeries 会按各自 session 窗口（startTs/endTs）做精确过滤
-    const since = Date.now() - 48 * 3600 * 1000;
+    // 往前查 72 小时，覆盖任意市场（美股/港股/A股）的上一个完整 session，
+    // 前端 buildSeries 会按各自 session 窗口（startTs/endTs）做精确过滤。
+    // 72h 足以跨过美股周末空档（周五收盘 → 周一白天），避免周一盘中分时图丢失周五 session。
+    const since = Date.now() - 72 * 3600 * 1000;
     const rows = await dbHelper.all(
       `SELECT captured_at, gztime, current, pct FROM quote_snapshots
        WHERE (code = ? OR code = ?) AND captured_at >= ?
@@ -1286,7 +1287,8 @@ async function fetchSnapshotMinuteData(code, market = null) {
  */
 async function getLastUsSessionSnapshotFromDb(code) {
   try {
-    const since = Date.now() - 36 * 3600 * 1000;
+    // 72h 跨周末覆盖：周一白天需回读到周五美股常规盘收盘（约 59h 前），36h 会漏掉。
+    const since = Date.now() - 72 * 3600 * 1000;
     const c = String(code).toUpperCase();
     const rows = await dbHelper.all(
       `SELECT raw, captured_at FROM quote_snapshots
@@ -1955,10 +1957,12 @@ async function getFundValuation(code, kindOverride) {
         result = await fetchEastMoneyLSJZ(code);
       }
       // 第 3.5 级 fallback：对于美股/QDII 基金，在美股非交易阶段（如白天休市）优先读取昨夜美股盘中捕获的最后一帧真实快照，
-      // 防止白天基于个股/股指盘前波动的估算与昨夜实际美股走势收盘价脱节
+      // 防止白天基于个股/股指盘前波动的估算与昨夜实际美股走势收盘价脱节。
+      // 仅当基金已被识别为美股/QDII 时才启用，避免对 A 股/港股基金误触发快照回放。
       if (!result || result.navOnly) {
+        const isUsFund = result?.market === 'us' || detectMarketFromName(result?.name) === 'us';
         const isUsTrading = isInTradingTime(code, new Date(now), 'us');
-        if (!isUsTrading) {
+        if (isUsFund && !isUsTrading) {
           const lastSessionVal = await getLastUsSessionSnapshotFromDb(code);
           if (lastSessionVal) {
             console.log(`[fund] ${code} 美股非交易时段，成功复用上一交易日收盘真实快照 (${lastSessionVal.gztime}: ${lastSessionVal.gsz})`);

@@ -307,6 +307,361 @@ function getTodayBasePrice(posCost: number, prevPrice: number, currentPrice: num
   return safeCost > 0 ? safeCost : safePrev;
 }
 
+type PressDragState = {
+  pendingCode: string | null;
+  activeCode: string | null;
+  ghostY: number;
+  startY: number;
+  grabOffsetY: number;
+  targetIdx: number;
+};
+
+/* ───────────────────────────────────────────────────────────────────
+   Memoized watchlist rows — 列表渲染 memo 化：
+   SSE tick 仅更新变化的那一只基金，其它行通过浅比较 props 跳过重渲染。
+   回调在 App 内以 useCallback 稳定，拖拽状态在 tick 期间引用不变，因此
+   memo 比较能命中缓存，避免每次报价推送都整表重渲染。
+   ─────────────────────────────────────────────────────────────────── */
+
+interface WatchlistCardProps {
+  code: string;
+  fund: FundValuation;
+  pos: UserPosition | undefined;
+  selfTab: 'fund' | 'stock';
+  pressDrag: PressDragState;
+  isDropTarget: boolean;
+  prefersReducedMotion: boolean | null;
+  onRowPointerDown: (code: string) => (e: React.PointerEvent) => void;
+  suppressClickAfterDrag: (e: React.MouseEvent) => void;
+  onSelect: (code: string) => void;
+  onRemove: (code: string, name: string) => void;
+  onEditPosition: (code: string) => void;
+  dragJustEndedRef: React.MutableRefObject<boolean>;
+}
+
+const WatchlistCard = React.memo(function WatchlistCard({
+  code, fund, pos, selfTab, pressDrag, isDropTarget, prefersReducedMotion,
+  onRowPointerDown, suppressClickAfterDrag, onSelect, onRemove, onEditPosition, dragJustEndedRef,
+}: WatchlistCardProps) {
+  const changeVal = getRealtimeChangeVal(fund);
+  const isUp = changeVal > 0;
+  const isDown = changeVal < 0;
+  const changeBg = isUp
+    ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
+    : isDown
+      ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
+      : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
+
+  let holdingValue = 0;
+  let todayProfit = 0;
+  if (pos) {
+    const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+    const prevPrice = parseFloat(fund.dwjz);
+    holdingValue = pos.shares * currentPrice;
+    const updatedToday = isUpdatedToday(pos.updated_at);
+    const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
+    if (basePrice > 0 && currentPrice > 0) {
+      todayProfit = pos.shares * (currentPrice - basePrice);
+    }
+  }
+
+  return (
+    <motion.div
+      data-fund-code={code}
+      layout="position"
+      initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+      transition={SPRING.snap}
+      onPointerDown={onRowPointerDown(code)}
+      onClickCapture={suppressClickAfterDrag}
+      onClick={() => {
+        if (dragJustEndedRef.current) return;
+        onSelect(code);
+      }}
+      className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-all duration-200 ease-out cursor-pointer space-y-2 select-none relative ${
+        pressDrag.pendingCode === code
+          ? 'scale-[1.015] bg-white dark:bg-[#1c1c1e] shadow-[0_10px_28px_-10px_rgba(59,130,246,0.4),0_0_0_1px_rgba(59,130,246,0.18)] z-10'
+          : ''
+      } ${
+        pressDrag.activeCode === code
+          ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
+          : ''
+      } ${
+        isDropTarget
+          ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]'
+          : ''
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+            {fund.name}
+          </div>
+          <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+            <span className="tabular-nums">{fund.fundcode}</span>
+            <span className={`text-[9px] px-1.5 py-0.2 rounded font-sans font-medium border ${
+              selfTab === 'stock'
+                ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                  : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                  : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+                : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+            }`}>
+              {selfTab === 'stock'
+                ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+                : '公募场外'}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.nativeEvent.stopImmediatePropagation();
+              onRemove(code, fund.name);
+            }}
+            title="退订并删除"
+            aria-label="退订基金"
+            className="p-1.5 rounded-full text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-baseline justify-between pt-1">
+        <div>
+          <div className="text-[10px] text-slate-400">
+            {selfTab === 'stock' ? '现价' : fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '估算净值（滞后）' : '估算净值'}
+          </div>
+          <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
+            {parseFloat(fund.gsz).toFixed(4)}
+            <span className="text-[10px] font-normal text-slate-400 ml-1.5">
+              {fund.gztime.split(' ')[1] || fund.gztime}
+            </span>
+          </div>
+          <div className="mt-1 font-sans"><QuoteSourceBadge fund={fund} compact /></div>
+        </div>
+
+        <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
+          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onClick={e => e.stopPropagation()}>
+        {pos ? (
+          <div className="flex items-center justify-between w-full">
+            <div className="text-slate-500 text-[10px]">
+              持仓 <span className="font-mono font-bold text-slate-700 dark:text-slate-200">¥{holdingValue.toFixed(2)}</span>
+            </div>
+            <div className="font-mono font-semibold text-[10px]">
+              今日: <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}>
+                {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(2)}
+              </span>
+            </div>
+            <button
+              onClick={() => onEditPosition(code)}
+              className="text-[10px] text-blue-600 dark:text-blue-400 underline ml-2"
+            >
+              改持仓
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => onEditPosition(code)}
+            className="text-[10px] text-slate-400 hover:text-blue-500 flex items-center gap-1"
+          >
+            + 添加持仓数据
+          </button>
+        )}
+      </div>
+    </motion.div>
+  );
+});
+
+interface WatchlistRowProps {
+  code: string;
+  fund: FundValuation;
+  pos: UserPosition | undefined;
+  selfTab: 'fund' | 'stock';
+  pressDrag: PressDragState;
+  isDropTarget: boolean;
+  dragOverCode: string | null;
+  onRowPointerDown: (code: string) => (e: React.PointerEvent) => void;
+  suppressClickAfterDrag: (e: React.MouseEvent) => void;
+  onSelect: (code: string) => void;
+  onRemove: (code: string, name: string) => void;
+  onEditPosition: (code: string) => void;
+  handleDragStart: (code: string) => (e: React.DragEvent) => void;
+  handleDragOver: (code: string) => (e: React.DragEvent) => void;
+  handleDrop: (code: string) => (e: React.DragEvent) => void;
+  onDragEnd: () => void;
+}
+
+const WatchlistRow = React.memo(function WatchlistRow({
+  code, fund, pos, selfTab, pressDrag, isDropTarget, dragOverCode,
+  onRowPointerDown, suppressClickAfterDrag, onSelect, onRemove, onEditPosition,
+  handleDragStart, handleDragOver, handleDrop, onDragEnd,
+}: WatchlistRowProps) {
+  const changeVal = getRealtimeChangeVal(fund);
+  const isUp = changeVal > 0;
+  const isDown = changeVal < 0;
+  const changeColor = isUp
+    ? 'text-[var(--color-up)]'
+    : isDown ? 'text-[var(--color-down)]' : 'text-slate-400';
+
+  let holdingValue = 0;
+  let todayProfit = 0;
+  if (pos) {
+    const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+    const prevPrice = parseFloat(fund.dwjz);
+    holdingValue = pos.shares * currentPrice;
+    const updatedToday = isUpdatedToday(pos.updated_at);
+    const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
+    if (basePrice > 0 && currentPrice > 0) {
+      todayProfit = pos.shares * (currentPrice - basePrice);
+    }
+  }
+
+  return (
+    <tr
+      data-fund-code={code}
+      draggable={!pressDrag.activeCode}
+      onDragStart={handleDragStart(code)}
+      onDragOver={handleDragOver(code)}
+      onDrop={handleDrop(code)}
+      onDragEnd={onDragEnd}
+      onPointerDown={onRowPointerDown(code)}
+      onClickCapture={suppressClickAfterDrag}
+      className={`apple-row select-none cursor-grab active:cursor-grabbing transition-all duration-200 ease-out ${
+        pressDrag.pendingCode === code
+          ? 'scale-[1.005] bg-white dark:bg-[#1c1c1e] shadow-[0_8px_24px_-8px_rgba(59,130,246,0.35),0_0_0_1px_rgba(59,130,246,0.18)] relative z-10'
+          : ''
+      } ${
+        pressDrag.activeCode === code
+          ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
+          : ''
+      } ${
+        isDropTarget
+          ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)] relative z-[5]'
+          : ''
+      } ${
+        dragOverCode === code ? 'bg-blue-50/60 dark:bg-blue-950/30' : ''
+      }`}
+    >
+      <td
+        className="p-4 pl-6 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
+        onClick={() => onSelect(code)}
+      >
+        <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
+          {fund.name}
+        </div>
+        <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+          <span className="tabular-nums">{fund.fundcode}</span>
+          <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
+            selfTab === 'stock'
+              ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
+                : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
+                : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
+              : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
+          }`}>
+            {selfTab === 'stock'
+              ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
+              : '公募场外'}
+          </span>
+        </div>
+      </td>
+      <td className="p-4 text-right font-mono font-medium tabular-nums">
+        {parseFloat(fund.dwjz).toFixed(4)}
+        <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
+      </td>
+      <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
+        {parseFloat(fund.gsz).toFixed(4)}
+        <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
+        <div className="mt-1 flex justify-end whitespace-nowrap"><QuoteSourceBadge fund={fund} compact /></div>
+      </td>
+      <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
+        {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+      </td>
+
+      <td className="p-4 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+        {pos ? (
+          <button
+            onClick={() => onEditPosition(code)}
+            className="cursor-pointer group inline-flex flex-col items-end text-right p-1 rounded-xl hover:bg-slate-100/60 dark:hover:bg-white/5 transition-all"
+          >
+            <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+              ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1 tabular-nums">
+              <span>{pos.shares.toFixed(2)}份</span>
+              <span className="opacity-40">·</span>
+              <span>@{pos.cost.toFixed(4)}</span>
+              <Pencil size={9} className="opacity-60 group-hover:opacity-100 transition-opacity ml-0.5" />
+            </div>
+          </button>
+        ) : (
+          <PressableButton
+            onClick={() => onEditPosition(code)}
+            className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 py-1 rounded-full border border-blue-200/60 dark:border-blue-900/40 font-semibold transition-all"
+          >
+            + 持仓
+          </PressableButton>
+        )}
+      </td>
+
+      <td className={`p-4 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
+        pos
+          ? (todayProfit > 0 ? 'text-[var(--color-up)]'
+              : todayProfit < 0 ? 'text-[var(--color-down)]'
+              : 'text-slate-400')
+          : 'text-slate-300 dark:text-slate-700'
+      }`}>
+        {pos ? (
+          <>
+            {todayProfit > 0 ? '+' : ''}
+            {todayProfit.toFixed(2)}
+          </>
+        ) : (
+          '--'
+        )}
+      </td>
+
+      <td className="p-4 text-center pr-6 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(code);
+            }}
+            className="text-[11px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-3 py-1 rounded-full transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            查看详情
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.nativeEvent.stopImmediatePropagation();
+              onRemove(code, fund.name);
+            }}
+            title="退订并删除"
+            aria-label="退订基金"
+            className="p-1.5 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 /* ───────────────────────────────────────────────────────────────────
    Main App
    ─────────────────────────────────────────────────────────────────── */
@@ -384,6 +739,7 @@ function App() {
   const watchlistRef = useRef<string[]>([]);
   const watchlistItemsRef = useRef<WatchlistItem[]>([]);
   const fundsDataRef = useRef<Record<string, FundValuation>>({});
+  const positionsRef = useRef<Record<string, UserPosition>>({});
   const currentUserRef = useRef(currentUser);
   const sessionGenerationRef = useRef(0);
   const pendingInitialQuoteCodesRef = useRef<Set<string>>(new Set());
@@ -527,6 +883,11 @@ function App() {
       setTimeout(() => setToastMsg(null), 3000);
     }
   }, [watchlistItems, selfTab]);
+
+  const handleDragEnd = useCallback(() => {
+    setDragOverCode(null);
+    nativeDragInProgressRef.current = false;
+  }, []);
 
 
   /* ---------- Long-press 2s 拖动排序（PC + 移动通用，与 HTML5 drag 并存）---------- */
@@ -780,6 +1141,7 @@ function App() {
     watchlistRef.current = watchlist;
     watchlistItemsRef.current = watchlistItems;
     fundsDataRef.current = fundsData;
+    positionsRef.current = positions;
   });
 
   // 仅刷新当前种类的代码，避免打爆上游
@@ -851,11 +1213,25 @@ function App() {
     // broker 首帧是报价主来源；SSE 未在短时间内交付的代码才走一次 REST 兜底。
     const pendingCodes = new Set(codes.filter(code => !fundsDataRef.current[code]));
     pendingInitialQuoteCodesRef.current = pendingCodes;
-    const applyTick = (code: string, val: FundValuation, capturedAt: number) => {
-      pendingCodes.delete(code);
-      const next = { ...fundsDataRef.current, [code]: { ...val, capturedAt } };
+    // SSE tick 批处理：同一帧内到达的多个 tick 合并为一次 setFundsData，避免逐条触发整树重渲染。
+    const pendingTickRef = { map: new Map<string, { val: FundValuation; capturedAt: number }>(), raf: 0 };
+    const flushPendingTicks = () => {
+      pendingTickRef.raf = 0;
+      if (pendingTickRef.map.size === 0) return;
+      const updates = pendingTickRef.map;
+      pendingTickRef.map = new Map();
+      const base = fundsDataRef.current;
+      const next = { ...base };
+      for (const [c, u] of updates) next[c] = { ...u.val, capturedAt: u.capturedAt };
       fundsDataRef.current = next;
       setFundsData(next);
+    };
+    const applyTick = (code: string, val: FundValuation, capturedAt: number) => {
+      pendingCodes.delete(code);
+      pendingTickRef.map.set(code, { val, capturedAt });
+      if (!pendingTickRef.raf) {
+        pendingTickRef.raf = requestAnimationFrame(flushPendingTicks);
+      }
     };
     const applyClosed = (code: string, info: { lastVal: FundValuation | null; closedAt: number }) => {
       const price = info.lastVal ? (parseFloat(info.lastVal.gsz) || parseFloat(info.lastVal.dwjz)) : 0;
@@ -921,6 +1297,7 @@ function App() {
 
     return () => {
       window.clearTimeout(fallbackTimer);
+      if (pendingTickRef.raf) cancelAnimationFrame(pendingTickRef.raf);
       disposers.forEach(d => d());
     };
     // eslint-disable-next-line react-hooks-exhaustive-deps
@@ -981,14 +1358,18 @@ function App() {
     const generation = sessionGenerationRef.current;
     setLoading(true);
     try {
-      const data = await fetchWatchlist();
-      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
+      // 首屏请求并行化：自选、持仓、大盘指数互不依赖，并发发起避免串行等待。
+      const watchPromise = fetchWatchlist();
+      const posPromise = fetchPositions();
+      const indicesPromise = fetchMarketIndices();
 
       // 自选先发布：列表会立即用现有 Skeleton 行渲染，首帧报价交给 SSE 回填。
+      const data = await watchPromise;
+      if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
       setWatchlist(data.codes);
       setWatchlistItems(data.items);
 
-      const [posList, indices] = await Promise.all([fetchPositions(), fetchMarketIndices()]);
+      const [posList, indices] = await Promise.all([posPromise, indicesPromise]);
       if (currentUserRef.current !== session || sessionGenerationRef.current !== generation) return;
 
       const posMap: Record<string, UserPosition> = {};
@@ -1222,9 +1603,9 @@ function App() {
     }
   };
 
-  const handleRemoveFund = (code: string, name: string) => {
+  const handleRemoveFund = useCallback((code: string, name: string) => {
     setDeletingItem({ code, name });
-  };
+  }, []);
 
   const executeRemove = async (code: string, name: string) => {
     setDeletingItem(null);
@@ -1254,10 +1635,11 @@ function App() {
   };
 
   /* ---------- Position edit ---------- */
-  const openEditPosition = (code: string) => {
+  const openEditPosition = useCallback((code: string) => {
     setEditingCode(code);
-    const pos = positions[code];
-    const fund = fundsData[code];
+    // 用 ref 读取最新持仓/行情，避免把 fundsData 放进依赖导致 SSE 每次 tick 都重建本回调、击穿行级 memo。
+    const pos = positionsRef.current[code];
+    const fund = fundsDataRef.current[code];
     const curPrice = fund ? (parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0) : 0;
 
     const s = pos && pos.shares > 0 ? pos.shares : 0;
@@ -1280,7 +1662,7 @@ function App() {
       setBuyCost(curPrice > 0 ? curPrice.toFixed(4) : '');
       setSellShares('');
     }
-  };
+  }, []);
 
   const handleActionSavePosition = async () => {
     if (!editingCode) return;
@@ -1946,147 +2328,24 @@ function App() {
                         if (!fund) {
                           return <SkeletonCard key={code} code={code} />;
                         }
-
-                        const changeVal = getRealtimeChangeVal(fund);
-                        const isUp = changeVal > 0;
-                        const isDown = changeVal < 0;
-                        const changeBg = isUp
-                          ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
-                          : isDown
-                            ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
-
-                        let holdingValue = 0;
-                        let todayProfit = 0;
-                        if (pos) {
-                          const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-                          const prevPrice = parseFloat(fund.dwjz);
-                          holdingValue = pos.shares * currentPrice;
-                          const updatedToday = isUpdatedToday(pos.updated_at);
-                          const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
-                          if (basePrice > 0 && currentPrice > 0) {
-                            todayProfit = pos.shares * (currentPrice - basePrice);
-                          }
-                        }
-
+                        const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code);
                         return (
-                          <motion.div
+                          <WatchlistCard
                             key={code}
-                            data-fund-code={code}
-                            layout="position"
-                            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                            transition={SPRING.snap}
-                            onPointerDown={onRowPointerDown(code)}
-                            onClickCapture={suppressClickAfterDrag}
-                            onClick={() => {
-                              if (dragJustEndedRef.current) return;
-                              setSelectedFundCode(code);
-                            }}
-                            className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-all duration-200 ease-out cursor-pointer space-y-2 select-none relative ${
-                              pressDrag.pendingCode === code
-                                ? 'scale-[1.015] bg-white dark:bg-[#1c1c1e] shadow-[0_10px_28px_-10px_rgba(59,130,246,0.4),0_0_0_1px_rgba(59,130,246,0.18)] z-10'
-                                : ''
-                            } ${
-                              pressDrag.activeCode === code
-                                ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
-                                : ''
-                            } ${
-                              pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code)
-                                ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]'
-                                : ''
-                            }`}
-                          >
-                            {/* Card Header: Name + Code + Tag + Actions */}
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
-                                  {fund.name}
-                                </div>
-                                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
-                                  <span className="tabular-nums">{fund.fundcode}</span>
-                                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-sans font-medium border ${
-                                    selfTab === 'stock'
-                                      ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                                        : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                                        : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-                                      : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-                                  }`}>
-                                    {selfTab === 'stock'
-                                      ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
-                                      : '公募场外'}
-                                  </span>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    e.nativeEvent.stopImmediatePropagation();
-                                    handleRemoveFund(code, fund.name);
-                                  }}
-                                  title="退订并删除"
-                                  aria-label="退订基金"
-                                  className="p-1.5 rounded-full text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Card Body: Price & Change Pill */}
-                            <div className="flex items-baseline justify-between pt-1">
-                              <div>
-                                <div className="text-[10px] text-slate-400">
-                                  {selfTab === 'stock' ? '现价' : fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '估算净值（滞后）' : '估算净值'}
-                                </div>
-                                <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
-                                  {parseFloat(fund.gsz).toFixed(4)}
-                                  <span className="text-[10px] font-normal text-slate-400 ml-1.5">
-                                    {fund.gztime.split(' ')[1] || fund.gztime}
-                                  </span>
-                                </div>
-                                <div className="mt-1 font-sans"><QuoteSourceBadge fund={fund} compact /></div>
-                              </div>
-
-                              <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
-                                {isUp ? '+' : ''}{changeVal.toFixed(2)}%
-                              </div>
-                            </div>
-
-                            {/* Position info bar if held or button to add */}
-                            <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onClick={e => e.stopPropagation()}>
-                              {pos ? (
-                                <div className="flex items-center justify-between w-full">
-                                  <div className="text-slate-500 text-[10px]">
-                                    持仓 <span className="font-mono font-bold text-slate-700 dark:text-slate-200">¥{holdingValue.toFixed(2)}</span>
-                                  </div>
-                                  <div className="font-mono font-semibold text-[10px]">
-                                    今日: <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}>
-                                      {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(2)}
-                                    </span>
-                                  </div>
-                                  <button
-                                    onClick={() => openEditPosition(code)}
-                                    className="text-[10px] text-blue-600 dark:text-blue-400 underline ml-2"
-                                  >
-                                    改持仓
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => openEditPosition(code)}
-                                  className="text-[10px] text-slate-400 hover:text-blue-500 flex items-center gap-1"
-                                >
-                                  + 添加持仓数据
-                                </button>
-                              )}
-                            </div>
-                          </motion.div>
+                            code={code}
+                            fund={fund}
+                            pos={pos}
+                            selfTab={selfTab}
+                            pressDrag={pressDrag}
+                            isDropTarget={isDropTarget}
+                            prefersReducedMotion={prefersReducedMotion}
+                            onRowPointerDown={onRowPointerDown}
+                            suppressClickAfterDrag={suppressClickAfterDrag}
+                            onSelect={setSelectedFundCode}
+                            onRemove={handleRemoveFund}
+                            onEditPosition={openEditPosition}
+                            dragJustEndedRef={dragJustEndedRef}
+                          />
                         );
                       })}
                   </div>
@@ -2124,160 +2383,27 @@ function App() {
                               return <SkeletonTableRow key={code} code={code} />;
                             }
 
-                            const changeVal = getRealtimeChangeVal(fund);
-                            const isUp = changeVal > 0;
-                            const isDown = changeVal < 0;
-                            const changeColor = isUp
-                              ? 'text-[var(--color-up)]'
-                              : isDown ? 'text-[var(--color-down)]' : 'text-slate-400';
-
-                            let holdingValue = 0;
-                            let todayProfit = 0;
-                            if (pos) {
-                              const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-                              const prevPrice = parseFloat(fund.dwjz);
-                              holdingValue = pos.shares * currentPrice;
-                              const updatedToday = isUpdatedToday(pos.updated_at);
-                              const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
-                              if (basePrice > 0 && currentPrice > 0) {
-                                todayProfit = pos.shares * (currentPrice - basePrice);
-                              }
-                            }
-
+                            const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code);
                             return (
-                              <tr
+                              <WatchlistRow
                                 key={code}
-                                data-fund-code={code}
-                                draggable={!pressDrag.activeCode}
-                                onDragStart={handleDragStart(code)}
-                                onDragOver={handleDragOver(code)}
-                                onDrop={handleDrop(code)}
-                                onDragEnd={() => { setDragOverCode(null); nativeDragInProgressRef.current = false; }}
-                                onPointerDown={onRowPointerDown(code)}
-                                onClickCapture={suppressClickAfterDrag}
-                                className={`apple-row select-none cursor-grab active:cursor-grabbing transition-all duration-200 ease-out ${
-                                  pressDrag.pendingCode === code
-                                    ? 'scale-[1.005] bg-white dark:bg-[#1c1c1e] shadow-[0_8px_24px_-8px_rgba(59,130,246,0.35),0_0_0_1px_rgba(59,130,246,0.18)] relative z-10'
-                                    : ''
-                                } ${
-                                  pressDrag.activeCode === code
-                                    ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
-                                    : ''
-                                } ${
-                                  pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code)
-                                    ? 'bg-blue-50/70 dark:bg-blue-950/30 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)] relative z-[5]'
-                                    : ''
-                                } ${
-                                  dragOverCode === code ? 'bg-blue-50/60 dark:bg-blue-950/30' : ''
-                                }`}
-                              >
-                                <td
-                                  className="p-4 pl-6 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
-                                  onClick={() => setSelectedFundCode(code)}
-                                >
-                                  <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
-                                    {fund.name}
-                                  </div>
-                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
-                                    <span className="tabular-nums">{fund.fundcode}</span>
-                                    <span className={`text-[9px] px-2 py-0.2 rounded-full font-sans font-medium border ${
-                                      selfTab === 'stock'
-                                        ? (fund.market === 'us' ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-900/40'
-                                          : fund.market === 'hk' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-900/40'
-                                          : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200/60 dark:border-amber-900/40')
-                                        : 'bg-slate-100 dark:bg-black text-[#86868b] border-[var(--hairline-border)]'
-                                    }`}>
-                                      {selfTab === 'stock'
-                                        ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
-                                        : '公募场外'}
-                                    </span>
-                                  </div>
-                                </td>
-                                <td className="p-4 text-right font-mono font-medium tabular-nums">
-                                  {parseFloat(fund.dwjz).toFixed(4)}
-                                  <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
-                                </td>
-                                <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
-                                  {parseFloat(fund.gsz).toFixed(4)}
-                                  <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
-                                  <div className="mt-1 flex justify-end whitespace-nowrap"><QuoteSourceBadge fund={fund} compact /></div>
-                                </td>
-                                <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
-                                  {isUp ? '+' : ''}{changeVal.toFixed(2)}%
-                                </td>
-
-                                <td className="p-4 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                                  {pos ? (
-                                    <button
-                                      onClick={() => openEditPosition(code)}
-                                      className="cursor-pointer group inline-flex flex-col items-end text-right p-1 rounded-xl hover:bg-slate-100/60 dark:hover:bg-white/5 transition-all"
-                                    >
-                                      <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                                        ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                      </div>
-                                      <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1 tabular-nums">
-                                        <span>{pos.shares.toFixed(2)}份</span>
-                                        <span className="opacity-40">·</span>
-                                        <span>@{pos.cost.toFixed(4)}</span>
-                                        <Pencil size={9} className="opacity-60 group-hover:opacity-100 transition-opacity ml-0.5" />
-                                      </div>
-                                    </button>
-                                  ) : (
-                                    <PressableButton
-                                      onClick={() => openEditPosition(code)}
-                                      className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 py-1 rounded-full border border-blue-200/60 dark:border-blue-900/40 font-semibold transition-all"
-                                    >
-                                      + 持仓
-                                    </PressableButton>
-                                  )}
-                                </td>
-
-                                <td className={`p-4 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
-                                  pos
-                                    ? (todayProfit > 0 ? 'text-[var(--color-up)]'
-                                        : todayProfit < 0 ? 'text-[var(--color-down)]'
-                                        : 'text-slate-400')
-                                    : 'text-slate-300 dark:text-slate-700'
-                                }`}>
-                                  {pos ? (
-                                    <>
-                                      {todayProfit > 0 ? '+' : ''}
-                                      {todayProfit.toFixed(2)}
-                                    </>
-                                  ) : (
-                                    '--'
-                                  )}
-                                </td>
-
-                                <td className="p-4 text-center pr-6 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                                  <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSelectedFundCode(code);
-                                      }}
-                                      className="text-[11px] font-semibold text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-3 py-1 rounded-full transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                                    >
-                                      查看详情
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        e.nativeEvent.stopImmediatePropagation();
-                                        handleRemoveFund(code, fund.name);
-                                      }}
-                                      title="退订并删除"
-                                      aria-label="退订基金"
-                                      className="p-1.5 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 size={13} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
+                                code={code}
+                                fund={fund}
+                                pos={pos}
+                                selfTab={selfTab}
+                                pressDrag={pressDrag}
+                                isDropTarget={isDropTarget}
+                                dragOverCode={dragOverCode}
+                                onRowPointerDown={onRowPointerDown}
+                                suppressClickAfterDrag={suppressClickAfterDrag}
+                                onSelect={setSelectedFundCode}
+                                onRemove={handleRemoveFund}
+                                onEditPosition={openEditPosition}
+                                handleDragStart={handleDragStart}
+                                handleDragOver={handleDragOver}
+                                handleDrop={handleDrop}
+                                onDragEnd={handleDragEnd}
+                              />
                             );
                           })}
                       </tbody>

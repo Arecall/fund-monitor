@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -66,9 +66,20 @@ export function FundDetailPanel({
   const [refreshing, setRefreshing] = useState(false);
   // 真实分钟级数据/系统采样轨迹点（股票来自 Sina/腾讯，基金/无 K 线品种来自后端 quote_snapshots 快照）
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
+  const [minuteLoading, setMinuteLoading] = useState(true);
+  const minuteSigRef = useRef<string>('');
+
+  // 切换标的：清空残留曲线与去重签名，进入加载态（手动刷新走 chartKey，不在此重置，避免闪烁）
+  useEffect(() => {
+    minuteSigRef.current = '';
+    setMinuteData(null);
+    setMinuteLoading(true);
+  }, [fund.fundcode, fund.market, kind]);
+
   useEffect(() => {
     if (!fund.fundcode) {
       setMinuteData(null);
+      setMinuteLoading(false);
       return;
     }
     let cancelled = false;
@@ -76,6 +87,8 @@ export function FundDetailPanel({
       try {
         const res = await fetchStockMinute(fund.fundcode, kind, fund.market);
         if (cancelled) return;
+        // 首次分钟数据（真实快照/无数据）返回后即结束加载态，避免在真实数据到达前展示合成直线。
+        setMinuteLoading(false);
         if (res?.data && res.data.length > 0) {
           const bars = res.data.map(d => ({
             t: Date.parse(d.time.replace(' ', 'T') + '+08:00'),
@@ -83,11 +96,19 @@ export function FundDetailPanel({
             volume: d.volume,
             turnover: d.amount,
           })).filter(b => Number.isFinite(b.t));
+          // 数据去重：柱数 + 最后一根 K 线时间与收盘价均未变化则跳过 setState，避免每 10s 无意义重绘。
+          const last = bars[bars.length - 1];
+          const sig = `${bars.length}|${last?.t}|${last?.v}`;
+          if (sig === minuteSigRef.current) return;
+          minuteSigRef.current = sig;
           setMinuteData({ bars });
         } else {
+          minuteSigRef.current = '';
           setMinuteData(null);
         }
-      } catch {}
+      } catch {
+        if (!cancelled) setMinuteLoading(false);
+      }
     };
     loadMinuteData();
     const timer = setInterval(loadMinuteData, 10_000);
@@ -347,6 +368,11 @@ export function FundDetailPanel({
       {/* ── Chart card ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
         <Suspense fallback={<div className="h-[300px] rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse" />}>
+          {minuteLoading ? (
+            <div className="h-[300px] rounded-xl bg-slate-100 dark:bg-white/10 animate-pulse flex items-center justify-center">
+              <span className="text-xs text-slate-400 dark:text-slate-500">分时数据加载中…</span>
+            </div>
+          ) : (
           <FundChart
           key={`${chartKey}-${(fund as any).dataDate || fund.gztime?.split(' ')[0] || ''}`}
           fundCode={fund.fundcode}
@@ -382,6 +408,7 @@ export function FundDetailPanel({
           refreshing={refreshing}
           onRefresh={handleRefresh}
           />
+          )}
         </Suspense>
       </section>
 
