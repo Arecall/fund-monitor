@@ -1,10 +1,9 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Card, Tag, Button, Badge, BorderBeam } from 'antd';
+import { Card, Tag, Button, Badge, BorderBeam, Statistic } from 'antd';
+import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
-  ArrowUpRight,
-  ArrowDownRight,
   Pencil,
   ChevronDown,
   Star,
@@ -205,40 +204,38 @@ export function FundDetailPanel({
 
       {/* ── Metric row — funds 6 / stocks 8 cards ─────────────── */}
       <div className={`grid grid-cols-2 gap-3 ${kind === 'stock' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'}`}>
-        <MetricCard label="当前净值" tone="neutral" title={current.toFixed(6)}>
-          <span className="font-mono font-bold text-base sm:text-lg tabular-nums text-slate-900 dark:text-slate-50 leading-tight cursor-default">
-            {current.toFixed(4)}
-          </span>
-          <span className="text-[10px] opacity-0 font-mono mt-0.5 select-none">—</span>
-        </MetricCard>
+        <MetricCard
+          label="当前净值"
+          tone="neutral"
+          title={current.toFixed(6)}
+          value={current}
+          precision={4}
+        />
 
-        <MetricCard label="实时涨跌" tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}>
-          <div className="flex items-center gap-1">
-            {isUp ? <ArrowUpRight size={15} className="shrink-0" /> : isDown ? <ArrowDownRight size={15} className="shrink-0" /> : null}
-            <span className="font-mono font-bold text-base sm:text-lg tabular-nums leading-tight">
-              {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
-            </span>
-          </div>
-          <span className="text-[10px] text-slate-400 font-mono mt-0.5">
-            波动 {Math.abs(changeAmt).toFixed(4)}
-          </span>
-        </MetricCard>
+        <MetricCard
+          label="实时涨跌"
+          tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}
+          value={Math.abs(changeAmt)}
+          precision={4}
+          prefix={isUp ? <ArrowUpOutlined /> : isDown ? <ArrowDownOutlined /> : null}
+        />
 
-        <MetricCard label="今日涨跌幅" tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}>
-          <span className="font-mono font-bold text-base sm:text-lg tabular-nums leading-tight">
-            {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
-          </span>
-          <span className="text-[10px] opacity-0 font-mono mt-0.5 select-none">—</span>
-        </MetricCard>
+        <MetricCard
+          label="今日涨跌幅"
+          tone={isUp ? 'up' : isDown ? 'down' : 'neutral'}
+          value={Math.abs(changePct)}
+          precision={2}
+          prefix={isUp ? <ArrowUpOutlined /> : isDown ? <ArrowDownOutlined /> : null}
+          suffix="%"
+        />
 
-        <MetricCard label="昨收" tone="neutral" title={previous > 0 ? previous.toFixed(6) : '—'}>
-          <span className="font-mono font-bold text-base sm:text-lg tabular-nums text-slate-800 dark:text-slate-100 leading-tight">
-            {previous > 0 ? previous.toFixed(4) : '—'}
-          </span>
-          <span className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
-            {fund.jzrq || '—'}
-          </span>
-        </MetricCard>
+        <MetricCard
+          label="昨收"
+          tone="neutral"
+          title={previous > 0 ? previous.toFixed(6) : '—'}
+          value={previous > 0 ? previous : 0}
+          precision={4}
+        />
 
         {/* 个股专属：总市值 / 换手率（仅 stock + 东财字段就绪时显示） */}
         {kind === 'stock' && (() => {
@@ -1128,6 +1125,10 @@ function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
 function MetricCard({
   label,
   tone,
+  value,
+  precision,
+  prefix,
+  suffix,
   onClick,
   title,
   className = '',
@@ -1135,28 +1136,32 @@ function MetricCard({
 }: {
   label: string;
   tone: 'up' | 'down' | 'neutral' | 'muted';
+  value?: number | string;
+  precision?: number;
+  prefix?: React.ReactNode;
+  suffix?: React.ReactNode;
   highlight?: boolean;
   onClick?: () => void;
   title?: string;
   className?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   const isUp = tone === 'up';
   const isDown = tone === 'down';
   const isMuted = tone === 'muted';
 
   const textColor = isUp
-    ? 'text-[var(--color-up)]'
+    ? 'var(--color-up)'
     : isDown
-      ? 'text-[var(--color-down)]'
-      : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50';
+      ? 'var(--color-down)'
+      : isMuted ? '#94a3b8' : 'inherit';
 
   const content = (
     <Card
       size="small"
       title={null}
       hoverable={!!onClick}
-      className={`h-[96px] rounded-2xl border-[var(--hairline-border)] bg-slate-100/50 dark:bg-white/[0.04] ${onClick ? 'cursor-pointer' : ''} ${className}`}
+      className={`min-h-[96px] rounded-2xl border border-[var(--hairline-border)] bg-slate-100/50 dark:bg-white/[0.04] ${onClick ? 'cursor-pointer' : ''} ${className}`}
       styles={{
         body: {
           padding: '12px 14px',
@@ -1168,12 +1173,31 @@ function MetricCard({
       }}
     >
       <div title={title} className="h-full flex flex-col justify-between">
-        <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
-          {label}
-        </div>
-        <div className={`flex flex-col min-w-0 justify-end flex-1 ${textColor}`}>
-          {children}
-        </div>
+        {value !== undefined ? (
+          <Statistic
+            title={<span className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>{label}</span>}
+            value={value}
+            precision={precision}
+            prefix={prefix}
+            suffix={suffix}
+            valueStyle={{
+              color: textColor,
+              fontFamily: 'monospace',
+              fontWeight: 'bold',
+              fontSize: '1.125rem',
+              lineHeight: 1.2,
+            }}
+          />
+        ) : (
+          <>
+            <div className={`text-[10px] font-bold ${isMuted ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'} uppercase tracking-wider truncate`}>
+              {label}
+            </div>
+            <div className={`flex flex-col min-w-0 justify-end flex-1 ${isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : isMuted ? 'text-slate-400' : 'text-slate-900 dark:text-slate-50'}`}>
+              {children}
+            </div>
+          </>
+        )}
       </div>
     </Card>
   );
