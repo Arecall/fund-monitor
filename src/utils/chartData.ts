@@ -186,9 +186,11 @@ function getIntradayWindow(
       startTs = todayStart - DAY;
       endTs = Math.min(now, todayClose);
     } else if (now < todayStart) {
-      // 白天 close–21:30：最近一个已结束 session（昨天 21:30 → 今天 close）
-      startTs = todayStart - DAY;
-      endTs = todayClose;
+      // 白天 close–21:30：处于美股开盘前的【盘前待开盘】阶段
+      // 应指向今晚美股开盘 session 窗口（todayStart 21:30 → 明天 04:00/05:00），
+      // 确保 now < startTs 为 true，准确触发美股盘前待开盘遮罩与 21:30 开盘倒计时
+      startTs = todayStart;
+      endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
     } else {
       // 21:30–24:00：今天的 US session 正在进行
       startTs = todayStart;
