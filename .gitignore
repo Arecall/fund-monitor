@@ -1,0 +1,28 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+
+# Runtime data, credentials, and local configuration
+db.sqlite3*
+*.sqlite3
+*.sqlite3-*
+.encryption_key
+email_config.json
+.env
+.env.*
+!.env.example
+
+# Deployment archives, backups, and diagnostic artifacts
+*.tar.gz
+deploy-backups/
+backups/
+*.log
+test-*.png
+
+# Local tooling
+.agents/
+.claude/
+.tmp-deploy-paramiko/
+.vscode/
+.idea/
+.DS_Store

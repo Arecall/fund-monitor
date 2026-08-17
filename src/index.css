@@ -1,0 +1,471 @@
+/* 🍏 Apple Design System — Fluid Interface Edition (WWDC 2018+) */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Apple Canvas & Materials (Light Mode) */
+  --canvas-bg: #f5f5f7;
+  --surface-tile: #ffffff;
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --divider: #d2d2d7;
+  --hairline-border: rgba(0, 0, 0, 0.08);
+
+  /* Signature Action Blue */
+  --primary-accent: #0066cc;
+  --primary-accent-hover: #0071e3;
+  --primary-accent-translucent: rgba(0, 102, 204, 0.08);
+
+  /* Financial Colors (Domestic: Red Up, Green Down) */
+  --color-up: #ff453a;
+  --color-up-bg: rgba(255, 69, 58, 0.1);
+  --color-down: #30d158;
+  --color-down-bg: rgba(48, 209, 88, 0.1);
+  --color-flat: #8e8e93;
+  --color-flat-bg: rgba(142, 142, 147, 0.1);
+
+  /* Spring tokens — Apple WWDC defaults (damping 1.0, response 0.4) */
+  --spring-default: cubic-bezier(0.32, 0.72, 0, 1);          /* close to critically-damped spring */
+  --spring-materialize: cubic-bezier(0.16, 1, 0.3, 1);      /* gentle ease-out for surface arrival */
+  --spring-snap: cubic-bezier(0.5, 1.5, 0.6, 1);            /* inverse for snappy release */
+}
+
+:root.intl-color {
+  --color-up: #30d158;
+  --color-up-bg: rgba(48, 209, 88, 0.1);
+  --color-down: #ff453a;
+  --color-down-bg: rgba(255, 69, 58, 0.1);
+}
+
+:root.dark {
+  --canvas-bg: #000000;
+  --surface-tile: #1d1d1f;
+  --text-primary: #f5f5f7;
+  --text-secondary: #86868b;
+  --divider: #323236;
+  --hairline-border: rgba(255, 255, 255, 0.08);
+
+  --primary-accent: #2997ff;
+  --primary-accent-hover: #54a9ff;
+  --primary-accent-translucent: rgba(41, 151, 255, 0.15);
+}
+
+/* Global Styles — Apple system font, optical sizing, type-color adaptive */
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  /* Smooth theme/dark transitions — short, no harsh brightness jumps (§15) */
+  transition: background-color 240ms var(--spring-default);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--canvas-bg);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Body text: zero tracking — small text needs to be readable, not tight */
+  letter-spacing: 0;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  min-height: 100vh;
+  /* Prevent layout shift when scrollbar appears/disappears */
+  overflow-y: scroll;
+}
+
+#root {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+/* === Typography: size-specific tracking (§15) === */
+/* Large display: negative tracking (letters read too far apart as they grow) */
+/* Body: zero tracking */
+/* Caption/10px: positive tracking for legibility */
+
+.apple-display-heading {
+  font-family: "SF Pro Display", -apple-system, sans-serif;
+  letter-spacing: -0.022em;
+  font-weight: 600;
+  font-optical-sizing: auto;
+}
+
+.apple-display-large {
+  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  font-optical-sizing: auto;
+}
+
+.apple-eyebrow {
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;          /* small text wants positive tracking */
+  color: var(--text-secondary);
+}
+
+/* === Translucent Frosted Glass Material (§12) === */
+
+.apple-navbar {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(190%);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  border-bottom: 1px solid var(--hairline-border);
+}
+
+.dark .apple-navbar {
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(20px) saturate(190%);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  border-bottom: 1px solid var(--hairline-border);
+}
+
+/* Material weight encodes hierarchy — chrome (lighter) vs structural (heavier) */
+.apple-toolbar {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border-top: 1px solid var(--hairline-border);
+}
+
+.dark .apple-toolbar {
+  background: rgba(29, 29, 31, 0.62);
+}
+
+/* === Buttons — instant response on pointer-down (§1) === */
+
+.apple-btn-primary {
+  background-color: var(--primary-accent);
+  color: #ffffff;
+  border-radius: 980px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  /* Spring feel — short, no overshoot */
+  transition:
+    background-color 200ms var(--spring-default),
+    transform 120ms var(--spring-default),
+    opacity 120ms var(--spring-default),
+    box-shadow 240ms var(--spring-default);
+  will-change: transform;
+}
+
+.apple-btn-primary:hover {
+  background-color: var(--primary-accent-hover);
+  box-shadow: 0 6px 16px -4px rgba(0, 102, 204, 0.32);
+}
+
+.dark .apple-btn-primary:hover {
+  box-shadow: 0 6px 16px -4px rgba(41, 151, 255, 0.32);
+}
+
+/* Pointer-down instant feedback is handled by Motion (PressableButton).
+   The CSS :active rule is left here as a no-motion fallback for browsers
+   that haven't loaded Motion yet — keep it 0ms so it doesn't lag the press. */
+.apple-btn-primary:active {
+  transform: scale(0.96);
+  opacity: 0.92;
+  transition-duration: 0ms;
+}
+
+/* Ghost button — same instant feedback contract */
+.apple-btn-ghost {
+  background: transparent;
+  color: var(--text-primary);
+  border-radius: 980px;
+  transition:
+    background-color 160ms var(--spring-default),
+    transform 120ms var(--spring-default);
+  will-change: transform;
+}
+
+.apple-btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.dark .apple-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.apple-btn-ghost:active {
+  transform: scale(0.96);
+  opacity: 0.85;
+  transition-duration: 0ms;
+}
+
+/* === Cards — interruptible hover (§3, §11) === */
+
+.apple-card {
+  background-color: var(--surface-tile);
+  border: 1px solid var(--hairline-border);
+  border-radius: 18px;
+  transition:
+    transform 320ms var(--spring-default),
+    box-shadow 320ms var(--spring-default),
+    background-color 200ms var(--spring-default);
+  will-change: transform;
+}
+
+.apple-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.06);
+}
+
+.dark .apple-card:hover {
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
+/* Apple-style colored shadow on hover (subtle elevation) */
+.apple-card-elevated:hover {
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.08),
+    0 0 0 1px var(--hairline-border);
+}
+
+/* === Inputs — instant focus, spring rest === */
+
+.apple-input {
+  background: var(--surface-tile);
+  border: 1px solid var(--divider);
+  border-radius: 14px;
+  color: var(--text-primary);
+  transition:
+    border-color 200ms var(--spring-default),
+    box-shadow 200ms var(--spring-default);
+}
+
+.apple-input:focus {
+  outline: none;
+  border-color: var(--primary-accent);
+  box-shadow: 0 0 0 3px var(--primary-accent-translucent);
+}
+
+.dark .apple-input {
+  background: #000000;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* === Table rows — hover feedback, gesture-friendly hit target === */
+
+.apple-row {
+  transition: background-color 160ms var(--spring-default);
+}
+
+/* 拖动中：禁止文本选择 + 阻止浏览器滚动劫持，让 pointer 拖动手势独占 */
+.is-dragging,
+.is-dragging * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  touch-action: none;
+  cursor: grabbing;
+}
+
+/* 正在拖拽行的特殊独立定位与层级样式，规避与 thead 穿透重叠 */
+.apple-row.is-dragging {
+  position: relative !important;
+  z-index: 100 !important;
+  background-color: var(--surface-tile) !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15) !important;
+}
+
+.dark .apple-row.is-dragging {
+  background-color: #1d1d1f !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4) !important;
+}
+
+.apple-row.is-dragging td {
+  background-color: inherit !important;
+}
+
+.apple-row:hover {
+  background-color: rgba(0, 0, 0, 0.025);
+}
+
+.dark .apple-row:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+/* === Scrollbar — slim, Apple-style === */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--divider);
+  border-radius: 999px;
+  transition: background-color 200ms var(--spring-default);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Hide scrollbar utility (for market ticker strip) */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* === Spring keyframes — for non-Motion fallback === */
+
+@keyframes springMaterialize {
+  0%   { opacity: 0; transform: scale(0.94) translateY(8px); filter: blur(8px); }
+  60%  { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
+}
+
+@keyframes springSlideInTop {
+  0%   { opacity: 0; transform: translateY(-12px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes springSlideOutTop {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-12px) scale(0.96); }
+}
+
+@keyframes springFadeIn {
+  0%   { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scrimFadeIn {
+  0%   { opacity: 0; backdrop-filter: blur(0); }
+  100% { opacity: 1; backdrop-filter: blur(20px) saturate(180%); }
+}
+
+@keyframes scrimFadeOut {
+  0%   { opacity: 1; backdrop-filter: blur(20px) saturate(180%); }
+  100% { opacity: 0; backdrop-filter: blur(0); }
+}
+
+@keyframes valueFlashUp {
+  0%   { background-color: var(--color-up-bg); }
+  100% { background-color: transparent; }
+}
+
+@keyframes valueFlashDown {
+  0%   { background-color: var(--color-down-bg); }
+  100% { background-color: transparent; }
+}
+
+.animate-materialize {
+  animation: springMaterialize 380ms var(--spring-materialize) both;
+  transform-origin: center center;
+}
+
+.animate-slide-in-top {
+  animation: springSlideInTop 280ms var(--spring-default) both;
+  transform-origin: top right;
+}
+
+.animate-slide-out-top {
+  animation: springSlideOutTop 220ms var(--spring-snap) forwards;
+  transform-origin: top right;
+}
+
+.animate-fade-in {
+  animation: springFadeIn 280ms var(--spring-default) both;
+}
+
+.animate-scrim-in {
+  animation: scrimFadeIn 240ms var(--spring-default) both;
+}
+
+.animate-scrim-out {
+  animation: scrimFadeOut 200ms var(--spring-default) forwards;
+}
+
+/* === Reduced motion (§14) — gentle cross-fade, no slide/spring/parallax === */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Keep opacity/colour — those aid comprehension, drop elastic/overshoot */
+  .animate-materialize,
+  .animate-slide-in-top {
+    animation: springFadeIn 200ms ease both;
+  }
+
+  .apple-btn-primary:active,
+  .apple-btn-ghost:active,
+  .apple-card:hover {
+    transform: none !important;
+  }
+}
+
+/* === Reduced transparency (§14) — solid surfaces, drop the blur === */
+
+@media (prefers-reduced-transparency: reduce) {
+  .apple-navbar,
+  .apple-toolbar {
+    background: var(--surface-tile);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .dark .apple-navbar,
+  .dark .apple-toolbar {
+    background: #1d1d1f;
+  }
+}
+
+/* === High contrast (§14) — solid surfaces, defined borders === */
+
+@media (prefers-contrast: more) {
+  :root {
+    --hairline-border: rgba(0, 0, 0, 0.4);
+    --divider: #8e8e93;
+  }
+  :root.dark {
+    --hairline-border: rgba(255, 255, 255, 0.4);
+    --divider: #8e8e93;
+  }
+
+  .apple-navbar,
+  .apple-toolbar,
+  .apple-card {
+    background: var(--surface-tile);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-width: 1px;
+  }
+}
+
+/* === Apple-style focus ring (visible for keyboard users) === */
+
+:focus-visible {
+  outline: 2px solid var(--primary-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Buttons override — they have their own focus styling */
+button:focus-visible {
+  outline-offset: 4px;
+}

@@ -1,0 +1,24 @@
+services:
+  fund-monitor:
+    build:
+      context: .
+    image: fund-monitor:1.3.32
+    container_name: fund-monitor
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATA_DIR: /app/data
+    volumes:
+      - fund-monitor-data:/app/data
+    networks:
+      - proxy
+
+volumes:
+  fund-monitor-data:
+    name: fund-monitor-data
+
+networks:
+  proxy:
+    external: true
+    name: root_sub2api-network

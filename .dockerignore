@@ -1,0 +1,10 @@
+.git
+.agents
+.claude
+node_modules
+dist
+*.log
+db.sqlite3*
+.encryption_key
+email_config.json
+deploy-backups
