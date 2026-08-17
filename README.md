@@ -48,8 +48,10 @@
    - 美币/港币/人民币汇率自动换算，精确计算今日估算盈亏与累计持仓收益率。
 5. **隐私安全与多用户隔离**：
    - 基于 SQLite3 本地持久化，支持多用户免密/密码登录与隔离，数据完全归属于个人服务器。
-   - ![image-20260817142641554](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142641554.png)
-   - ![image-20260817142556031](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142556031.png)
+6. **截图**
+   <img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/5b0d21f3-2693-4802-bdfc-6bce2cf81da3" />
+   <img width="3840" height="1878" alt="image" src="https://github.com/user-attachments/assets/ed5496c3-8b99-44b5-8bc3-614d3f05724b" />
+   <img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/d847134c-bec2-4e0d-88f9-6e3cae9cec31" />
 
 ---
 
