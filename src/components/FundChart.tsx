@@ -411,6 +411,18 @@ export function FundChart({
   // 动态 Key 用于在切换基金或时间范围时触发首次加载物理过渡动画（后续数据刷新不重播）
   const animKey = `${fundCode}-${range}`;
 
+  // ─── Smart Tooltip Positioning (侧边避让，避免遮挡 hover 焦点) ───
+  const tooltipWidth = 156;
+  const tooltipHeight = 110;
+  const isRightSide = hoverX > width / 2;
+  const tooltipLeft = isRightSide
+    ? Math.max(padding.left + 4, hoverX - tooltipWidth - 14)
+    : Math.min(width - padding.right - tooltipWidth - 4, hoverX + 14);
+  const tooltipTop = Math.max(
+    padding.top + 4,
+    Math.min(height - padding.bottom - tooltipHeight - 4, hoverY - tooltipHeight / 2)
+  );
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* Header row */}
@@ -1011,8 +1023,8 @@ export function FundChart({
               transition={{ type: 'spring' as const, bounce: 0, duration: 0.24 }}
               className="pointer-events-none absolute z-10 px-3 py-2 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[140px]"
               style={{
-                left: `${Math.min(Math.max(0, hoverX - 70), width - 150)}px`,
-                top: `${Math.max(0, hoverY - 76)}px`,
+                left: `${tooltipLeft}px`,
+                top: `${tooltipTop}px`,
               }}
             >
               <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1">
