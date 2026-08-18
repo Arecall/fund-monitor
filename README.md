@@ -1,6 +1,6 @@
 # 全球基金与股票监控终端 (Fund & Stock Monitor)
 
-[![Version](https://img.shields.io/badge/version-1.3.32-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.3.33-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
@@ -48,6 +48,8 @@
    - 美币/港币/人民币汇率自动换算，精确计算今日估算盈亏与累计持仓收益率。
 5. **隐私安全与多用户隔离**：
    - 基于 SQLite3 本地持久化，支持多用户免密/密码登录与隔离，数据完全归属于个人服务器。
+   - ![image-20260817142641554](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142641554.png)
+   - ![image-20260817142556031](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142556031.png)
 
 ---
 
@@ -72,7 +74,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                    全球基金与股票监控终端 (v1.3.32)                   │
+│                    全球基金与股票监控终端 (v1.3.33)                   │
 ├──────────────────┬──────────────────────────┬────────────────────────┤
 │ 1. 顶部全球大盘   │ 2. 自选看板 (Watchlist)  │ 3. 黄金行情专区        │
 │  - A股/港股/美股 │  - 场内股票/场外基金分Tab │  - 伦敦金 / 国际金    │
@@ -123,7 +125,7 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.3.32
+    image: fund-monitor:1.3.33
     container_name: fund-monitor
     restart: unless-stopped
     ports:

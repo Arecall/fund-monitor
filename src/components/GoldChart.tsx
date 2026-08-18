@@ -54,7 +54,6 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   // 14px ≈ "4155.00" 这种标签宽 + 安全距离
   const xAxisInset = 14;
   const drawableW = innerW - xAxisInset;
-  const wrapWidthPercent = 100;
 
   // range：优先用父组件传入的用户选择；否则从数据跨度推断（旧 behavior）
   const range = useMemo<'intraday' | '1W' | '1M'>(() => {
@@ -262,12 +261,23 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
   const hoverX = hoverIdx != null ? xPos(hoverIdx) : 0;
   const hoverY = hoverPoint ? yPos(hoverPoint.v) : 0;
-  const hoverXPct = hoverIdx != null ? (hoverX / width) * wrapWidthPercent : 0;
 
   // hover 节点的相对第一个点的变化
   const hoverChange = hoverPoint && firstPointVal > 0 ? hoverPoint.v - firstPointVal : 0;
   const hoverChangePct = hoverPoint && firstPointVal > 0 ? (hoverChange / firstPointVal) * 100 : 0;
   const hoverColor = hoverChange > 0 ? 'var(--color-up)' : hoverChange < 0 ? 'var(--color-down)' : 'var(--color-flat)';
+
+  // ─── Smart Tooltip Positioning (侧边避让，避免遮挡 hover 焦点) ───
+  const goldTooltipWidth = 140;
+  const goldTooltipHeight = 90;
+  const isGoldRightSide = hoverX > width / 2;
+  const goldTooltipLeft = isGoldRightSide
+    ? Math.max(padding.left + 4, hoverX - goldTooltipWidth - 14)
+    : Math.min(width - padding.right - goldTooltipWidth - 4, hoverX + 14);
+  const goldTooltipTop = Math.max(
+    padding.top + 4,
+    Math.min(height - padding.bottom - goldTooltipHeight - 4, hoverY - goldTooltipHeight / 2)
+  );
 
   if (points.length < 2) {
     return (
@@ -538,8 +548,8 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             key={`tip-${hoverIdx}`}
             className="pointer-events-none absolute z-10 px-2.5 py-1.5 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[120px]"
             style={{
-              left: `calc(${hoverXPct}% - 60px)`,
-              top: `calc(${(hoverY / height) * 100}% + 6px)`,
+              left: `${goldTooltipLeft}px`,
+              top: `${goldTooltipTop}px`,
             }}
             initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
