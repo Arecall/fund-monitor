@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useId } from 'react';
 import { Spin } from 'antd';
 import { fetchStockMinute } from '../services/api';
 
@@ -15,7 +15,33 @@ interface SparklineProps {
 
 // 模块级全域内存缓存，防止列表重复渲染打爆接口 (TTL = 60s)
 const sparklineCache = new Map<string, { points: number[]; ts: number }>();
+const sparklineInflight = new Map<string, Promise<number[] | null>>();
 const SPARKLINE_TTL = 60 * 1000;
+
+function getSparklineKey(code: string, kind: 'fund' | 'stock', market: string) {
+  return `${kind}:${market}:${code}`;
+}
+
+function loadSparklinePoints(key: string, code: string, kind: 'fund' | 'stock', market: string) {
+  const existing = sparklineInflight.get(key);
+  if (existing) return existing;
+
+  const request = fetchStockMinute(code, kind, market)
+    .then((res) => {
+      if (!res || !Array.isArray(res.data)) return null;
+      const points = res.data
+        .map((point) => point.close)
+        .filter((value) => typeof value === 'number' && !isNaN(value) && value > 0);
+      return points.length >= 2 ? points : null;
+    })
+    .catch(() => null)
+    .finally(() => {
+      sparklineInflight.delete(key);
+    });
+
+  sparklineInflight.set(key, request);
+  return request;
+}
 
 export function Sparkline({
   code,
@@ -27,58 +53,50 @@ export function Sparkline({
   width = 96,
   height = 28,
 }: SparklineProps) {
+  const instrumentKey = getSparklineKey(code, kind, market);
   const [dataPoints, setDataPoints] = useState<number[] | null>(() => {
-    const cached = sparklineCache.get(`${code}-${kind}-${market}`);
+    const cached = sparklineCache.get(instrumentKey);
     if (cached && Date.now() - cached.ts < SPARKLINE_TTL) {
       return cached.points;
     }
     return null;
   });
-
   const [loading, setLoading] = useState<boolean>(!dataPoints);
+  const gradientInstanceId = useId().replace(/:/g, '_');
 
   useEffect(() => {
-    const cacheKey = `${code}-${kind}-${market}`;
-    const cached = sparklineCache.get(cacheKey);
+    const cached = sparklineCache.get(instrumentKey);
+    let isCurrent = true;
+
+    // 组件身份变化时先清空旧曲线，避免 effect 执行前短暂绘制上一个标的的数据。
     if (cached && Date.now() - cached.ts < SPARKLINE_TTL) {
       setDataPoints(cached.points);
       setLoading(false);
-      return;
+      return () => {
+        isCurrent = false;
+      };
     }
 
-    let isMounted = true;
-    setLoading(!cached);
+    setDataPoints(null);
+    setLoading(true);
 
-    fetchStockMinute(code, kind, market)
-      .then((res) => {
-        if (!isMounted) return;
-        if (res && Array.isArray(res.data) && res.data.length > 0) {
-          const pts = res.data.map((p) => p.close).filter((v) => typeof v === 'number' && !isNaN(v) && v > 0);
-          if (pts.length > 0) {
-            sparklineCache.set(cacheKey, { points: pts, ts: Date.now() });
-            setDataPoints(pts);
-            setLoading(false);
-            return;
-          }
+    loadSparklinePoints(instrumentKey, code, kind, market)
+      .then((points) => {
+        if (!isCurrent) return;
+        if (points) {
+          sparklineCache.set(instrumentKey, { points, ts: Date.now() });
+          setDataPoints(points);
+        } else {
+          // 临时无数据仅展示本次计算的两点兜底，不能污染全局缓存。
+          setDataPoints([prevClose > 0 ? prevClose : currentPrice, currentPrice].filter((v) => v > 0));
         }
-        // 接口无数据时退化为从昨收到现价的标准 2 点连线
-        const fallback = [prevClose > 0 ? prevClose : currentPrice, currentPrice].filter((v) => v > 0);
-        sparklineCache.set(cacheKey, { points: fallback, ts: Date.now() });
-        setDataPoints(fallback);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!isMounted) return;
-        const fallback = [prevClose > 0 ? prevClose : currentPrice, currentPrice].filter((v) => v > 0);
-        sparklineCache.set(cacheKey, { points: fallback, ts: Date.now() });
-        setDataPoints(fallback);
         setLoading(false);
       });
 
     return () => {
-      isMounted = false;
+      isCurrent = false;
     };
-  }, [code, kind, market, currentPrice, prevClose]);
+  }, [instrumentKey, code, kind, market, currentPrice, prevClose]);
 
   // 坐标转换计算
   const geometry = useMemo(() => {
@@ -124,7 +142,7 @@ export function Sparkline({
   }, [dataPoints, currentPrice, prevClose, width, height]);
 
   const strokeColor = isUp ? 'var(--color-up)' : 'var(--color-down)';
-  const gradId = `sparkGrad-${code.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const gradId = `sparkGrad-${gradientInstanceId}`;
 
   if (loading) {
     return (

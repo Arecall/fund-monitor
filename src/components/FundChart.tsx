@@ -217,32 +217,32 @@ export function FundChart({
     return `${first} ${top} ${last}`;
   }, [points, x, smoothLinePath, padding.top, innerH]);
 
-  // 均价折线（VWAP — 成交量加权均价），参考东方财富/同花顺分时图：
-  //   VWAP[t] = Σ(price[i] × volume[i]) / Σ(volume[i])   for i ≤ t
-  // 分时 ('intraday') 和 1日 ('1D') 维度均使用 VWAP；仅当存在真实逐分钟 volume 时才绘制，
-  // 否则整条线不渲染——基金等没有分时 volume 的数据，算术均值会被误当成"均价"。
+  // 均价折线：有真实分钟成交量时使用 VWAP；A 股缺少成交量时以累计简单均价补全，
+  // 并以虚线和 Tooltip 标识为“估算均价”，避免与真实成交量加权均价混淆。
   const vwapSeries = useMemo(() => {
     if ((range !== 'intraday' && range !== '1D') || points.length < 2) {
-      return { path: '', last: 0, perPoint: [] as number[] };
+      return { path: '', last: 0, perPoint: [] as number[], estimated: false };
     }
 
-    // 没有真实逐分钟 volume → 不画均价线
     const hasVol = points.some(p => typeof p.volume === 'number' && p.volume > 0);
-    if (!hasVol) {
-      return { path: '', last: 0, perPoint: [] as number[] };
-    }
+    const averages: number[] = new Array(points.length);
+    let weightedSum = 0;
+    let volumeSum = 0;
+    let priceSum = 0;
 
-    const vwaps: number[] = new Array(points.length);
-    let pvSum = 0;
-    let vSum = 0;
     for (let i = 0; i < points.length; i++) {
-      const vol = points[i].volume || 1;
-      pvSum += points[i].v * vol;
-      vSum += vol;
-      vwaps[i] = vSum > 0 ? pvSum / vSum : points[i].v;
+      if (hasVol) {
+        const volume = points[i].volume || 1;
+        weightedSum += points[i].v * volume;
+        volumeSum += volume;
+        averages[i] = volumeSum > 0 ? weightedSum / volumeSum : points[i].v;
+      } else {
+        priceSum += points[i].v;
+        averages[i] = priceSum / (i + 1);
+      }
     }
 
-    const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));
+    const pts = points.map((_p, i) => ({ x: x(i), y: y(averages[i]) }));
     let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[i - 1] || pts[i];
@@ -255,7 +255,12 @@ export function FundChart({
       const c2y = p2.y - (p3.y - p1.y) / 6;
       d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
     }
-    return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
+    return {
+      path: d,
+      last: averages[averages.length - 1],
+      perPoint: averages,
+      estimated: !hasVol,
+    };
   }, [points, range, x, y]);
 
   // MA10 均价线（10 周期简单移动平均）
@@ -720,7 +725,7 @@ export function FundChart({
             </>
           )}
 
-          {/* 均价线（橙色 VWAP — 成交量加权均价），仅在分时图 + 真实逐分钟 volume 数据存在时绘制 */}
+          {/* 均价线：真实成交量时为 VWAP；缺量时以虚线展示估算均价。 */}
           {showLines && vwapSeries.path && (
             <motion.path
               key={`vwap-line-${range}`}
@@ -728,6 +733,7 @@ export function FundChart({
               fill="none"
               stroke="#f59e0b"
               strokeWidth="1.25"
+              strokeDasharray={vwapSeries.estimated ? '4 3' : undefined}
               strokeLinecap="round"
               strokeLinejoin="round"
               opacity="0.85"
@@ -1068,7 +1074,7 @@ export function FundChart({
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-slate-500">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                      均价
+                      {vwapSeries.estimated ? '估算均价' : '均价'}
                     </span>
                     <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
                       {hoverVwap.toFixed(4)}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin } from 'antd';
+import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin, Pagination } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -163,6 +163,22 @@ const AnimatedNumber = React.memo(function AnimatedNumber({
 /* ───────────────────────────────────────────────────────────────────
    Apple Design Skeleton Loaders — 1:1 layout match with shimmer
    ─────────────────────────────────────────────────────────────────── */
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(query).matches : false
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+
+  return matches;
+}
 
 function SkeletonCard({ code }: { code: string }) {
   return (
@@ -450,6 +466,7 @@ const WatchlistCard = React.memo(function WatchlistCard({
         {/* 迷你分时走势图 */}
         <div className="px-1 shrink-0">
           <Sparkline
+            key={`${selfTab}:${fund.market || 'domestic'}:${code}`}
             code={code}
             kind={selfTab === 'stock' ? 'stock' : 'fund'}
             market={fund.market}
@@ -722,6 +739,9 @@ function App() {
     } catch {}
     return 'fund';
   });
+  const [watchlistPage, setWatchlistPage] = useState(1);
+  const WATCHLIST_PAGE_SIZE = 10;
+  const isDesktopWatchlist = useMediaQuery('(min-width: 768px)');
   const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>(() => {
     // 刷新停留在哪个 tab — 从 localStorage 恢复
     try {
@@ -766,6 +786,7 @@ function App() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const watchlistRef = useRef<string[]>([]);
   const watchlistItemsRef = useRef<WatchlistItem[]>([]);
+  const watchlistItemMapRef = useRef<Map<string, WatchlistItem>>(new Map());
   const fundsDataRef = useRef<Record<string, FundValuation>>({});
   const positionsRef = useRef<Record<string, UserPosition>>({});
   const currentUserRef = useRef(currentUser);
@@ -848,8 +869,25 @@ function App() {
   const visibleList = useMemo(() => {
     return watchlistItems
       .filter(item => (selfTab === 'stock' ? item.kind === 'stock' : item.kind === 'fund'))
-      .map(item => item.fund_code);
+      .map(item => ({
+        code: item.fund_code,
+        key: `${item.kind}:${item.market || 'domestic'}:${item.fund_code}`,
+      }));
   }, [watchlistItems, selfTab]);
+
+  const watchlistPageCount = Math.max(1, Math.ceil(visibleList.length / WATCHLIST_PAGE_SIZE));
+  const pagedVisibleList = useMemo(() => {
+    const start = (watchlistPage - 1) * WATCHLIST_PAGE_SIZE;
+    return visibleList.slice(start, start + WATCHLIST_PAGE_SIZE);
+  }, [visibleList, watchlistPage, WATCHLIST_PAGE_SIZE]);
+
+  useEffect(() => {
+    setWatchlistPage(page => Math.min(page, watchlistPageCount));
+  }, [watchlistPageCount]);
+
+  useEffect(() => {
+    setWatchlistPage(1);
+  }, [selfTab]);
 
   const handleDragStart = useCallback((code: string) => (e: React.DragEvent) => {
     // 0) 若自定义拖动已激活，绝对禁止原生 drag（防止拖动过程中被原生系统接管）
@@ -960,7 +998,7 @@ function App() {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       });
-    const stockCodes = new Set(visibleList);
+    const stockCodes = new Set(visibleList.map(item => item.code));
     const bounds = rowEls
       .filter(el => stockCodes.has(el.dataset.fundCode!))
       .map(el => {
@@ -1169,6 +1207,9 @@ function App() {
   useEffect(() => {
     watchlistRef.current = watchlist;
     watchlistItemsRef.current = watchlistItems;
+    watchlistItemMapRef.current = new Map(
+      watchlistItems.map(item => [item.fund_code.toUpperCase(), item])
+    );
     fundsDataRef.current = fundsData;
     positionsRef.current = positions;
   });
@@ -1178,20 +1219,20 @@ function App() {
     if (document.visibilityState !== 'visible') return;
 
     const codes = watchlistRef.current;
-    const items = watchlistItemsRef.current;
+    const itemMap = watchlistItemMapRef.current;
     const data = fundsDataRef.current;
 
     const targetCodes = codes.filter(code => {
-      const it = items.find(w => w.fund_code === code);
-      return (it?.kind || 'fund') === kindFilter;
+      const item = itemMap.get(code.toUpperCase());
+      return (item?.kind || 'fund') === kindFilter;
     });
     if (targetCodes.length === 0) return;
 
     // 休市校验：仅当该种类下的市场仍有活跃时刷新
     const activeMarkets: FundMarket[] = targetCodes.map(code => {
-      const it = items.find(w => w.fund_code === code);
-      if (it?.market === 'us' || it?.market === 'hk' || it?.market === 'domestic' || it?.market === 'other') {
-        return it.market;
+      const item = itemMap.get(code.toUpperCase());
+      if (item?.market === 'us' || item?.market === 'hk' || item?.market === 'domestic' || item?.market === 'other') {
+        return item.market;
       }
       const val = data[code];
       return detectFundMarket(val?.name, code);
@@ -1202,8 +1243,8 @@ function App() {
       try {
         const updatedFunds = { ...data };
         await Promise.all(targetCodes.map(async (code) => {
-          const it = items.find((w: WatchlistItem) => w.fund_code === code);
-          const val = await fetchFundValuation(code, it?.kind);
+          const item = itemMap.get(code.toUpperCase());
+          const val = await fetchFundValuation(code, item?.kind);
           if (val) updatedFunds[code] = val;
         }));
         fundsDataRef.current = updatedFunds;
@@ -1226,21 +1267,16 @@ function App() {
     if (codes.length === 0) return;
 
     // kind 默认按 watchlist 已知分类决定，未知走 stock
-    const items = watchlistItemsRef.current;
+    const itemMap = watchlistItemMapRef.current;
 
     // 同时建立两个 SSE：股票 10s 节奏 + 基金 60s 节奏
     // 服务端 broker 已经按 kind 分流，前端再分流一次仅为了让重连 / 日志更清晰
-    const stockCodes = codes.filter(c => {
-      const it = items.find(w => w.fund_code.toUpperCase() === c.toUpperCase());
-      return (it?.kind || 'stock') === 'stock';
-    });
-    const fundCodes = codes.filter(c => {
-      const it = items.find(w => w.fund_code.toUpperCase() === c.toUpperCase());
-      return it?.kind === 'fund';
-    });
+    const stockCodes = codes.filter(code => (itemMap.get(code.toUpperCase())?.kind || 'stock') === 'stock');
+    const fundCodes = codes.filter(code => itemMap.get(code.toUpperCase())?.kind === 'fund');
 
     // broker 首帧是报价主来源；SSE 未在短时间内交付的代码才走一次 REST 兜底。
     const pendingCodes = new Set(codes.filter(code => !fundsDataRef.current[code]));
+    let fallbackCancelled = false;
     pendingInitialQuoteCodesRef.current = pendingCodes;
     // SSE tick 批处理：同一帧内到达的多个 tick 合并为一次 setFundsData，避免逐条触发整树重渲染。
     const pendingTickRef = { map: new Map<string, { val: FundValuation; capturedAt: number }>(), raf: 0 };
@@ -1287,7 +1323,7 @@ function App() {
     const groupByMarketAndKind = (targetCodes: string[], defaultKind: 'stock' | 'fund') => {
       const groups: Record<string, string[]> = {};
       for (const code of targetCodes) {
-        const item = items.find(w => w.fund_code.toUpperCase() === code.toUpperCase());
+        const item = itemMap.get(code.toUpperCase());
         const market = item?.market || detectFundMarket(undefined, code);
         const key = `${market}`;
         if (!groups[key]) groups[key] = [];
@@ -1313,18 +1349,38 @@ function App() {
     // 避免启动时每个代码都同时走 REST 与 broker 两条抓取链路。
     const fallbackTimer = window.setTimeout(() => {
       const missingCodes = [...pendingCodes].filter(code => !fundsDataRef.current[code]);
-      missingCodes.forEach(async code => {
-        const item = items.find(w => w.fund_code.toUpperCase() === code.toUpperCase());
-        const val = await fetchFundValuation(code, item?.kind);
-        if (!val || !pendingCodes.has(code)) return;
-        pendingCodes.delete(code);
-        const next = { ...fundsDataRef.current, [code]: { ...val, capturedAt: Date.now() } };
+      const pageCodes = new Set(pagedVisibleList.map(item => item.code.toUpperCase()));
+      const heldCodes = new Set(Object.keys(positionsRef.current).map(code => code.toUpperCase()));
+      const prioritizedCodes = missingCodes.sort((a, b) => {
+        const aPriority = pageCodes.has(a.toUpperCase()) || heldCodes.has(a.toUpperCase()) ? 0 : 1;
+        const bPriority = pageCodes.has(b.toUpperCase()) || heldCodes.has(b.toUpperCase()) ? 0 : 1;
+        return aPriority - bPriority;
+      });
+      let cursor = 0;
+      const updates: Record<string, FundValuation> = {};
+
+      const worker = async () => {
+        while (!fallbackCancelled && cursor < prioritizedCodes.length) {
+          const code = prioritizedCodes[cursor++];
+          if (!pendingCodes.has(code) || fundsDataRef.current[code]) continue;
+          const item = itemMap.get(code.toUpperCase());
+          const val = await fetchFundValuation(code, item?.kind);
+          if (fallbackCancelled || !val || !pendingCodes.has(code)) continue;
+          pendingCodes.delete(code);
+          updates[code] = { ...val, capturedAt: Date.now() };
+        }
+      };
+
+      void Promise.all(Array.from({ length: Math.min(4, prioritizedCodes.length) }, worker)).then(() => {
+        if (fallbackCancelled || Object.keys(updates).length === 0) return;
+        const next = { ...fundsDataRef.current, ...updates };
         fundsDataRef.current = next;
         setFundsData(next);
       });
     }, 3500);
 
     return () => {
+      fallbackCancelled = true;
       window.clearTimeout(fallbackTimer);
       if (pendingTickRef.raf) cancelAnimationFrame(pendingTickRef.raf);
       disposers.forEach(d => d());
@@ -1338,11 +1394,11 @@ function App() {
     const timer = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       const data = fundsDataRef.current;
-      const items = watchlistItemsRef.current;
+      const itemMap = watchlistItemMapRef.current;
       const now = Date.now();
       const staleKinds = new Set<'stock' | 'fund'>();
       for (const code of watchlistRef.current) {
-        const item = items.find(w => w.fund_code === code);
+        const item = itemMap.get(code.toUpperCase());
         const kind = item?.kind || 'fund';
         const value = data[code];
         const ttl = kind === 'stock' ? 30_000 : 120_000;
@@ -2361,18 +2417,18 @@ function App() {
 
               return (
                 <>
-                  {/* ── Mobile Card List ── */}
-                  <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-800/60">
-                    {visibleList.map((code) => {
+                  {!isDesktopWatchlist && (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {pagedVisibleList.map(({ code, key }) => {
                         const fund = fundsData[code];
                         const pos = positions[code];
                         if (!fund) {
-                          return <SkeletonCard key={code} code={code} />;
+                          return <SkeletonCard key={key} code={code} />;
                         }
-                        const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code);
+                        const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.findIndex(item => item.key === key);
                         return (
                           <WatchlistCard
-                            key={code}
+                            key={key}
                             code={code}
                             fund={fund}
                             pos={pos}
@@ -2389,10 +2445,11 @@ function App() {
                           />
                         );
                       })}
-                  </div>
+                    </div>
+                  )}
 
-                  {/* ── Desktop Table View ── */}
-                  <div className="hidden md:block overflow-x-auto flex-1 scrollbar-none">
+                  {isDesktopWatchlist && (
+                    <div className="overflow-x-auto flex-1 scrollbar-none">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold whitespace-nowrap">
@@ -2418,18 +2475,18 @@ function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                        {visibleList.map((code) => {
+                        {pagedVisibleList.map(({ code, key }) => {
                             const fund = fundsData[code];
                             const pos = positions[code];
 
                             if (!fund) {
-                              return <SkeletonTableRow key={code} code={code} />;
+                              return <SkeletonTableRow key={key} code={code} />;
                             }
 
-                            const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.indexOf(code);
+                            const isDropTarget = !!pressDrag.activeCode && pressDrag.activeCode !== code && pressDrag.targetIdx === visibleList.findIndex(item => item.key === key);
                             return (
                               <WatchlistRow
-                                key={code}
+                                key={key}
                                 code={code}
                                 fund={fund}
                                 pos={pos}
@@ -2451,7 +2508,23 @@ function App() {
                           })}
                       </tbody>
                     </table>
-                  </div>
+                    </div>
+                  )}
+
+                  {visibleList.length > WATCHLIST_PAGE_SIZE && (
+                    <div className="flex items-center justify-center border-t border-[var(--hairline-border)] px-4 py-3">
+                      <Pagination
+                        current={watchlistPage}
+                        total={visibleList.length}
+                        pageSize={WATCHLIST_PAGE_SIZE}
+                        showSizeChanger={false}
+                        showLessItems
+                        size="small"
+                        onChange={setWatchlistPage}
+                        showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 条`}
+                      />
+                    </div>
+                  )}
                 </>
               );
             })()}
