@@ -21,9 +21,18 @@ import type {
   FundBasicInfo,
   FundHoldingStock,
   StockKLinePoint,
-  StockMinutePoint
+  StockKLinePeriod
 } from '../services/api';
 import { fetchStockKLine, fetchStockMinute } from '../services/api';
+
+const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
+  day: 120,
+  week: 104,
+  month: 60,
+  quarter: 40,
+  year: 30,
+};
+
 const FundChart = lazy(() => import('./FundChart').then(m => ({ default: m.FundChart })));
 const StockKLineChart = lazy(() => import('./StockKLineChart').then(m => ({ default: m.StockKLineChart })));
 const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.AlertPanel })));
@@ -78,10 +87,8 @@ export function FundDetailPanel({
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   const [minuteLoading, setMinuteLoading] = useState(true);
   const minuteSigRef = useRef<string>('');
-  const [klineDays, setKlineDays] = useState(60);
-  const [klinePeriod, setKlinePeriod] = useState<'day' | 'week'>('day');
+  const [klinePeriod, setKlinePeriod] = useState<StockKLinePeriod>('day');
   const [klineData, setKlineData] = useState<StockKLinePoint[]>([]);
-  const [klineMinuteData, setKlineMinuteData] = useState<StockMinutePoint[]>([]);
   const [klineLoading, setKlineLoading] = useState(false);
 
   // 切换标的：清空残留曲线与去重签名，进入加载态（手动刷新走 chartKey，不在此重置，避免闪烁）
@@ -132,30 +139,22 @@ export function FundDetailPanel({
   }, [fund.fundcode, fund.market, kind, chartKey]);
 
   useEffect(() => {
-    setKlineDays(60);
     setKlinePeriod('day');
     setKlineData([]);
-    setKlineMinuteData([]);
   }, [fund.fundcode, fund.market, kind]);
 
   useEffect(() => {
     if (kind !== 'stock' || !fund.fundcode) {
       setKlineData([]);
-      setKlineMinuteData([]);
       setKlineLoading(false);
       return;
     }
 
     let cancelled = false;
     setKlineLoading(true);
-    Promise.all([
-      fetchStockKLine(fund.fundcode, klineDays, klinePeriod),
-      fetchStockMinute(fund.fundcode, 'stock', fund.market),
-    ])
-      .then(([dailyData, minuteResponse]) => {
-        if (cancelled) return;
-        setKlineData(dailyData);
-        setKlineMinuteData(minuteResponse?.data || []);
+    fetchStockKLine(fund.fundcode, KLINE_BAR_COUNTS[klinePeriod], klinePeriod)
+      .then((data) => {
+        if (!cancelled) setKlineData(data);
       })
       .finally(() => {
         if (!cancelled) setKlineLoading(false);
@@ -164,7 +163,7 @@ export function FundDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [fund.fundcode, fund.market, kind, klineDays, klinePeriod, chartKey]);
+  }, [fund.fundcode, fund.market, kind, klinePeriod, chartKey]);
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
@@ -540,16 +539,9 @@ export function FundDetailPanel({
             code={fund.fundcode}
             market={fund.market}
             data={klineData}
-            minuteData={klineMinuteData}
-            dataPeriod={klinePeriod}
-            days={klineDays}
+            period={klinePeriod}
             loading={klineLoading}
-            onDaysChange={setKlineDays}
-            onIntervalChange={(interval) => {
-              if (interval === 'minute') return;
-              setKlinePeriod(interval);
-              setKlineDays(interval === 'week' ? 4 : 60);
-            }}
+            onPeriodChange={setKlinePeriod}
             height={isExpanded ? 380 : 320}
           />
         </Suspense>

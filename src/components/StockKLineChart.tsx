@@ -1,29 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { Spin } from 'antd';
 import { BarChart3 } from 'lucide-react';
-import type { StockKLinePoint, StockMinutePoint } from '../services/api';
+import type { StockKLinePoint, StockKLinePeriod } from '../services/api';
 
-type KLineInterval = 'minute' | 'day' | 'week';
-type Candle = StockKLinePoint & { label: string };
+interface Candle extends StockKLinePoint {
+  label: string;
+}
 
-const INTERVALS: { key: KLineInterval; label: string }[] = [
-  { key: 'minute', label: '1分' },
+const KLINE_PERIODS: { key: StockKLinePeriod; label: string }[] = [
   { key: 'day', label: '日K' },
   { key: 'week', label: '周K' },
+  { key: 'month', label: '月K' },
+  { key: 'quarter', label: '季K' },
+  { key: 'year', label: '年K' },
 ];
-const DAILY_PERIODS = [30, 60, 90] as const;
-const WEEKLY_PERIODS = [4, 8, 12] as const;
 
 interface StockKLineChartProps {
   code: string;
   market?: string;
   data: StockKLinePoint[];
-  minuteData?: StockMinutePoint[];
-  dataPeriod: 'day' | 'week';
-  days: number;
+  period: StockKLinePeriod;
   loading?: boolean;
-  onDaysChange: (days: number) => void;
-  onIntervalChange?: (interval: KLineInterval) => void;
+  onPeriodChange: (period: StockKLinePeriod) => void;
   height?: number;
 }
 
@@ -41,48 +39,27 @@ function formatKLineVolume(value: number, market?: string) {
   return `${value.toFixed(0)}${unit}`;
 }
 
-function weekKey(date: string) {
-  const parsed = new Date(`${date.slice(0, 10)}T12:00:00`);
-  const day = parsed.getDay() || 7;
-  parsed.setDate(parsed.getDate() - day + 1);
-  return parsed.toISOString().slice(0, 10);
-}
-
-function aggregateWeeks(data: StockKLinePoint[]): Candle[] {
-  const weekly = new Map<string, StockKLinePoint[]>();
-  data.forEach(bar => {
-    const key = weekKey(bar.date);
-    const group = weekly.get(key) || [];
-    group.push(bar);
-    weekly.set(key, group);
-  });
-
-  return Array.from(weekly.entries()).map(([date, bars]) => ({
-    date,
-    label: `${date.slice(5)} 周`,
-    open: bars[0].open,
-    high: Math.max(...bars.map(bar => bar.high)),
-    low: Math.min(...bars.map(bar => bar.low)),
-    close: bars[bars.length - 1].close,
-    volume: bars.reduce((sum, bar) => sum + (bar.volume || 0), 0),
-  }));
+function formatPeriodLabel(date: string, period: StockKLinePeriod) {
+  if (period === 'year') return date.slice(0, 4);
+  if (period === 'quarter') {
+    const [year, month] = date.slice(0, 10).split('-').map(Number);
+    return year && month ? `${year} Q${Math.ceil(month / 3)}` : date;
+  }
+  if (period === 'month') return date.slice(0, 7);
+  return date;
 }
 
 export function StockKLineChart({
   code,
   market,
   data,
-  minuteData = [],
-  dataPeriod,
-  days,
+  period,
   loading = false,
-  onDaysChange,
-  onIntervalChange,
+  onPeriodChange,
   height = 320,
 }: StockKLineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
-  const [interval, setInterval] = useState<KLineInterval>('day');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   useEffect(() => {
@@ -97,31 +74,14 @@ export function StockKLineChart({
 
   useEffect(() => {
     setHoverIndex(null);
-  }, [code, days, interval]);
+  }, [code, period]);
 
-  const dailyBars = useMemo(() => data.map(bar => ({ ...bar, label: bar.date })), [data]);
-  const minuteBars = useMemo(() => minuteData.map(bar => ({
-    date: bar.time,
-    label: bar.time.slice(11, 16),
-    open: bar.open,
-    high: bar.high,
-    low: bar.low,
-    close: bar.close,
-    volume: bar.volume,
-  })), [minuteData]);
-  const weeklyBars = useMemo(
-    () => dataPeriod === 'week' ? data.map(bar => ({ ...bar, label: bar.date })) : aggregateWeeks(data),
-    [data, dataPeriod]
-  );
-  const rangePeriods = interval === 'week' ? WEEKLY_PERIODS : DAILY_PERIODS;
-
-  const bars = useMemo(() => {
-    const raw = interval === 'minute' ? minuteBars : interval === 'week' ? weeklyBars : dailyBars;
-    return raw.filter(bar => (
+  const bars = useMemo<Candle[]>(() => data
+    .filter(bar => (
       Number.isFinite(bar.open) && Number.isFinite(bar.high) && Number.isFinite(bar.low) &&
       Number.isFinite(bar.close) && bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0
-    ));
-  }, [dailyBars, interval, minuteBars, weeklyBars]);
+    ))
+    .map(bar => ({ ...bar, label: formatPeriodLabel(bar.date, period) })), [data, period]);
 
   const geometry = useMemo(() => {
     const padding = { top: 16, right: 56, bottom: 24, left: 8 };
@@ -146,7 +106,7 @@ export function StockKLineChart({
 
   const hovered = hoverIndex === null ? null : bars[hoverIndex] ?? null;
   const marketLabel = market === 'us' ? '美股' : market === 'hk' ? '港股' : 'A股';
-  const intervalLabel = INTERVALS.find(item => item.key === interval)?.label || '日K';
+  const periodLabel = KLINE_PERIODS.find(item => item.key === period)?.label || '日K';
 
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (!bars.length) return;
@@ -160,45 +120,23 @@ export function StockKLineChart({
       <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <BarChart3 size={15} className="text-[var(--primary-accent)]" />
-          <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">{intervalLabel}线</h4>
-          <span className="text-[10px] text-slate-400 font-mono">{marketLabel} · {interval === 'minute' ? '实时分钟' : '前复权'}</span>
+          <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">{periodLabel}线</h4>
+          <span className="text-[10px] text-slate-400 font-mono">{marketLabel} · 前复权</span>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-full bg-slate-100/60 dark:bg-white/5 p-1">
-            {INTERVALS.map(item => (
-              <button
-                key={item.key}
-                type="button"
-                disabled={loading}
-                onClick={() => {
-                  setInterval(item.key);
-                  onIntervalChange?.(item.key);
-                }}
-                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
-                  interval === item.key ? 'bg-[var(--primary-accent)] text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          {interval !== 'minute' && (
-            <div className="inline-flex rounded-full bg-slate-100/60 dark:bg-white/5 p-1">
-              {rangePeriods.map(period => (
-                <button
-                  key={period}
-                  type="button"
-                  disabled={loading}
-                  onClick={() => onDaysChange(period)}
-                  className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
-                    days === period ? 'bg-[var(--primary-accent)] text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                  }`}
-                >
-                  {interval === 'week' ? `${period}周` : `${period}日`}
-                </button>
-              ))}
-            </div>
-          )}
+        <div className="inline-flex rounded-full bg-slate-100/60 dark:bg-white/5 p-1">
+          {KLINE_PERIODS.map(item => (
+            <button
+              key={item.key}
+              type="button"
+              disabled={loading}
+              onClick={() => onPeriodChange(item.key)}
+              className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                period === item.key ? 'bg-[var(--primary-accent)] text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -206,10 +144,10 @@ export function StockKLineChart({
         {loading ? (
           <div className="flex h-[320px] items-center justify-center"><Spin size="large" tip="K 线数据加载中..." /></div>
         ) : bars.length < 2 ? (
-          <div className="flex h-[320px] flex-col items-center justify-center gap-2 text-sm text-slate-400"><BarChart3 size={22} strokeWidth={1.5} /><span>暂无可用 {intervalLabel} 数据</span></div>
+          <div className="flex h-[320px] flex-col items-center justify-center gap-2 text-sm text-slate-400"><BarChart3 size={22} strokeWidth={1.5} /><span>暂无可用 {periodLabel} 数据</span></div>
         ) : (
           <>
-            <svg width={width} height={height} onPointerMove={onPointerMove} onPointerLeave={() => setHoverIndex(null)} className="block touch-none select-none" aria-label={`${code} ${intervalLabel}图`}>
+            <svg width={width} height={height} onPointerMove={onPointerMove} onPointerLeave={() => setHoverIndex(null)} className="block touch-none select-none" aria-label={`${code} ${periodLabel}图`}>
               {[0, 0.25, 0.5, 0.75, 1].map(ratio => {
                 const y = geometry.padding.top + geometry.priceHeight * ratio;
                 const value = geometry.maxPrice - (geometry.maxPrice - geometry.minPrice) * ratio;
@@ -231,7 +169,7 @@ export function StockKLineChart({
               <text x={width - geometry.padding.right} y={height - 5} textAnchor="end" className="fill-slate-400 dark:fill-slate-500" fontSize="10">{bars[bars.length - 1]?.label}</text>
               {hovered && hoverIndex !== null && <line x1={geometry.x(hoverIndex)} x2={geometry.x(hoverIndex)} y1={geometry.padding.top} y2={geometry.padding.top + geometry.priceHeight + geometry.volumeGap + geometry.volumeHeight} stroke="currentColor" strokeOpacity="0.28" strokeDasharray="3 3" />}
             </svg>
-            {hovered && <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl border border-[var(--hairline-border)] bg-white/95 px-3 py-2 shadow-lg backdrop-blur dark:bg-[#1c1c1e]/95"><div className="mb-1 text-[10px] font-mono text-slate-400">{hovered.date}</div><div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums"><span className="text-slate-500">开 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.open)}</b></span><span className="text-slate-500">收 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.close)}</b></span><span className="text-slate-500">高 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.high)}</b></span><span className="text-slate-500">低 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.low)}</b></span><span className="col-span-2 text-slate-500">成交量 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatKLineVolume(hovered.volume || 0, market)}</b></span></div></div>}
+            {hovered && <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl border border-[var(--hairline-border)] bg-white/95 px-3 py-2 shadow-lg backdrop-blur dark:bg-[#1c1c1e]/95"><div className="mb-1 text-[10px] font-mono text-slate-400">{hovered.label}</div><div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums"><span className="text-slate-500">开 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.open)}</b></span><span className="text-slate-500">收 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.close)}</b></span><span className="text-slate-500">高 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.high)}</b></span><span className="text-slate-500">低 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatPrice(hovered.low)}</b></span><span className="col-span-2 text-slate-500">成交量 <b className="ml-1 text-slate-700 dark:text-slate-200">{formatKLineVolume(hovered.volume || 0, market)}</b></span></div></div>}
           </>
         )}
       </div>
