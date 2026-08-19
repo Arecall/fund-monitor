@@ -94,8 +94,6 @@ export function FundDetailPanel({
       try {
         const res = await fetchStockMinute(fund.fundcode, kind, fund.market);
         if (cancelled) return;
-        // 首次分钟数据（真实快照/无数据）返回后即结束加载态，避免在真实数据到达前展示合成直线。
-        setMinuteLoading(false);
         if (res?.data && res.data.length > 0) {
           const bars = res.data.map(d => ({
             t: Date.parse(d.time.replace(' ', 'T') + '+08:00'),
@@ -106,14 +104,17 @@ export function FundDetailPanel({
           // 数据去重：柱数 + 最后一根 K 线时间与收盘价均未变化则跳过 setState，避免每 10s 无意义重绘。
           const last = bars[bars.length - 1];
           const sig = `${bars.length}|${last?.t}|${last?.v}`;
-          if (sig === minuteSigRef.current) return;
-          minuteSigRef.current = sig;
-          setMinuteData({ bars });
+          if (sig !== minuteSigRef.current) {
+            minuteSigRef.current = sig;
+            setMinuteData({ bars });
+          }
         } else {
           minuteSigRef.current = '';
           setMinuteData(null);
         }
       } catch {
+        // error
+      } finally {
         if (!cancelled) setMinuteLoading(false);
       }
     };

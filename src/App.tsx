@@ -50,6 +50,7 @@ import {
 } from './services/api';
 import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
 import { QuoteSourceBadge } from './components/QuoteSourceBadge';
+import { Sparkline } from './components/Sparkline';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
@@ -432,7 +433,7 @@ const WatchlistCard = React.memo(function WatchlistCard({
         </div>
       </div>
 
-      <div className="flex items-baseline justify-between pt-1">
+      <div className="flex items-center justify-between pt-1">
         <div>
           <div className="text-[10px] text-slate-400">
             {selfTab === 'stock' ? '现价' : fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '估算净值（滞后）' : '估算净值'}
@@ -444,6 +445,20 @@ const WatchlistCard = React.memo(function WatchlistCard({
             </span>
           </div>
           <div className="mt-1 font-sans"><QuoteSourceBadge fund={fund} compact /></div>
+        </div>
+
+        {/* 迷你分时走势图 */}
+        <div className="px-1 shrink-0">
+          <Sparkline
+            code={code}
+            kind={selfTab === 'stock' ? 'stock' : 'fund'}
+            market={fund.market}
+            currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}
+            prevClose={parseFloat(fund.dwjz)}
+            isUp={isUp}
+            width={80}
+            height={26}
+          />
         </div>
 
         <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
@@ -553,10 +568,10 @@ const WatchlistRow = React.memo(function WatchlistRow({
       }`}
     >
       <td
-        className="p-4 pl-6 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
+        className="py-3 pl-4 pr-2 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
         onClick={() => onSelect(code)}
       >
-        <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[180px]" title={fund.name}>
+        <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[160px]" title={fund.name}>
           {fund.name}
         </div>
         <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
@@ -575,20 +590,32 @@ const WatchlistRow = React.memo(function WatchlistRow({
           </Tag>
         </div>
       </td>
-      <td className="p-4 text-right font-mono font-medium tabular-nums">
+      <td className="py-3 px-2 text-right font-mono font-medium tabular-nums">
         {parseFloat(fund.dwjz).toFixed(4)}
         <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
       </td>
-      <td className="p-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
+      <td className="py-3 px-2 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
         {parseFloat(fund.gsz).toFixed(4)}
         <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
         <div className="mt-1 flex justify-end whitespace-nowrap"><QuoteSourceBadge fund={fund} compact /></div>
       </td>
-      <td className={`p-4 text-right font-bold font-mono tabular-nums ${changeColor}`}>
+      <td className={`py-3 px-2 text-right font-bold font-mono tabular-nums ${changeColor}`}>
         {isUp ? '+' : ''}{changeVal.toFixed(2)}%
       </td>
+      <td className="py-3 px-2 text-center align-middle whitespace-nowrap w-[96px]">
+        <Sparkline
+          code={code}
+          kind={selfTab === 'stock' ? 'stock' : 'fund'}
+          market={fund.market}
+          currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}
+          prevClose={parseFloat(fund.dwjz)}
+          isUp={isUp}
+          width={80}
+          height={24}
+        />
+      </td>
 
-      <td className="p-4 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+      <td className="py-3 px-2 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
         {pos ? (
           <button
             onClick={() => onEditPosition(code)}
@@ -614,7 +641,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
         )}
       </td>
 
-      <td className={`p-4 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
+      <td className={`py-3 px-2 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
         pos
           ? (todayProfit > 0 ? 'text-[var(--color-up)]'
               : todayProfit < 0 ? 'text-[var(--color-down)]'
@@ -631,7 +658,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
         )}
       </td>
 
-      <td className="p-4 text-center pr-6 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+      <td className="py-3 pr-4 pl-2 text-center whitespace-nowrap w-[110px]" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
           <button
             type="button"
@@ -2369,23 +2396,25 @@ function App() {
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold whitespace-nowrap">
-                          <th className="p-4 pl-6">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
+                          <th className="py-3 pl-4 pr-2">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
                           {selfTab === 'stock' ? (
                             <>
-                              <th className="p-4 text-right">昨收</th>
-                              <th className="p-4 text-right">现价</th>
-                              <th className="p-4 text-right">涨跌幅</th>
+                              <th className="py-3 px-2 text-right">昨收</th>
+                              <th className="py-3 px-2 text-right">现价</th>
+                              <th className="py-3 px-2 text-right">涨跌幅</th>
+                              <th className="py-3 px-2 text-center w-[96px]">分时走势</th>
                             </>
                           ) : (
                             <>
-                              <th className="p-4 text-right">昨日单位净值</th>
-                              <th className="p-4 text-right">估算净值</th>
-                              <th className="p-4 text-right">估算涨跌</th>
+                              <th className="py-3 px-2 text-right">昨日单位净值</th>
+                              <th className="py-3 px-2 text-right">估算净值</th>
+                              <th className="py-3 px-2 text-right">估算涨跌</th>
+                              <th className="py-3 px-2 text-center w-[96px]">分时走势</th>
                             </>
                           )}
-                          <th className="p-4 text-right">我的持仓预估</th>
-                          <th className="p-4 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
-                          <th className="p-4 text-center pr-6">操作</th>
+                          <th className="py-3 px-2 text-right">我的持仓预估</th>
+                          <th className="py-3 px-2 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
+                          <th className="py-3 pr-4 pl-2 text-center w-[110px]">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">

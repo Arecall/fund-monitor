@@ -225,6 +225,13 @@ function initTables() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_watchlist_user_kind ON watchlist (user_id, kind)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)`);
 
+    // 自动清理历史因 QDII 代理标的原生分钟 K 线（如 QQQ 美金 718 元）未缩放错误写入 6 位基金代码的污染打点 (> 50 元)
+    db.run(`
+      DELETE FROM quote_snapshots
+      WHERE code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+        AND current > 50
+    `);
+
     console.log('数据库表结构初始化/验证完成');
   });
 }
