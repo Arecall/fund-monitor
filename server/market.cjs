@@ -1552,16 +1552,19 @@ async function fetchEastMoneyLSJZ(code) {
  *   A股/港股：优先使用腾讯 AppStock K线接口
  *   返回标准化格式：[{ date, open, high, low, close, volume }]
  */
-async function fetchStockKLineHistory(code, days = 30) {
+async function fetchStockKLineHistory(code, days = 30, period = 'day') {
   const c = code.trim();
   const isUS = /^[A-Za-z]{1,5}$/.test(c);
+  const isWeekly = period === 'week';
 
-  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口 (v8/finance/chart) 拉取历史日 K 线
+  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口拉取日 / 周 K 线
   if (isUS) {
     try {
       const yahooSymbol = encodeURIComponent(c.toUpperCase());
-      const rangeParam = days <= 7 ? '1wk' : (days <= 35 ? '1mo' : '3mo');
-      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d&range=${rangeParam}`;
+      const rangeParam = isWeekly
+        ? (days <= 20 ? '6mo' : days <= 60 ? '2y' : '5y')
+        : (days <= 7 ? '1wk' : (days <= 35 ? '1mo' : '3mo'));
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${isWeekly ? '1wk' : '1d'}&range=${rangeParam}`;
       const r = await axios.get(yahooUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1600,8 +1603,8 @@ async function fetchStockKLineHistory(code, days = 30) {
       console.warn(`[kline] Yahoo Chart API 美股 ${c} 获取历史日 K 线失败, 准备降级回退新浪:`, err.message);
     }
 
-    // 2. 美股第二优先级（降级备用）：新浪 US_MinKService 全量日 K 线接口（数据完整无极差断层）
-    try {
+    // 2. 美股第二优先级（降级备用）：新浪只提供日 K；周 K 继续走腾讯周线。
+    if (!isWeekly) try {
       const s = c.toLowerCase();
       const sinaUrl = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_us_${s}=/US_MinKService.getDailyK?symbol=${s}`;
       const r = await axios.get(sinaUrl, {
@@ -1653,14 +1656,16 @@ async function fetchStockKLineHistory(code, days = 30) {
     return [];
   }
 
-  const fullUrl = `${url}?param=${symbol},day,,,${days},qfq`;
+  const fullUrl = `${url}?param=${symbol},${isWeekly ? 'week' : 'day'},,,${days},qfq`;
   try {
     const r = await axios.get(fullUrl, { timeout: 8000 });
     const d = r.data;
     if (d && d.code === 0 && d.data) {
       const key = Object.keys(d.data).find(k => k !== 'qt') || Object.keys(d.data)[0];
       if (key && key !== 'qt') {
-        const arr = d.data[key]?.day || d.data[key]?.qfqday || [];
+        const arr = isWeekly
+          ? (d.data[key]?.week || d.data[key]?.qfqweek || [])
+          : (d.data[key]?.day || d.data[key]?.qfqday || []);
         if (Array.isArray(arr) && arr.length > 0) {
           return arr.map((k) => {
             const [date, open, close, high, low, volume] = k;

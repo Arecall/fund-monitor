@@ -19,10 +19,13 @@ import type {
   UserPosition,
   FundHistoryPoint,
   FundBasicInfo,
-  FundHoldingStock
+  FundHoldingStock,
+  StockKLinePoint,
+  StockMinutePoint
 } from '../services/api';
-import { fetchStockMinute } from '../services/api';
+import { fetchStockKLine, fetchStockMinute } from '../services/api';
 const FundChart = lazy(() => import('./FundChart').then(m => ({ default: m.FundChart })));
+const StockKLineChart = lazy(() => import('./StockKLineChart').then(m => ({ default: m.StockKLineChart })));
 const AlertPanel = lazy(() => import('./AlertPanel').then(m => ({ default: m.AlertPanel })));
 
 import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
@@ -75,6 +78,11 @@ export function FundDetailPanel({
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   const [minuteLoading, setMinuteLoading] = useState(true);
   const minuteSigRef = useRef<string>('');
+  const [klineDays, setKlineDays] = useState(60);
+  const [klinePeriod, setKlinePeriod] = useState<'day' | 'week'>('day');
+  const [klineData, setKlineData] = useState<StockKLinePoint[]>([]);
+  const [klineMinuteData, setKlineMinuteData] = useState<StockMinutePoint[]>([]);
+  const [klineLoading, setKlineLoading] = useState(false);
 
   // 切换标的：清空残留曲线与去重签名，进入加载态（手动刷新走 chartKey，不在此重置，避免闪烁）
   useEffect(() => {
@@ -122,6 +130,41 @@ export function FundDetailPanel({
     const timer = setInterval(loadMinuteData, 10_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [fund.fundcode, fund.market, kind, chartKey]);
+
+  useEffect(() => {
+    setKlineDays(60);
+    setKlinePeriod('day');
+    setKlineData([]);
+    setKlineMinuteData([]);
+  }, [fund.fundcode, fund.market, kind]);
+
+  useEffect(() => {
+    if (kind !== 'stock' || !fund.fundcode) {
+      setKlineData([]);
+      setKlineMinuteData([]);
+      setKlineLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setKlineLoading(true);
+    Promise.all([
+      fetchStockKLine(fund.fundcode, klineDays, klinePeriod),
+      fetchStockMinute(fund.fundcode, 'stock', fund.market),
+    ])
+      .then(([dailyData, minuteResponse]) => {
+        if (cancelled) return;
+        setKlineData(dailyData);
+        setKlineMinuteData(minuteResponse?.data || []);
+      })
+      .finally(() => {
+        if (!cancelled) setKlineLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fund.fundcode, fund.market, kind, klineDays, klinePeriod, chartKey]);
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
@@ -485,6 +528,32 @@ export function FundDetailPanel({
           )}
         </Suspense>
       </section>
+
+      {/* ── Daily candlestick chart (仅股票，位于分时图下方) ── */}
+      {kind === 'stock' && (
+        <Suspense fallback={
+          <div className="h-[320px] rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] flex items-center justify-center">
+            <Spin size="large" tip="正在加载 K 线图模块..." />
+          </div>
+        }>
+          <StockKLineChart
+            code={fund.fundcode}
+            market={fund.market}
+            data={klineData}
+            minuteData={klineMinuteData}
+            dataPeriod={klinePeriod}
+            days={klineDays}
+            loading={klineLoading}
+            onDaysChange={setKlineDays}
+            onIntervalChange={(interval) => {
+              if (interval === 'minute') return;
+              setKlinePeriod(interval);
+              setKlineDays(interval === 'week' ? 4 : 60);
+            }}
+            height={isExpanded ? 380 : 320}
+          />
+        </Suspense>
+      )}
 
       {/* ── Capital flow bar chart (仅 A 股个股) ── */}
       {kind === 'stock' && (fund as any).stockSpecific?.flow && (
