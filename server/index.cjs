@@ -109,7 +109,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.3.35' });
+  res.json({ status: 'ok', version: '1.4.0' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -710,6 +710,35 @@ app.get('/api/market/fund/:code/history', async (req, res) => {
     res.json({ code, days, data });
   } catch (error) {
     res.status(500).json({ error: '获取基金历史净值失败' });
+  }
+});
+
+// 获取股票日 / 周 K 线（完整 OHLCV，用于股票详情页蜡烛图）
+app.get('/api/market/stock/:code/kline', async (req, res) => {
+  const { code } = req.params;
+  const period = ['day', 'week', 'month', 'quarter', 'year'].includes(req.query.period)
+    ? req.query.period
+    : 'day';
+  const requestedCount = parseInt(req.query.count) || parseInt(req.query.days) || 120;
+  const limits = {
+    day: [20, 365],
+    week: [12, 260],
+    month: [12, 120],
+    quarter: [8, 80],
+    year: [5, 60],
+  };
+  const [minCount, maxCount] = limits[period];
+  const count = Math.max(minCount, Math.min(requestedCount, maxCount));
+
+  if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
+    return res.status(400).json({ error: '股票代码格式不正确' });
+  }
+
+  try {
+    const data = await marketHelper.fetchStockKLineHistory(code, count, period);
+    res.json({ code: code.toUpperCase(), period, count, data });
+  } catch (error) {
+    res.status(500).json({ error: '获取股票 K 线失败' });
   }
 });
 

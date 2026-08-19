@@ -740,7 +740,7 @@ function App() {
     return 'fund';
   });
   const [watchlistPage, setWatchlistPage] = useState(1);
-  const WATCHLIST_PAGE_SIZE = 10;
+  const [watchlistPageSize, setWatchlistPageSize] = useState(10);
   const isDesktopWatchlist = useMediaQuery('(min-width: 768px)');
   const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>(() => {
     // 刷新停留在哪个 tab — 从 localStorage 恢复
@@ -875,11 +875,11 @@ function App() {
       }));
   }, [watchlistItems, selfTab]);
 
-  const watchlistPageCount = Math.max(1, Math.ceil(visibleList.length / WATCHLIST_PAGE_SIZE));
+  const watchlistPageCount = Math.max(1, Math.ceil(visibleList.length / watchlistPageSize));
   const pagedVisibleList = useMemo(() => {
-    const start = (watchlistPage - 1) * WATCHLIST_PAGE_SIZE;
-    return visibleList.slice(start, start + WATCHLIST_PAGE_SIZE);
-  }, [visibleList, watchlistPage, WATCHLIST_PAGE_SIZE]);
+    const start = (watchlistPage - 1) * watchlistPageSize;
+    return visibleList.slice(start, start + watchlistPageSize);
+  }, [visibleList, watchlistPage, watchlistPageSize]);
 
   useEffect(() => {
     setWatchlistPage(page => Math.min(page, watchlistPageCount));
@@ -1345,23 +1345,16 @@ function App() {
     groupByMarketAndKind(stockCodes, 'stock');
     groupByMarketAndKind(fundCodes, 'fund');
 
-    // SSE 正常时 broker 会立即推首帧；仅为仍缺失的代码进行一次 REST 兜底，
-    // 避免启动时每个代码都同时走 REST 与 broker 两条抓取链路。
-    const fallbackTimer = window.setTimeout(() => {
-      const missingCodes = [...pendingCodes].filter(code => !fundsDataRef.current[code]);
-      const pageCodes = new Set(pagedVisibleList.map(item => item.code.toUpperCase()));
-      const heldCodes = new Set(Object.keys(positionsRef.current).map(code => code.toUpperCase()));
-      const prioritizedCodes = missingCodes.sort((a, b) => {
-        const aPriority = pageCodes.has(a.toUpperCase()) || heldCodes.has(a.toUpperCase()) ? 0 : 1;
-        const bPriority = pageCodes.has(b.toUpperCase()) || heldCodes.has(b.toUpperCase()) ? 0 : 1;
-        return aPriority - bPriority;
-      });
+    // SSE 正常时 broker 会立即推首帧。当前页和持仓若 1.2 秒仍未收到，优先 REST 兜底；
+    // 其它未展示标的延后，避免冷启动时和 SSE 同时打满上游。
+    const fetchMissingQuotes = (targetCodes: string[]) => {
+      const remainingCodes = targetCodes.filter(code => pendingCodes.has(code) && !fundsDataRef.current[code]);
       let cursor = 0;
       const updates: Record<string, FundValuation> = {};
 
       const worker = async () => {
-        while (!fallbackCancelled && cursor < prioritizedCodes.length) {
-          const code = prioritizedCodes[cursor++];
+        while (!fallbackCancelled && cursor < remainingCodes.length) {
+          const code = remainingCodes[cursor++];
           if (!pendingCodes.has(code) || fundsDataRef.current[code]) continue;
           const item = itemMap.get(code.toUpperCase());
           const val = await fetchFundValuation(code, item?.kind);
@@ -1371,17 +1364,26 @@ function App() {
         }
       };
 
-      void Promise.all(Array.from({ length: Math.min(4, prioritizedCodes.length) }, worker)).then(() => {
+      void Promise.all(Array.from({ length: Math.min(4, remainingCodes.length) }, worker)).then(() => {
         if (fallbackCancelled || Object.keys(updates).length === 0) return;
         const next = { ...fundsDataRef.current, ...updates };
         fundsDataRef.current = next;
         setFundsData(next);
       });
+    };
+
+    const pageCodes = new Set(pagedVisibleList.map(item => item.code.toUpperCase()));
+    const heldCodes = new Set(Object.keys(positionsRef.current).map(code => code.toUpperCase()));
+    const priorityCodes = codes.filter(code => pageCodes.has(code.toUpperCase()) || heldCodes.has(code.toUpperCase()));
+    const visibleFallbackTimer = window.setTimeout(() => fetchMissingQuotes(priorityCodes), 1200);
+    const backgroundFallbackTimer = window.setTimeout(() => {
+      fetchMissingQuotes(codes.filter(code => !pageCodes.has(code.toUpperCase()) && !heldCodes.has(code.toUpperCase())));
     }, 3500);
 
     return () => {
       fallbackCancelled = true;
-      window.clearTimeout(fallbackTimer);
+      window.clearTimeout(visibleFallbackTimer);
+      window.clearTimeout(backgroundFallbackTimer);
       if (pendingTickRef.raf) cancelAnimationFrame(pendingTickRef.raf);
       disposers.forEach(d => d());
     };
@@ -2511,16 +2513,28 @@ function App() {
                     </div>
                   )}
 
-                  {visibleList.length > WATCHLIST_PAGE_SIZE && (
+                  {visibleList.length > 10 && (
                     <div className="flex items-center justify-center border-t border-[var(--hairline-border)] px-4 py-3">
                       <Pagination
                         current={watchlistPage}
                         total={visibleList.length}
-                        pageSize={WATCHLIST_PAGE_SIZE}
-                        showSizeChanger={false}
+                        pageSize={watchlistPageSize}
+                        showSizeChanger
+                        pageSizeOptions={[10, 20, 50]}
                         showLessItems
                         size="small"
-                        onChange={setWatchlistPage}
+                        onChange={(page, pageSize) => {
+                          if (pageSize !== watchlistPageSize) {
+                            setWatchlistPageSize(pageSize);
+                            setWatchlistPage(1);
+                            return;
+                          }
+                          setWatchlistPage(page);
+                        }}
+                        onShowSizeChange={(_page, pageSize) => {
+                          setWatchlistPageSize(pageSize);
+                          setWatchlistPage(1);
+                        }}
                         showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 条`}
                       />
                     </div>

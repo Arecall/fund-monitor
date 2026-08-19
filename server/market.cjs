@@ -35,6 +35,10 @@ const cache = {
 // 名称搜索单独存（结构: { 'fund:<q>': { data: [...], timestamp } }）
 const searchCache = {};
 
+// 同一代码在缓存失效窗口内只允许一条基础报价和扩展信息请求，避免 SSE 与 REST 兜底重复打上游。
+const inflightFundValuations = new Map();
+const inflightStockEnrichments = new Map();
+
 // 缓存过期时间
 const FUND_CACHE_TTL = 3 * 1000;          // 基金/股票估值缓存 3秒（小于前端 10s 轮询，确保每次轮询穿透拉取上游最新）
 const FUND_HISTORY_TTL = 60 * 60 * 1000;  // 基金历史净值缓存 1小时
@@ -1546,22 +1550,74 @@ async function fetchEastMoneyLSJZ(code) {
   };
 }
 
+function aggregateKLineBars(bars, period) {
+  if (!['week', 'month', 'quarter', 'year'].includes(period)) return bars;
+  const buckets = new Map();
+  for (const bar of bars) {
+    const [year, month, day] = bar.date.slice(0, 10).split('-').map(Number);
+    if (!year || !month || !day) continue;
+    const parsed = new Date(`${bar.date.slice(0, 10)}T12:00:00`);
+    const weekday = parsed.getDay() || 7;
+    parsed.setDate(parsed.getDate() - weekday + 1);
+    const weekStart = parsed.toISOString().slice(0, 10);
+    const key = period === 'week'
+      ? weekStart
+      : period === 'month'
+        ? `${year}-${String(month).padStart(2, '0')}`
+        : period === 'quarter'
+          ? `${year}-Q${Math.ceil(month / 3)}`
+          : `${year}`;
+    const group = buckets.get(key) || [];
+    group.push(bar);
+    buckets.set(key, group);
+  }
+  return Array.from(buckets.values()).map(group => ({
+    ...group[group.length - 1],
+    open: group[0].open,
+    high: Math.max(...group.map(bar => bar.high)),
+    low: Math.min(...group.map(bar => bar.low)),
+    close: group[group.length - 1].close,
+    volume: group.reduce((sum, bar) => sum + (bar.volume || 0), 0),
+  }));
+}
+
+function finalizeKLineBars(bars, period, count, sourcePeriod = period) {
+  const valid = bars.filter(bar => (
+    bar && Number.isFinite(bar.open) && Number.isFinite(bar.high) &&
+    Number.isFinite(bar.low) && Number.isFinite(bar.close) &&
+    bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0
+  ));
+  // 上游返回的粒度比请求更细时，在服务端统一归并，避免前端二次聚合。
+  const needsAggregation = period !== sourcePeriod;
+  return (needsAggregation ? aggregateKLineBars(valid, period) : valid).slice(-count);
+}
+
 /**
  * 股票 K 线历史数据（A 股 / 港股 / 美股 通用）
  *   美股：第一优先级使用 Yahoo Finance K线历史接口 (v8/finance/chart)，降级回退腾讯
  *   A股/港股：优先使用腾讯 AppStock K线接口
  *   返回标准化格式：[{ date, open, high, low, close, volume }]
  */
-async function fetchStockKLineHistory(code, days = 30) {
+async function fetchStockKLineHistory(code, count = 30, period = 'day') {
   const c = code.trim();
   const isUS = /^[A-Za-z]{1,5}$/.test(c);
+  // 季K、年K统一从月K聚合，避免腾讯原生年线只返回当前年度的兼容性问题。
+  const sourcePeriod = period === 'quarter' || period === 'year' ? 'month' : period;
+  const sourceCount = period === 'quarter' ? count * 3 : period === 'year' ? count * 12 : count;
+  const sourceIsCoarser = sourcePeriod === 'month' && ['quarter', 'year'].includes(period);
 
-  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口 (v8/finance/chart) 拉取历史日 K 线
+  // 1. 美股第一优先级：优先使用 Yahoo Finance Chart 接口拉取完整 OHLCV K 线
   if (isUS) {
     try {
       const yahooSymbol = encodeURIComponent(c.toUpperCase());
-      const rangeParam = days <= 7 ? '1wk' : (days <= 35 ? '1mo' : '3mo');
-      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d&range=${rangeParam}`;
+      const yahooConfig = {
+        day: { interval: '1d', range: count <= 7 ? '1wk' : count <= 35 ? '1mo' : count <= 100 ? '6mo' : count <= 250 ? '1y' : '2y' },
+        week: { interval: '1wk', range: count <= 26 ? '1y' : count <= 104 ? '5y' : '10y' },
+        month: { interval: '1mo', range: count <= 60 ? '5y' : '10y' },
+        year: { interval: '1mo', range: 'max' },
+      };
+      const { interval, range } = yahooConfig[sourcePeriod] || yahooConfig.day;
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
       const r = await axios.get(yahooUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1594,13 +1650,15 @@ async function fetchStockKLineHistory(code, days = 30) {
           };
         }).filter(Boolean);
 
-        if (list.length > 0) return list;
+        if (list.length > 0 && (!sourceIsCoarser || list.length > 1)) {
+          return finalizeKLineBars(list, period, count, sourcePeriod);
+        }
       }
     } catch (err) {
       console.warn(`[kline] Yahoo Chart API 美股 ${c} 获取历史日 K 线失败, 准备降级回退新浪:`, err.message);
     }
 
-    // 2. 美股第二优先级（降级备用）：新浪 US_MinKService 全量日 K 线接口（数据完整无极差断层）
+    // 2. 美股第二优先级（降级备用）：新浪仅提供日 K，高周期由日线聚合。
     try {
       const s = c.toLowerCase();
       const sinaUrl = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_us_${s}=/US_MinKService.getDailyK?symbol=${s}`;
@@ -1627,7 +1685,7 @@ async function fetchStockKLineHistory(code, days = 30) {
             volume: parseFloat(item.v) || 0,
           })).filter(k => k.close > 0);
           if (list.length > 0) {
-            return list.slice(-days);
+            return finalizeKLineBars(list, period, count, 'day');
           }
         }
       }
@@ -1653,16 +1711,22 @@ async function fetchStockKLineHistory(code, days = 30) {
     return [];
   }
 
-  const fullUrl = `${url}?param=${symbol},day,,,${days},qfq`;
+  const fullUrl = `${url.replace('http://', 'https://')}?param=${symbol},${sourcePeriod},,,${sourceCount},qfq`;
   try {
     const r = await axios.get(fullUrl, { timeout: 8000 });
     const d = r.data;
     if (d && d.code === 0 && d.data) {
       const key = Object.keys(d.data).find(k => k !== 'qt') || Object.keys(d.data)[0];
       if (key && key !== 'qt') {
-        const arr = d.data[key]?.day || d.data[key]?.qfqday || [];
-        if (Array.isArray(arr) && arr.length > 0) {
-          return arr.map((k) => {
+        const periodKeys = {
+          day: ['qfqday', 'day'],
+          week: ['qfqweek', 'week'],
+          month: ['qfqmonth', 'month'],
+          year: ['qfqyear', 'year'],
+        };
+        const arr = (periodKeys[sourcePeriod] || []).map(name => d.data[key]?.[name]).find(Array.isArray) || [];
+        if (arr.length > 0) {
+          const list = arr.map((k) => {
             const [date, open, close, high, low, volume] = k;
             return {
               date,
@@ -1673,6 +1737,7 @@ async function fetchStockKLineHistory(code, days = 30) {
               volume: parseFloat(volume) || 0,
             };
           });
+          return finalizeKLineBars(list, period, count, sourcePeriod);
         }
       }
     }
@@ -2033,15 +2098,43 @@ async function fetchSinaFundValuation(code) {
  *     1. fundgz.1234567.com.cn（最常见）
  *     2. Sina fu_（覆盖 QDII 等 fundgz 没有的基金）
  */
-async function getFundValuation(code, kindOverride) {
+async function getFundValuation(code, kindOverride, { enrich = false } = {}) {
   const now = Date.now();
   // 同一 6 位代码可被明确按 stock 或 fund 路由，缓存不能跨路径复用。
   const cacheKey = `${kindOverride || 'auto'}:${String(code).toUpperCase()}`;
   const cached = cache.fund[cacheKey];
-  if (cached && (now - cached.timestamp < FUND_CACHE_TTL)) {
-    return cached.data;
+  let baseVal = cached && now - cached.timestamp < FUND_CACHE_TTL ? cached.data : null;
+
+  if (!baseVal) {
+    const inflight = inflightFundValuations.get(cacheKey);
+    if (inflight) {
+      baseVal = await inflight;
+    } else {
+      const startedAt = Date.now();
+      const request = getFundValuationBase(code, kindOverride, { now, cacheKey, cached })
+        .finally(() => inflightFundValuations.delete(cacheKey));
+      inflightFundValuations.set(cacheKey, request);
+      baseVal = await request;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > 1500) console.warn(`[quote] ${code} 基础报价耗时 ${elapsed}ms`);
+    }
   }
 
+  if (!baseVal) return null;
+  if (enrich) return enrichStockValuation(code, kindOverride, baseVal);
+
+  // 所有调用方先拿基础报价；扩展字段在后台合并回缓存。SSE broker 会复用同一 Promise 并补发 tick。
+  if (baseVal.stockSpecific && baseVal.market && baseVal.market !== 'other') {
+    void enrichStockValuation(code, kindOverride, baseVal)
+      .catch((error) => console.warn(`[quote] ${code} 后台扩展失败:`, error.message));
+  }
+  return baseVal;
+}
+
+/**
+ * 仅拉取首帧所需的基础报价。可选的市值、换手率和资金流由 enrichStockValuation 补齐。
+ */
+async function getFundValuationBase(code, kindOverride, { now, cacheKey, cached }) {
   // 前端可指定 kind（按 tab 强制走某条路径）；否则按 code 格式自动判
   const kind = (kindOverride === 'fund' ? null : kindOverride) || detectCodeKind(code);
   let result = null;
@@ -2184,28 +2277,6 @@ async function getFundValuation(code, kindOverride) {
     }
 
     if (result) {
-      // 股票结果额外拼上腾讯的总市值/换手率（异步，非阻塞：失败时 result 仍可用）
-      // 注意：fund_a / fund_hk / fund_us 也会进来，但只有 stockSpecific 存在时才追加
-      if (result.stockSpecific && result.market && result.market !== 'other') {
-        try {
-          const extra = await fetchTencentExtraStockInfo(code, result.market);
-          if (extra) {
-            result.stockSpecific.totalMarketCap = extra.totalMarketCap;
-            result.stockSpecific.floatMarketCap = extra.floatMarketCap;
-            result.stockSpecific.turnoverRate = extra.turnoverRate;
-          }
-        } catch {}
-        // A 股额外追加资金流向（东财优先 → 腾讯兜底）
-        if (result.market === 'domestic') {
-          try {
-            const flow = await fetchStockCapitalFlow(code, result.market);
-            if (flow) {
-              result.stockSpecific.flow = flow;
-            }
-          } catch {}
-        }
-      }
-
       if (result && !result.navOnly) {
         const cur = parseFloat(result.gsz);
         const p = parseFloat(result.gszzl);
@@ -2228,6 +2299,73 @@ async function getFundValuation(code, kindOverride) {
   // 抓取失败时降级返回旧缓存
   if (cached) return cached.data;
   return null;
+}
+
+/**
+ * 在基础报价返回后补齐低频股票字段。结果会合并回同一报价缓存，供下一轮 SSE/REST 复用。
+ */
+async function enrichStockValuation(code, kindOverride, baseVal) {
+  if (!baseVal?.stockSpecific || !baseVal.market || baseVal.market === 'other') return baseVal;
+
+  const cacheKey = `${kindOverride || 'auto'}:${String(code).toUpperCase()}`;
+  const running = inflightStockEnrichments.get(cacheKey);
+  if (running) return running;
+
+  const request = (async () => {
+    const startedAt = Date.now();
+    const result = {
+      ...baseVal,
+      stockSpecific: { ...baseVal.stockSpecific },
+    };
+
+    const market = result.market;
+    const [extra, flow] = await Promise.all([
+      fetchTencentExtraStockInfo(code, market).catch(() => null),
+      market === 'domestic'
+        ? fetchStockCapitalFlow(code, market).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    if (extra) {
+      result.stockSpecific.totalMarketCap = extra.totalMarketCap;
+      result.stockSpecific.floatMarketCap = extra.floatMarketCap;
+      result.stockSpecific.turnoverRate = extra.turnoverRate;
+    }
+    if (flow) result.stockSpecific.flow = flow;
+
+    const current = cache.fund[cacheKey];
+    // 不能用旧价格覆盖已经由下一轮报价写入的缓存；仅合并扩展字段。
+    if (current?.data) {
+      const latest = current.data;
+      // 下一轮基础报价可能已刷新；只能把扩展数据回填到同一标的/市场，不能跨市场污染缓存。
+      if (latest.market !== market) return latest;
+      const latestSpecific = latest.stockSpecific || {};
+      const enrichedSpecific = result.stockSpecific;
+      cache.fund[cacheKey] = {
+        timestamp: current.timestamp,
+        data: {
+          ...latest,
+          stockSpecific: {
+            ...latestSpecific,
+            ...(extra ? {
+              totalMarketCap: enrichedSpecific.totalMarketCap,
+              floatMarketCap: enrichedSpecific.floatMarketCap,
+              turnoverRate: enrichedSpecific.turnoverRate,
+            } : {}),
+            ...(flow ? { flow: enrichedSpecific.flow } : {}),
+          },
+        },
+      };
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > 1500) console.warn(`[quote] ${code} 扩展信息耗时 ${elapsed}ms`);
+      return cache.fund[cacheKey].data;
+    }
+
+    return result;
+  })().finally(() => inflightStockEnrichments.delete(cacheKey));
+
+  inflightStockEnrichments.set(cacheKey, request);
+  return request;
 }
 
 /**
@@ -3398,6 +3536,7 @@ async function getGoldPrices() {
 
 module.exports = {
   getFundValuation,
+  enrichStockValuation,
   getFundHistory,
   getFundBasicInfo,
   getFundHoldings,

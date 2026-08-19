@@ -317,6 +317,17 @@ export interface FundHistoryPoint {
  * 个股分钟级 K 线（用于分时图 hover 显示真实每分钟成交量/成交额）
  * A 股来自 Sina / 港股来自腾讯 / 美股暂无公开接口（返回 data: null）
  */
+export type StockKLinePeriod = 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+export interface StockKLinePoint {
+  date: string;          // YYYY-MM-DD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;        // A 股为手；港美股为股，按上游原始单位展示
+}
+
 export interface StockMinutePoint {
   time: string;          // "YYYY-MM-DD HH:MM:SS"
   open: number;
@@ -331,6 +342,20 @@ export interface StockMinuteResponse {
   code: string;
   market: string;
   data: StockMinutePoint[] | null;
+}
+
+export async function fetchStockKLine(
+  code: string,
+  count: number = 120,
+  period: StockKLinePeriod = 'day'
+): Promise<StockKLinePoint[]> {
+  try {
+    const data = await request(`/api/market/stock/${code}/kline?count=${count}&period=${period}`) as { data?: StockKLinePoint[] };
+    return Array.isArray(data.data) ? data.data : [];
+  } catch (error) {
+    console.error(`获取股票 K 线 ${code} 失败:`, error);
+    return [];
+  }
 }
 
 export async function fetchStockMinute(

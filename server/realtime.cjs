@@ -85,6 +85,7 @@ class ValuationBroker {
         subscribers: 0,
         lastEmitAt: 0,
         lastEmittedSnapshot: null,
+        lastEnrichmentSnapshot: null,
         lastEmittedVal: null,
         closed: false,
       };
@@ -312,6 +313,38 @@ class ValuationBroker {
         );
 
         this.emitter.emit('tick', { code, val, capturedAt: now });
+
+        // 首帧只承载核心价格字段；市值、换手率与资金流在后台完成后以第二个 tick 补齐。
+        // 该路径不走价格签名去重，因为扩展字段不会改变价格/时间。
+        if (val.stockSpecific && val.market && val.market !== 'other') {
+          const baseEnrichmentSig = JSON.stringify({
+            totalMarketCap: val.stockSpecific.totalMarketCap ?? null,
+            floatMarketCap: val.stockSpecific.floatMarketCap ?? null,
+            turnoverRate: val.stockSpecific.turnoverRate ?? null,
+            flow: val.stockSpecific.flow ?? null,
+          });
+          void marketHelper.enrichStockValuation(code, entry.kind, val)
+            .then(enriched => {
+              if (!enriched?.stockSpecific || entry.subscribers === 0) return;
+              const specific = enriched.stockSpecific;
+              const enrichmentSig = JSON.stringify({
+                totalMarketCap: specific.totalMarketCap ?? null,
+                floatMarketCap: specific.floatMarketCap ?? null,
+                turnoverRate: specific.turnoverRate ?? null,
+                flow: specific.flow ?? null,
+              });
+              if (enrichmentSig === baseEnrichmentSig || entry.lastEnrichmentSnapshot === enrichmentSig) return;
+
+              entry.lastEnrichmentSnapshot = enrichmentSig;
+              entry.lastEmittedVal = enriched;
+              const enrichedAt = Date.now();
+              this._persistSnapshot(code, enriched).catch((e) =>
+                console.warn(`[realtime] save enriched snapshot ${code} failed:`, e.message)
+              );
+              this.emitter.emit('tick', { code, val: enriched, capturedAt: enrichedAt });
+            })
+            .catch((e) => console.warn(`[realtime] enrich ${code} failed:`, e.message));
+        }
 
         // emit 完成后做收盘判定。
         // 若本轮刚从错的 market (例如 'domestic') 自纠为正确的 'us'，强制无视
