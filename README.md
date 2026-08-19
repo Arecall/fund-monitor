@@ -50,7 +50,7 @@
    - 基于 SQLite3 本地持久化，支持多用户免密/密码登录与隔离，数据完全归属于个人服务器。
 6. **截图**
    <img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/5b0d21f3-2693-4802-bdfc-6bce2cf81da3" />
-   <img width="3840" height="1878" alt="image" src="https://github.com/user-attachments/assets/ed5496c3-8b99-44b5-8bc3-614d3f05724b" />
+   <img width="3840" height="1878" alt="image" src="https://github.com/user-attachments/assets/3222b494-8687-4e97-a784-1765b179a0c5" />
    <img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/d847134c-bec2-4e0d-88f9-6e3cae9cec31" />
 
 ---
