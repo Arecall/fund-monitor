@@ -878,7 +878,7 @@ function App() {
     if (!selectedFundCode) return;
     const code = selectedFundCode;
     const item = watchlistItems.find(w => w.fund_code === code);
-    const isDomesticStock = item?.kind === 'stock' && (item.market === 'domestic' || (!item.market && /^\d{6}$/.test(code)));
+    const isDomesticStock = item?.kind === 'stock' && (item.market === 'domestic' || item.market === 'other' || (!item.market && /^(SH|SZ|BJ)?\d{6}$/i.test(code)));
     if (!isDomesticStock) return;
 
     const existing = fundsDataRef.current[code];

@@ -713,7 +713,7 @@ export function FundDetailPanel({
       )}
 
       {/* ── Capital flow bar chart (仅 A 股个股) ── */}
-      {kind === 'stock' && (fund.market === 'domestic' || (!fund.market && /^\d{6}$/.test(fund.fundcode))) && (
+      {kind === 'stock' && (fund.market === 'domestic' || fund.market === 'other' || (!fund.market && /^(SH|SZ|BJ)?\d{6}$/i.test(fund.fundcode))) && (
         (fund as any).stockSpecific?.flow ? (
           <CapitalFlowChart flow={(fund as any).stockSpecific.flow} />
         ) : (

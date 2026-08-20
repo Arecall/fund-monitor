@@ -840,19 +840,24 @@ const _emFlowCache = {};
 const EM_FLOW_TTL = 60 * 1000;
 
 async function fetchEastMoneyFlowStockInfo(code, market) {
-  if (market !== 'domestic') return null;   // 仅 A 股有完整的资金流向字段
-  const c = code.toUpperCase();
-  const cacheKey = `${market}:${c}`;
+  const c = String(code || '').toUpperCase();
+  const pure = c.replace(/^(SH|SZ|BJ)/i, '');
+  const isMainland = market === 'domestic' || market === 'other' || /^\d{6}$/.test(pure);
+  if (!isMainland) return null;   // 仅 A 股有完整的资金流向字段
+
+  const cacheKey = `${market || 'domestic'}:${c}`;
   const now = Date.now();
   const cached = _emFlowCache[cacheKey];
   if (cached && now - cached.ts < EM_FLOW_TTL) {
     return cached.value;
   }
 
-  let secid;
-  if (c.startsWith('60') || c.startsWith('68')) secid = `1.${c}`;
-  else if (c.startsWith('00') || c.startsWith('30') || c.startsWith('8') || c.startsWith('BJ')) secid = `0.${c.replace(/^BJ/, '')}`;
-  else secid = null;
+  let secid = null;
+  if (/^(60|68|50|51|52|56|58)/.test(pure)) {
+    secid = `1.${pure}`;
+  } else if (/^(00|30|15|16|18|8|4|9)/.test(pure)) {
+    secid = `0.${pure}`;
+  }
   if (!secid) {
     _emFlowCache[cacheKey] = { ts: now, value: null };
     return null;
@@ -926,19 +931,25 @@ const _emDelayFlowCache = {};
 const EM_DELAY_FLOW_TTL = 60 * 1000;
 
 async function fetchEastMoneyDelayFlowStockInfo(code, market) {
-  if (market !== 'domestic') return null;
-  const c = code.toUpperCase();
-  const cacheKey = `${market}:${c}`;
+  const c = String(code || '').toUpperCase();
+  const pure = c.replace(/^(SH|SZ|BJ)/i, '');
+  const isMainland = market === 'domestic' || market === 'other' || /^\d{6}$/.test(pure);
+  if (!isMainland) return null;
+
+  const cacheKey = `${market || 'domestic'}:${c}`;
   const now = Date.now();
   const cached = _emDelayFlowCache[cacheKey];
   if (cached && now - cached.ts < EM_DELAY_FLOW_TTL) {
     return cached.value;
   }
 
-  let secid;
-  if (c.startsWith('60') || c.startsWith('68')) secid = `1.${c}`;
-  else if (c.startsWith('00') || c.startsWith('30') || c.startsWith('8') || c.startsWith('BJ')) secid = `0.${c.replace(/^BJ/, '')}`;
-  else {
+  let secid = null;
+  if (/^(60|68|50|51|52|56|58)/.test(pure)) {
+    secid = `1.${pure}`;
+  } else if (/^(00|30|15|16|18|8|4|9)/.test(pure)) {
+    secid = `0.${pure}`;
+  }
+  if (!secid) {
     _emDelayFlowCache[cacheKey] = { ts: now, value: null };
     return null;
   }
@@ -991,7 +1002,10 @@ async function fetchEastMoneyDelayFlowStockInfo(code, market) {
  *   注：曾尝试用腾讯 ff_ 兜底，但该接口已废弃（v_pv_none_match）
  */
 async function fetchStockCapitalFlow(code, market) {
-  if (market !== 'domestic') return null;
+  const c = String(code || '').toUpperCase();
+  const pure = c.replace(/^(SH|SZ|BJ)/i, '');
+  const isMainland = market === 'domestic' || market === 'other' || /^\d{6}$/.test(pure);
+  if (!isMainland) return null;
 
   // 1. 优先 push2
   try {
@@ -2307,7 +2321,7 @@ async function getFundValuationBase(code, kindOverride, { now, cacheKey, cached 
  * 在基础报价返回后补齐低频股票字段。结果会合并回同一报价缓存，供下一轮 SSE/REST 复用。
  */
 async function enrichStockValuation(code, kindOverride, baseVal) {
-  if (!baseVal?.stockSpecific || !baseVal.market || baseVal.market === 'other') return baseVal;
+  if (!baseVal?.stockSpecific) return baseVal;
 
   const cacheKey = `${kindOverride || 'auto'}:${String(code).toUpperCase()}`;
   const running = inflightStockEnrichments.get(cacheKey);
@@ -2320,12 +2334,10 @@ async function enrichStockValuation(code, kindOverride, baseVal) {
       stockSpecific: { ...baseVal.stockSpecific },
     };
 
-    const market = result.market;
+    const market = result.market || 'domestic';
     const [extra, flow] = await Promise.all([
       fetchTencentExtraStockInfo(code, market).catch(() => null),
-      market === 'domestic'
-        ? fetchStockCapitalFlow(code, market).catch(() => null)
-        : Promise.resolve(null),
+      fetchStockCapitalFlow(code, market).catch(() => null),
     ]);
 
     if (extra) {
