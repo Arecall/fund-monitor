@@ -802,10 +802,24 @@ function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [basicMap, setBasicMap] = useState<Record<string, FundBasicInfo | null>>({});
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
-  const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number }>>({});
+  const [detailFlowState, setDetailFlowState] = useState<Record<string, 'loading' | 'unavailable'>>({});
+  const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number; flow?: number }>>({});
   const DETAIL_HISTORY_TTL = 30 * 60_000;
   const DETAIL_BASIC_TTL = 24 * 60 * 60_000;
   const DETAIL_HOLDINGS_TTL = 5 * 60_000;
+
+  // 基础行情 tick 不携带低频扩展字段；合并保留上一帧的市值、换手率和资金流，
+  // 直到后续扩展 tick 用新值替换，避免详情页在两帧之间闪隐。
+  const mergeValuation = useCallback((previous: FundValuation | undefined, incoming: FundValuation, capturedAt?: number): FundValuation => {
+    const canMergeStockSpecific = !!previous?.stockSpecific && !!incoming.stockSpecific && previous.market === incoming.market;
+    return {
+      ...incoming,
+      ...(canMergeStockSpecific ? {
+        stockSpecific: { ...previous.stockSpecific, ...incoming.stockSpecific },
+      } : {}),
+      capturedAt: capturedAt ?? incoming.capturedAt ?? Date.now(),
+    } as FundValuation;
+  }, []);
 
   // 详情的实时价格由 SSE、股票分钟线由 FundDetailPanel 自己的 10s 定时器负责。
   // 历史净值/基金资料/重仓属于低频数据，仅在首次打开或客户端 TTL 到期后刷新。
@@ -858,6 +872,51 @@ function App() {
 
     return () => { cancelled = true; };
   }, [selectedFundCode]);
+
+  // 打开 A 股个股详情时，单独确保一次包含资金流向的扩展行情；常规分页行情仍保持 base-first。
+  useEffect(() => {
+    if (!selectedFundCode) return;
+    const code = selectedFundCode;
+    const item = watchlistItems.find(w => w.fund_code === code);
+    const isDomesticStock = item?.kind === 'stock' && (item.market === 'domestic' || (!item.market && /^\d{6}$/.test(code)));
+    if (!isDomesticStock) return;
+
+    const existing = fundsDataRef.current[code];
+    if (existing?.stockSpecific?.flow) {
+      setDetailFlowState(prev => {
+        if (!prev[code]) return prev;
+        const { [code]: _removed, ...rest } = prev;
+        return rest;
+      });
+      return;
+    }
+
+    const fetchedAt = detailFetchedAtRef.current[code]?.flow;
+    if (fetchedAt && Date.now() - fetchedAt < 60_000) return;
+
+    let cancelled = false;
+    setDetailFlowState(prev => ({ ...prev, [code]: 'loading' }));
+    void fetchFundValuation(code, 'stock', { enrich: true }).then(value => {
+      if (value) {
+        const nextValue = mergeValuation(fundsDataRef.current[code], value);
+        const next = { ...fundsDataRef.current, [code]: nextValue };
+        fundsDataRef.current = next;
+        setFundsData(next);
+      }
+      detailFetchedAtRef.current[code] = { ...detailFetchedAtRef.current[code], flow: Date.now() };
+      if (cancelled) return;
+      if (value?.stockSpecific?.flow) {
+        setDetailFlowState(prev => {
+          const { [code]: _removed, ...rest } = prev;
+          return rest;
+        });
+      } else {
+        setDetailFlowState(prev => ({ ...prev, [code]: 'unavailable' }));
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [selectedFundCode, watchlistItems, mergeValuation]);
 
 
   /* ---------- Drag-to-reorder（股票 tab，HTML5 原生 drag & drop）---------- */
@@ -1288,7 +1347,7 @@ function App() {
         await Promise.all(targetCodes.map(async (code) => {
           const item = itemMap.get(code.toUpperCase());
           const val = await fetchFundValuation(code, item?.kind);
-          if (val) updatedFunds[code] = val;
+          if (val) updatedFunds[code] = mergeValuation(data[code], val);
         }));
         fundsDataRef.current = updatedFunds;
         setFundsData(updatedFunds);
@@ -1321,7 +1380,17 @@ function App() {
       pendingTickRef.map = new Map();
       const base = fundsDataRef.current;
       const next = { ...base };
-      for (const [c, u] of updates) next[c] = { ...u.val, capturedAt: u.capturedAt };
+      for (const [c, u] of updates) {
+        const value = mergeValuation(base[c], u.val, u.capturedAt);
+        next[c] = value;
+        if (value.stockSpecific?.flow) {
+          setDetailFlowState(prev => {
+            if (!prev[c]) return prev;
+            const { [c]: _removed, ...rest } = prev;
+            return rest;
+          });
+        }
+      }
       fundsDataRef.current = next;
       setFundsData(next);
     };
@@ -1389,7 +1458,7 @@ function App() {
           if (fallbackCancelled || !val || !pendingCodes.has(code)) continue;
           pendingCodes.delete(code);
           pendingForegroundCodes.delete(code);
-          updates[code] = { ...val, capturedAt: Date.now() };
+          updates[code] = mergeValuation(fundsDataRef.current[code], val, Date.now());
         }
       };
       void Promise.all(Array.from({ length: Math.min(4, remainingCodes.length) }, worker)).then(() => {
@@ -3318,6 +3387,7 @@ function App() {
               key={selectedFundCode}
               fund={fundsData[selectedFundCode]}
               kind={item?.kind}
+              capitalFlowState={detailFlowState[selectedFundCode]}
               position={positions[selectedFundCode]}
               history={historyMap[selectedFundCode] || []}
               historyLoading={historyLoading}

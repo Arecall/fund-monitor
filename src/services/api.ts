@@ -291,10 +291,17 @@ export async function fetchGoldHistory(
 /**
  * 获取国内场外基金实时估值
  */
-export async function fetchFundValuation(code: string, kind?: 'fund' | 'stock'): Promise<FundValuation | null> {
+export async function fetchFundValuation(
+  code: string,
+  kind?: 'fund' | 'stock',
+  options?: { enrich?: boolean }
+): Promise<FundValuation | null> {
   try {
-    const q = kind ? `?kind=${kind}` : '';
-    const value = await request(`/api/market/fund/${code}${q}`) as FundValuation | null;
+    const params = new URLSearchParams();
+    if (kind) params.set('kind', kind);
+    if (options?.enrich) params.set('enrich', 'true');
+    const q = params.toString();
+    const value = await request(`/api/market/fund/${code}${q ? `?${q}` : ''}`) as FundValuation | null;
     return value ? { ...value, capturedAt: value.capturedAt ?? Date.now() } : null;
   } catch (error) {
     console.error(`获取基金 ${code} 失败:`, error);
