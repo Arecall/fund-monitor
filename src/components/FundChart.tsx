@@ -42,11 +42,7 @@ interface FundChartProps {
   /** 个股当日最高/最低价（让分时图 Y 轴聚焦真实盘中区间，避免被昨收/发行价挤压） */
   highPrice?: number;
   lowPrice?: number;
-  /** 个股当日累计成交量（A 股单位"手"=100股；港美股单位"股"），用于 hover tooltip */
-  totalVolume?: number;
-  /** 个股当日累计成交额（元），用于 hover tooltip */
-  totalTurnover?: number;
-  /** 真实分钟级 K 线（来自 Sina/腾讯），用于分时图价格 + 真实每分钟成交量/成交额 */
+  /** 分钟价格序列；成交量/成交额仅在上游提供真实分钟数据时存在。 */
   minuteFeed?: MinuteFeed | null;
   /** Persisted market classification from the watchlist/API. */
   market?: FundMarket;
@@ -69,8 +65,6 @@ export function FundChart({
   openPrice,
   highPrice,
   lowPrice,
-  totalVolume,
-  totalTurnover,
   minuteFeed,
   market,
   kind = 'fund',
@@ -122,8 +116,8 @@ export function FundChart({
 
   // Build the active series
   const series = useMemo(
-    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, market),
-    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, totalVolume, totalTurnover, minuteFeed, market, timeTick]
+    () => buildSeries(fundCode, current, previous, range, history, fundName, fundCode, kind, openPrice, highPrice, lowPrice, minuteFeed, market),
+    [fundCode, current, previous, range, history, fundName, kind, openPrice, highPrice, lowPrice, minuteFeed, market, timeTick]
   );
   const points = series.points;
 

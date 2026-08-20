@@ -508,8 +508,10 @@ async function fetchYahooUSStockValuation(ticker) {
     const changePct = prevClose > 0 ? ((current - prevClose) / prevClose) * 100 : 0;
     const change = current - prevClose;
 
-    // 获取最高价/最低价/开盘价/成交量
-    const openVal = meta.regularMarketDayLow || meta.regularMarketPrice; // fallback
+    // Yahoo 的日低价不能充当开盘价；没有可信开盘字段时明确保留为空。
+    const openVal = typeof meta.regularMarketOpen === 'number' && meta.regularMarketOpen > 0
+      ? meta.regularMarketOpen
+      : null;
     const highVal = meta.regularMarketDayHigh;
     const lowVal  = meta.regularMarketDayLow;
     const volumeVal = meta.regularMarketVolume;
@@ -538,9 +540,9 @@ async function fetchYahooUSStockValuation(ticker) {
       gszzl: changePct.toFixed(2),
       gztime,
       market: 'us',
-      open: typeof meta.regularMarketDayHigh === 'number' ? openVal?.toFixed(4) : undefined,
+      open: openVal !== null ? openVal.toFixed(4) : undefined,
       stockSpecific: {
-        open: typeof openVal === 'number' ? openVal : null,
+        open: openVal,
         high: typeof highVal === 'number' ? highVal : null,
         low: typeof lowVal === 'number' ? lowVal : null,
         volume: typeof volumeVal === 'number' ? volumeVal : null,
