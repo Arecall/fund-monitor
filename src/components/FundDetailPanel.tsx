@@ -21,9 +21,11 @@ import type {
   FundBasicInfo,
   FundHoldingStock,
   StockKLinePoint,
-  StockKLinePeriod
+  StockKLinePeriod,
+  StockMinuteResponse,
+  DetailMinutePatch
 } from '../services/api';
-import { fetchStockKLine, fetchStockMinute } from '../services/api';
+import { fetchStockKLine, fetchStockMinute, subscribeDetailChartUpdates } from '../services/api';
 
 const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
   day: 120,
@@ -32,6 +34,57 @@ const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
   quarter: 40,
   year: 30,
 };
+
+function minuteResponseToFeed(response: StockMinuteResponse | null): MinuteFeed | null {
+  if (!response?.data?.length) return null;
+  const byMinute = new Map<number, MinuteFeed['bars'][number]>();
+  response.data.forEach((bar) => {
+    const t = Date.parse(bar.time.replace(' ', 'T') + '+08:00');
+    const v = Number(bar.close);
+    if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return;
+    byMinute.set(Math.floor(t / 60_000) * 60_000, {
+      t: Math.floor(t / 60_000) * 60_000,
+      v,
+      volume: Number.isFinite(bar.volume) ? bar.volume : undefined,
+      turnover: Number.isFinite(bar.amount) ? bar.amount : undefined,
+    });
+  });
+  const bars = Array.from(byMinute.values()).sort((a, b) => a.t - b.t);
+  return bars.length ? { bars } : null;
+}
+
+function mergeMinutePatch(feed: MinuteFeed | null, patch: DetailMinutePatch): MinuteFeed | null {
+  const { t, v } = patch.point;
+  if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return feed;
+  const bucket = Math.floor(t / 60_000) * 60_000;
+  const bars = [...(feed?.bars || [])];
+  const index = bars.findIndex(bar => Math.floor(bar.t / 60_000) * 60_000 === bucket);
+  if (index >= 0) {
+    // 保留 REST 分钟源已有的真实成交量/成交额，只更新同分钟的最新价格。
+    bars[index] = { ...bars[index], t: bucket, v };
+  } else if (!bars.length || bucket > bars[bars.length - 1].t) {
+    bars.push({ t: bucket, v });
+  } else {
+    return feed;
+  }
+  return { bars: bars.slice(-600) };
+}
+
+function mergeLiveKLineTail(rows: StockKLinePoint[], fund: FundValuation): StockKLinePoint[] {
+  if (!rows.length || fund.navOnly || fund.estimate || fund.quoteSession === 'closed') return rows;
+  const close = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
+  if (!Number.isFinite(close) || close <= 0) return rows;
+  const last = rows[rows.length - 1];
+  const quoteHigh = fund.stockSpecific?.high;
+  const quoteLow = fund.stockSpecific?.low;
+  // 只用报价区间向外扩展当前 REST 末根，避免跨来源报价导致盘中高低点收缩。
+  const high = Math.max(last.high, close, typeof quoteHigh === 'number' && quoteHigh > 0 ? quoteHigh : 0);
+  const lows = [last.low, close, typeof quoteLow === 'number' && quoteLow > 0 ? quoteLow : Infinity];
+  const low = Math.min(...lows);
+  if (!Number.isFinite(high) || !Number.isFinite(low) || low <= 0 || high < low) return rows;
+  const next = { ...last, close, high, low };
+  return [...rows.slice(0, -1), next];
+}
 
 const FundChart = lazy(() => import('./FundChart').then(m => ({ default: m.FundChart })));
 const StockKLineChart = lazy(() => import('./StockKLineChart').then(m => ({ default: m.StockKLineChart })));
@@ -90,6 +143,10 @@ export function FundDetailPanel({
   const [minuteData, setMinuteData] = useState<MinuteFeed | null>(null);
   const [minuteLoading, setMinuteLoading] = useState(true);
   const minuteSigRef = useRef<string>('');
+  const minuteGenerationRef = useRef(0);
+  const minuteBaselineReadyRef = useRef(false);
+  const pendingMinutePatchesRef = useRef<DetailMinutePatch[]>([]);
+  const minuteRefreshTimerRef = useRef<number | null>(null);
   const [klinePeriod, setKlinePeriod] = useState<StockKLinePeriod>('day');
   const [klineData, setKlineData] = useState<StockKLinePoint[]>([]);
   const [klineLoading, setKlineLoading] = useState(false);
@@ -107,44 +164,111 @@ export function FundDetailPanel({
       setMinuteLoading(false);
       return;
     }
+
     let cancelled = false;
-    const loadMinuteData = async () => {
+    const generation = ++minuteGenerationRef.current;
+    minuteBaselineReadyRef.current = false;
+    pendingMinutePatchesRef.current = [];
+    const isCurrent = () => !cancelled && generation === minuteGenerationRef.current;
+    const setFeedIfChanged = (next: MinuteFeed | null) => {
+      const last = next?.bars[next.bars.length - 1];
+      const sig = next ? `${next.bars.length}|${last?.t}|${last?.v}` : '';
+      if (sig === minuteSigRef.current) return;
+      minuteSigRef.current = sig;
+      setMinuteData(next);
+    };
+    const applyPatch = (patch: DetailMinutePatch) => {
+      if (!isCurrent() || patch.code.toUpperCase() !== fund.fundcode.toUpperCase()) return;
+      if (!minuteBaselineReadyRef.current) {
+        const queue = pendingMinutePatchesRef.current;
+        queue.push(patch);
+        if (queue.length > 100) queue.shift();
+        return;
+      }
+      setMinuteData(previous => {
+        const next = mergeMinutePatch(previous, patch);
+        const last = next?.bars[next.bars.length - 1];
+        const sig = next ? `${next.bars.length}|${last?.t}|${last?.v}` : '';
+        if (sig === minuteSigRef.current) return previous;
+        minuteSigRef.current = sig;
+        return next;
+      });
+    };
+    const refreshBaseline = async () => {
       try {
-        const res = await fetchStockMinute(fund.fundcode, kind, fund.market);
-        if (cancelled) return;
-        if (res?.data && res.data.length > 0) {
-          const bars = res.data.map(d => ({
-            t: Date.parse(d.time.replace(' ', 'T') + '+08:00'),
-            v: d.close,
-            volume: d.volume,
-            turnover: d.amount,
-          })).filter(b => Number.isFinite(b.t));
-          // 数据去重：柱数 + 最后一根 K 线时间与收盘价均未变化则跳过 setState，避免每 10s 无意义重绘。
-          const last = bars[bars.length - 1];
-          const sig = `${bars.length}|${last?.t}|${last?.v}`;
-          if (sig !== minuteSigRef.current) {
-            minuteSigRef.current = sig;
-            setMinuteData({ bars });
-          }
-        } else {
-          minuteSigRef.current = '';
-          setMinuteData(null);
+        const response = await fetchStockMinute(fund.fundcode, kind, fund.market);
+        if (!isCurrent()) return;
+        let next = minuteResponseToFeed(response);
+        for (const patch of pendingMinutePatchesRef.current.sort((a, b) => a.point.t - b.point.t)) {
+          next = mergeMinutePatch(next, patch);
         }
-      } catch {
-        // error
+        pendingMinutePatchesRef.current = [];
+        minuteBaselineReadyRef.current = true;
+        setFeedIfChanged(next);
       } finally {
-        if (!cancelled) setMinuteLoading(false);
+        if (isCurrent()) setMinuteLoading(false);
       }
     };
-    loadMinuteData();
-    const timer = setInterval(loadMinuteData, 10_000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const scheduleBaselineRefresh = () => {
+      if (minuteRefreshTimerRef.current != null) return;
+      minuteRefreshTimerRef.current = window.setTimeout(() => {
+        minuteRefreshTimerRef.current = null;
+        void refreshBaseline();
+      }, 800);
+    };
+
+    void refreshBaseline();
+    const unsubscribe = subscribeDetailChartUpdates({
+      code: fund.fundcode,
+      kind,
+      market: fund.market,
+      onMinutePatch: applyPatch,
+      onReady: (ready) => {
+        if (ready.reconnected && isCurrent()) scheduleBaselineRefresh();
+      },
+      onError: () => {
+        if (isCurrent()) scheduleBaselineRefresh();
+      },
+    });
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isCurrent()) scheduleBaselineRefresh();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (minuteRefreshTimerRef.current != null) {
+        window.clearTimeout(minuteRefreshTimerRef.current);
+        minuteRefreshTimerRef.current = null;
+      }
+    };
   }, [fund.fundcode, fund.market, kind, chartKey]);
 
   useEffect(() => {
     setKlinePeriod('day');
     setKlineData([]);
   }, [fund.fundcode, fund.market, kind]);
+
+  // 历史 K 线继续由 REST 权威提供；实时报价只临时覆盖已存在末根的 close/high/low。
+  const liveKlineSignature = [
+    kind,
+    fund.capturedAt,
+    fund.gsz,
+    fund.dwjz,
+    fund.navOnly,
+    fund.estimate,
+    fund.quoteSession,
+    fund.stockSpecific?.high,
+    fund.stockSpecific?.low,
+  ].join('|');
+  useEffect(() => {
+    if (kind !== 'stock') return;
+    setKlineData(previous => mergeLiveKLineTail(previous, fund));
+  // `liveKlineSignature` 明确列出报价字段，避免完整 fund 对象每次重建触发副作用。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKlineSignature]);
 
   useEffect(() => {
     if (kind !== 'stock' || !fund.fundcode) {
@@ -510,14 +634,6 @@ export function FundDetailPanel({
           })()}
           lowPrice={(() => {
             const v = (fund as any).stockSpecific?.low;
-            return typeof v === 'number' && v > 0 ? v : undefined;
-          })()}
-          totalVolume={(() => {
-            const v = (fund as any).stockSpecific?.volume;
-            return typeof v === 'number' && v > 0 ? v : undefined;
-          })()}
-          totalTurnover={(() => {
-            const v = (fund as any).stockSpecific?.turnover;
             return typeof v === 'number' && v > 0 ? v : undefined;
           })()}
           minuteFeed={minuteData}

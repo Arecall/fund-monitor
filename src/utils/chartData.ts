@@ -311,8 +311,6 @@ export function buildSeries(
   openPrice?: number,
   highPrice?: number,
   lowPrice?: number,
-  totalVolume?: number,
-  totalTurnover?: number,
   minuteFeed?: MinuteFeed | null,
   /** Persisted market classification wins over name-based fallback. */
   marketOverride?: FundMarket
@@ -451,42 +449,14 @@ export function buildSeries(
         if (useStockAnchor && highPrice && lowPrice && highPrice > lowPrice) {
           const steps = 240;
           const series = interpolateStockIntraday(startValue, current, highPrice, lowPrice, steps, rand);
-          // 合成数据时仍用权重让 hover 不同位置看到不同数字
-          const totalMinutes = (endTs - startTs) / 60_000;
-          const weightRand = mulberry32(hashCode(code + 'vw-' + range));
-          const weights: number[] = new Array(steps);
-          let weightSum = 0;
-          for (let i = 0; i < steps; i++) {
-            const minute = (i / (steps - 1)) * totalMinutes;
-            let timeFactor = 1.0;
-            if (minute < 30) timeFactor = 1.6;
-            else if (minute > totalMinutes - 30) timeFactor = 1.5;
-            else if (totalMinutes > 180 && minute > 120 && minute < 150) timeFactor = 0.5;
-            const noise = 0.3 + weightRand() * 1.4;
-            const w = timeFactor * noise;
-            weights[i] = w;
-            weightSum += w;
-          }
-          const volPerWeight  = (typeof totalVolume   === 'number' && totalVolume   > 0) ? totalVolume   / weightSum : 0;
-          const turnPerWeight = (typeof totalTurnover === 'number' && totalTurnover > 0) ? totalTurnover / weightSum : 0;
-
+          // 插值线只表达价格趋势。报价的当日累计成交量/成交额不能拆分伪装成分钟数据。
           points = series.map((v, i) => {
             const ratio = i / (steps - 1);
-            const point: ChartPoint = {
-              t: startTs + ratio * (endTs - startTs),
-              v,
-            };
-            if (volPerWeight > 0) point.volume = volPerWeight * weights[i];
-            if (turnPerWeight > 0) point.turnover = turnPerWeight * weights[i];
-            return point;
+            return { t: startTs + ratio * (endTs - startTs), v };
           });
           if (points.length > 0) {
-            const firstVol = points[0].volume;
-            const firstTurn = points[0].turnover;
-            const lastVol = points[points.length - 1].volume;
-            const lastTurn = points[points.length - 1].turnover;
-            points[0] = { t: startTs, v: startValue, real: true, volume: firstVol, turnover: firstTurn };
-            points[points.length - 1] = { t: endTs, v: current, real: true, volume: lastVol, turnover: lastTurn };
+            points[0] = { t: startTs, v: startValue, real: true };
+            points[points.length - 1] = { t: endTs, v: current, real: true };
           }
         } else {
           points = buildFundIntradayLine(startValue, current, startTs, endTs);
@@ -502,8 +472,8 @@ export function buildSeries(
       : '场外基金无分时 K 线。估值来源：天天基金实时估值接口。直线连接昨日官方净值与当前实时估值，仅反映累计涨跌幅，非分钟级走势。';
 
     const realNote = isStock
-      ? `数据来源：${stockSourceLabel}。分时走势来自交易所真实逐分钟行情快照，每次报价采集自腾讯行情 API，约每 10 秒更新一次。`
-      : '数据来源：后端系统每 10 秒采集一次实时估值快照（来源：天天基金）。分时走势由这些真实打点轨迹连线生成，非插值，0 人工伪造。';
+      ? `数据来源：上游分钟行情与实时行情采样点的合并。成交量/成交额仅在上游提供真实分钟数据时展示；实时价格采样约每 10 秒更新一次。`
+      : '数据来源：后端实时估值采样点。分时走势由这些价格打点轨迹连线生成；场外基金不具备交易所分钟成交量/成交额。';
 
     return {
       points,

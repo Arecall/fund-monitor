@@ -109,7 +109,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.4.2' });
+  res.json({ status: 'ok', version: '1.4.3' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -1294,6 +1294,49 @@ loadAlertSettings().then(() => {
 // 7. 实时推送：SSE 端点
 // ==========================================
 
+function writeSseEvent(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+/**
+ * 将 broker 报价压缩为详情分时的单个价格采样点。
+ * quote 的 volume/turnover 是日内累计字段，故绝不冒充分钟成交量/成交额。
+ */
+function makeDetailMinutePatch(code, kind, market, val, capturedAt) {
+  const price = parseFloat(val?.gsz) || parseFloat(val?.dwjz);
+  if (!Number.isFinite(price) || price <= 0 || val?.navOnly || val?.isPlaceholder) return null;
+
+  const effectiveMarket = val?.market || market;
+  let timestamp = Number(val?.quoteTimestamp);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    timestamp = effectiveMarket === 'us'
+      ? marketTime.parseUsEasternDateTime(val?.gztime)
+      : marketTime.parseBeijingDateTime(val?.gztime);
+  }
+  if (!Number.isFinite(timestamp) || timestamp <= 0) timestamp = capturedAt;
+
+  // 美股白天缺少上游时间戳的基金估值常是占位数据，不能标成真实夜盘采样。
+  if (effectiveMarket === 'us' && kind === 'fund' && !val?.quoteTimestamp && !val?.quoteTime) return null;
+
+  const stockSpecific = val?.stockSpecific;
+  const cumulativeVolume = Number(stockSpecific?.volume);
+  const cumulativeTurnover = Number(stockSpecific?.turnover);
+  return {
+    protocol: 'detail-chart.v1',
+    code,
+    kind,
+    market: val?.market || market || undefined,
+    capturedAt,
+    point: {
+      t: Math.floor(timestamp / 60_000) * 60_000,
+      v: price,
+      ...(Number.isFinite(cumulativeVolume) && cumulativeVolume >= 0 ? { cumulativeVolume } : {}),
+      ...(Number.isFinite(cumulativeTurnover) && cumulativeTurnover >= 0 ? { cumulativeTurnover } : {}),
+    },
+  };
+}
+
 /**
  * GET /api/stream/valuations?codes=002050,AAPL,019018&kind=stock&market=domestic|hk|us
  *   - codes: 逗号分隔的代码列表（必填）
@@ -1376,6 +1419,71 @@ app.get('/api/stream/valuations', (req, res) => {
     valuationBroker.emitter.off('closed', onClosed);
     valuationBroker.emitter.off('keepalive', onKeepalive);
     unsubscribers.forEach(fn => { try { fn(); } catch {} });
+  });
+});
+
+/**
+ * 详情图表专用增量流：历史分钟/K 线仍由 REST 加载，此处只下发当前分钟价格采样。
+ * GET /api/stream/detail-chart?code=688825&kind=stock&market=domestic
+ */
+app.get('/api/stream/detail-chart', (req, res) => {
+  const rawCode = String(req.query.code || '').trim();
+  const kind = req.query.kind === 'fund' ? 'fund' : 'stock';
+  const rawMarket = String(req.query.market || '').trim().toLowerCase();
+  const market = ['domestic', 'hk', 'us', 'other'].includes(rawMarket) ? rawMarket : null;
+  if (!rawCode || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(rawCode)) {
+    return res.status(400).json({ error: '代码格式不正确' });
+  }
+
+  const code = rawCode.toUpperCase();
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+  res.write(`:detail-chart-connected ${Date.now()}\n\n`);
+  writeSseEvent(res, 'ready', {
+    protocol: 'detail-chart.v1',
+    code,
+    kind,
+    market: market || undefined,
+    availability: { minute: market === 'other' ? 'unavailable' : 'incremental' },
+  });
+
+  if (market === 'other') {
+    writeSseEvent(res, 'unsupported', {
+      protocol: 'detail-chart.v1', code, kind, market,
+      reason: 'minute-incremental-unavailable',
+    });
+    return res.end();
+  }
+
+  let closed = false;
+  const onTick = (payload) => {
+    if (payload.code !== code) return;
+    const patch = makeDetailMinutePatch(code, kind, market, payload.val, payload.capturedAt);
+    if (!patch) return;
+    try { writeSseEvent(res, 'minute-patch', patch); } catch {}
+  };
+  const onClosed = (payload) => {
+    if (payload.code !== code) return;
+    try { writeSseEvent(res, 'closed', payload); } catch {}
+  };
+  const onKeepalive = () => {
+    try { res.write(`:keepalive ${Date.now()}\n\n`); } catch {}
+  };
+
+  valuationBroker.emitter.on('tick', onTick);
+  valuationBroker.emitter.on('closed', onClosed);
+  valuationBroker.emitter.on('keepalive', onKeepalive);
+  const unsubscribe = valuationBroker.subscribe(code, kind, market);
+  req.on('close', () => {
+    if (closed) return;
+    closed = true;
+    valuationBroker.emitter.off('tick', onTick);
+    valuationBroker.emitter.off('closed', onClosed);
+    valuationBroker.emitter.off('keepalive', onKeepalive);
+    try { unsubscribe(); } catch {}
   });
 });
 

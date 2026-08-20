@@ -182,6 +182,44 @@ export type RealtimeOptions = {
   onError?: (err: unknown) => void;
 };
 
+/** 股票/基金详情图表的单标的增量协议；完整历史仍通过 REST 取得。 */
+export interface DetailMinutePatch {
+  code: string;
+  kind: 'stock' | 'fund';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  capturedAt: number;
+  point: {
+    /** 已按分钟归桶的报价时间戳。 */
+    t: number;
+    /** 最新价格；不是分钟 OHLC。 */
+    v: number;
+    /** 仅作调试/未来扩展的当日累计值，不能当作分钟成交量/成交额。 */
+    cumulativeVolume?: number;
+    cumulativeTurnover?: number;
+  };
+}
+
+export interface DetailChartReady {
+  protocol: 'detail-chart.v1';
+  code: string;
+  kind: 'stock' | 'fund';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  availability?: { minute: 'incremental' | 'unavailable' };
+  reconnected?: boolean;
+}
+
+export interface DetailChartOptions {
+  code: string;
+  kind?: 'stock' | 'fund';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  onReady?: (ready: DetailChartReady) => void;
+  onMinutePatch?: (patch: DetailMinutePatch) => void;
+  onClosed?: (closed: RealtimeClosed) => void;
+  onUnsupported?: (payload: unknown) => void;
+  /** 每次流异常前调用；调用方可据此去抖刷新 REST 基线。 */
+  onError?: (err: unknown) => void;
+}
+
 export function subscribeValuations(opts: RealtimeOptions): () => void {
   const { codes, kind = 'stock', market, onTick, onClosed, onReady, onError } = opts;
   if (!codes || codes.length === 0) return () => {};
@@ -255,6 +293,84 @@ export function subscribeValuations(opts: RealtimeOptions): () => void {
 /**
  * 获取金价（国际 COMEX / 国内 SGE Au99.99 / 伦敦 XAU spot）
  */
+/**
+ * 详情页图表增量 SSE。服务端不回放历史，重连后由调用方刷新 REST 基线。
+ */
+export function subscribeDetailChartUpdates(opts: DetailChartOptions): () => void {
+  const { code, kind = 'stock', market, onReady, onMinutePatch, onClosed, onUnsupported, onError } = opts;
+  if (!code?.trim()) return () => {};
+
+  let es: EventSource | null = null;
+  let disposed = false;
+  let retryTimer: number | null = null;
+  let retryCount = 0;
+
+  const scheduleRetry = () => {
+    if (disposed || retryTimer != null) return;
+    const delay = Math.min(30_000, 1_500 * (2 ** retryCount));
+    retryCount = Math.min(retryCount + 1, 5);
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      open(true);
+    }, delay);
+  };
+
+  const open = (reconnected = false) => {
+    if (disposed) return;
+    const params = new URLSearchParams();
+    params.set('code', code.trim());
+    params.set('kind', kind);
+    if (market) params.set('market', market);
+    params.set('_t', String(Date.now()));
+
+    try {
+      es = new EventSource(`/api/stream/detail-chart?${params.toString()}`);
+    } catch (error) {
+      onError?.(error);
+      scheduleRetry();
+      return;
+    }
+
+    es.addEventListener('ready', (ev: MessageEvent) => {
+      try {
+        retryCount = 0;
+        onReady?.({ ...(JSON.parse(ev.data) as DetailChartReady), reconnected });
+      } catch {
+        // 忽略协议解析异常，等待下一次有效事件或连接恢复。
+      }
+    });
+    es.addEventListener('minute-patch', (ev: MessageEvent) => {
+      try {
+        onMinutePatch?.(JSON.parse(ev.data) as DetailMinutePatch);
+      } catch {}
+    });
+    es.addEventListener('closed', (ev: MessageEvent) => {
+      try {
+        onClosed?.(JSON.parse(ev.data) as RealtimeClosed);
+      } catch {}
+    });
+    es.addEventListener('unsupported', (ev: MessageEvent) => {
+      try {
+        onUnsupported?.(JSON.parse(ev.data));
+      } catch {}
+    });
+    es.onerror = (event) => {
+      if (disposed) return;
+      onError?.(event);
+      try { es?.close(); } catch {}
+      scheduleRetry();
+    };
+  };
+
+  open();
+  return () => {
+    disposed = true;
+    if (retryTimer != null) window.clearTimeout(retryTimer);
+    try { es?.close(); } catch {}
+    es = null;
+  };
+}
+
 export async function fetchGoldPrices(): Promise<GoldPricesResponse | null> {
   try {
     return await request('/api/market/gold');
@@ -322,7 +438,7 @@ export interface FundHistoryPoint {
 
 /**
  * 个股分钟级 K 线（用于分时图 hover 显示真实每分钟成交量/成交额）
- * A 股来自 Sina / 港股来自腾讯 / 美股暂无公开接口（返回 data: null）
+ * A 股来自 Sina/腾讯、港股来自腾讯；美股依次尝试东财、腾讯、Yahoo 与 Sina 降级源。
  */
 export type StockKLinePeriod = 'day' | 'week' | 'month' | 'quarter' | 'year';
 
