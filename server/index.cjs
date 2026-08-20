@@ -109,7 +109,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.4.0' });
+  res.json({ status: 'ok', version: '1.4.2' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -662,13 +662,15 @@ app.get('/api/market/search', async (req, res) => {
 app.get('/api/market/fund/:code', async (req, res) => {
   const { code } = req.params;
   const kindOverride = req.query.kind;     // 可选: 'fund' | 'stock'，由前端 tab 决定
+  // 仅股票详情可显式等待扩展行情；普通列表报价继续保持 base-first。
+  const enrich = kindOverride === 'stock' && ['1', 'true'].includes(String(req.query.enrich || '').toLowerCase());
   // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母 / 带 HK/US 前缀
   if (!code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5}|(HK|hk|rt_hk|US|us|gb_)[\w]{1,6})$/.test(code)) {
     return res.status(400).json({ error: '代码格式不正确（需为 A 股 6 位、港股 5 位或美股 ticker）' });
   }
 
   try {
-    const data = await marketHelper.getFundValuation(code, kindOverride);
+    const data = await marketHelper.getFundValuation(code, kindOverride, { enrich });
     if (!data) {
       return res.status(404).json({ error: '未找到该基金/股票或获取失败' });
     }

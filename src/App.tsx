@@ -792,6 +792,7 @@ function App() {
   const currentUserRef = useRef(currentUser);
   const sessionGenerationRef = useRef(0);
   const pendingInitialQuoteCodesRef = useRef<Set<string>>(new Set());
+  const activeQuoteCodesRef = useRef<string[]>([]);
 
   /* ---------- Selection state for detail panel ---------- */
   const [selectedFundCode, setSelectedFundCode] = useState<string | null>(null);
@@ -801,10 +802,24 @@ function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [basicMap, setBasicMap] = useState<Record<string, FundBasicInfo | null>>({});
   const [holdingsMap, setHoldingsMap] = useState<Record<string, FundHoldingStock[]>>({});
-  const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number }>>({});
+  const [detailFlowState, setDetailFlowState] = useState<Record<string, 'loading' | 'unavailable'>>({});
+  const detailFetchedAtRef = useRef<Record<string, { history?: number; basic?: number; holdings?: number; flow?: number }>>({});
   const DETAIL_HISTORY_TTL = 30 * 60_000;
   const DETAIL_BASIC_TTL = 24 * 60 * 60_000;
   const DETAIL_HOLDINGS_TTL = 5 * 60_000;
+
+  // 基础行情 tick 不携带低频扩展字段；合并保留上一帧的市值、换手率和资金流，
+  // 直到后续扩展 tick 用新值替换，避免详情页在两帧之间闪隐。
+  const mergeValuation = useCallback((previous: FundValuation | undefined, incoming: FundValuation, capturedAt?: number): FundValuation => {
+    const canMergeStockSpecific = !!previous?.stockSpecific && !!incoming.stockSpecific && previous.market === incoming.market;
+    return {
+      ...incoming,
+      ...(canMergeStockSpecific ? {
+        stockSpecific: { ...previous.stockSpecific, ...incoming.stockSpecific },
+      } : {}),
+      capturedAt: capturedAt ?? incoming.capturedAt ?? Date.now(),
+    } as FundValuation;
+  }, []);
 
   // 详情的实时价格由 SSE、股票分钟线由 FundDetailPanel 自己的 10s 定时器负责。
   // 历史净值/基金资料/重仓属于低频数据，仅在首次打开或客户端 TTL 到期后刷新。
@@ -858,6 +873,51 @@ function App() {
     return () => { cancelled = true; };
   }, [selectedFundCode]);
 
+  // 打开 A 股个股详情时，单独确保一次包含资金流向的扩展行情；常规分页行情仍保持 base-first。
+  useEffect(() => {
+    if (!selectedFundCode) return;
+    const code = selectedFundCode;
+    const item = watchlistItems.find(w => w.fund_code === code);
+    const isDomesticStock = item?.kind === 'stock' && (item.market === 'domestic' || (!item.market && /^\d{6}$/.test(code)));
+    if (!isDomesticStock) return;
+
+    const existing = fundsDataRef.current[code];
+    if (existing?.stockSpecific?.flow) {
+      setDetailFlowState(prev => {
+        if (!prev[code]) return prev;
+        const { [code]: _removed, ...rest } = prev;
+        return rest;
+      });
+      return;
+    }
+
+    const fetchedAt = detailFetchedAtRef.current[code]?.flow;
+    if (fetchedAt && Date.now() - fetchedAt < 60_000) return;
+
+    let cancelled = false;
+    setDetailFlowState(prev => ({ ...prev, [code]: 'loading' }));
+    void fetchFundValuation(code, 'stock', { enrich: true }).then(value => {
+      if (value) {
+        const nextValue = mergeValuation(fundsDataRef.current[code], value);
+        const next = { ...fundsDataRef.current, [code]: nextValue };
+        fundsDataRef.current = next;
+        setFundsData(next);
+      }
+      detailFetchedAtRef.current[code] = { ...detailFetchedAtRef.current[code], flow: Date.now() };
+      if (cancelled) return;
+      if (value?.stockSpecific?.flow) {
+        setDetailFlowState(prev => {
+          const { [code]: _removed, ...rest } = prev;
+          return rest;
+        });
+      } else {
+        setDetailFlowState(prev => ({ ...prev, [code]: 'unavailable' }));
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [selectedFundCode, watchlistItems, mergeValuation]);
+
 
   /* ---------- Drag-to-reorder（股票 tab，HTML5 原生 drag & drop）---------- */
   const [dragOverCode, setDragOverCode] = useState<string | null>(null);
@@ -888,6 +948,47 @@ function App() {
   useEffect(() => {
     setWatchlistPage(1);
   }, [selfTab]);
+
+  // 行情请求按当前停留 Tab 的分页发起；跨页持仓在首帧后再补齐，确保汇总统计最终完整。
+  const { foregroundQuoteCodes, deferredHoldingQuoteCodes, quoteTargetSubscriptionKey } = useMemo(() => {
+    const itemMap = new Map(watchlistItems.map(item => [item.fund_code.toUpperCase(), item]));
+    const foreground: string[] = [];
+    const deferredHoldings: string[] = [];
+    const foregroundSet = new Set<string>();
+    const seen = new Set<string>();
+
+    const addForeground = (code?: string | null) => {
+      const normalized = code?.trim();
+      if (!normalized) return;
+      const key = normalized.toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      foregroundSet.add(key);
+      foreground.push(normalized);
+    };
+    const addDeferredHolding = (code?: string | null) => {
+      const normalized = code?.trim();
+      if (!normalized) return;
+      const key = normalized.toUpperCase();
+      if (foregroundSet.has(key) || seen.has(key)) return;
+      seen.add(key);
+      deferredHoldings.push(normalized);
+    };
+
+    pagedVisibleList.forEach(item => addForeground(item.code));
+    addForeground(selectedFundCode);
+    Object.keys(positions).forEach(addDeferredHolding);
+
+    const describe = (code: string) => {
+      const item = itemMap.get(code.toUpperCase());
+      return `${code.toUpperCase()}:${item?.kind || 'fund'}:${item?.market || ''}`;
+    };
+    return {
+      foregroundQuoteCodes: foreground,
+      deferredHoldingQuoteCodes: deferredHoldings,
+      quoteTargetSubscriptionKey: `${foreground.map(describe).join('|')}||${deferredHoldings.map(describe).join('|')}`,
+    };
+  }, [pagedVisibleList, positions, selectedFundCode, watchlistItems]);
 
   const handleDragStart = useCallback((code: string) => (e: React.DragEvent) => {
     // 0) 若自定义拖动已激活，绝对禁止原生 drag（防止拖动过程中被原生系统接管）
@@ -1212,13 +1313,14 @@ function App() {
     );
     fundsDataRef.current = fundsData;
     positionsRef.current = positions;
+    activeQuoteCodesRef.current = [...foregroundQuoteCodes, ...deferredHoldingQuoteCodes];
   });
 
   // 仅刷新当前种类的代码，避免打爆上游
   const refreshOneKind = (kindFilter: 'fund' | 'stock') => {
     if (document.visibilityState !== 'visible') return;
 
-    const codes = watchlistRef.current;
+    const codes = activeQuoteCodesRef.current;
     const itemMap = watchlistItemMapRef.current;
     const data = fundsDataRef.current;
 
@@ -1245,7 +1347,7 @@ function App() {
         await Promise.all(targetCodes.map(async (code) => {
           const item = itemMap.get(code.toUpperCase());
           const val = await fetchFundValuation(code, item?.kind);
-          if (val) updatedFunds[code] = val;
+          if (val) updatedFunds[code] = mergeValuation(data[code], val);
         }));
         fundsDataRef.current = updatedFunds;
         setFundsData(updatedFunds);
@@ -1255,29 +1357,20 @@ function App() {
     })();
   };
 
-  const watchlistSubscriptionKey = useMemo(
-    () => watchlistItems.map(item => `${item.fund_code}:${item.kind}:${item.market || ''}`).join('|'),
-    [watchlistItems]
-  );
-
-  /** SSE 实时订阅：登录 / 自选分类或市场变更时自动重新建立连接 */
+  /** SSE 实时订阅：当前分页优先，非当前页持仓在首帧完成或短超时后补齐。 */
   useEffect(() => {
     if (!currentUser) return;
-    const codes = watchlistRef.current.map(s => s.trim()).filter(Boolean);
-    if (codes.length === 0) return;
+    const foregroundCodes = foregroundQuoteCodes.map(code => code.trim()).filter(Boolean);
+    const deferredCodes = deferredHoldingQuoteCodes.map(code => code.trim()).filter(Boolean);
+    if (foregroundCodes.length === 0 && deferredCodes.length === 0) return;
 
-    // kind 默认按 watchlist 已知分类决定，未知走 stock
     const itemMap = watchlistItemMapRef.current;
-
-    // 同时建立两个 SSE：股票 10s 节奏 + 基金 60s 节奏
-    // 服务端 broker 已经按 kind 分流，前端再分流一次仅为了让重连 / 日志更清晰
-    const stockCodes = codes.filter(code => (itemMap.get(code.toUpperCase())?.kind || 'stock') === 'stock');
-    const fundCodes = codes.filter(code => itemMap.get(code.toUpperCase())?.kind === 'fund');
-
-    // broker 首帧是报价主来源；SSE 未在短时间内交付的代码才走一次 REST 兜底。
-    const pendingCodes = new Set(codes.filter(code => !fundsDataRef.current[code]));
+    const pendingCodes = new Set([...foregroundCodes, ...deferredCodes].filter(code => !fundsDataRef.current[code]));
+    const pendingForegroundCodes = new Set(foregroundCodes.filter(code => pendingCodes.has(code)));
     let fallbackCancelled = false;
+    let deferredStarted = false;
     pendingInitialQuoteCodesRef.current = pendingCodes;
+
     // SSE tick 批处理：同一帧内到达的多个 tick 合并为一次 setFundsData，避免逐条触发整树重渲染。
     const pendingTickRef = { map: new Map<string, { val: FundValuation; capturedAt: number }>(), raf: 0 };
     const flushPendingTicks = () => {
@@ -1287,71 +1380,75 @@ function App() {
       pendingTickRef.map = new Map();
       const base = fundsDataRef.current;
       const next = { ...base };
-      for (const [c, u] of updates) next[c] = { ...u.val, capturedAt: u.capturedAt };
+      for (const [c, u] of updates) {
+        const value = mergeValuation(base[c], u.val, u.capturedAt);
+        next[c] = value;
+        if (value.stockSpecific?.flow) {
+          setDetailFlowState(prev => {
+            if (!prev[c]) return prev;
+            const { [c]: _removed, ...rest } = prev;
+            return rest;
+          });
+        }
+      }
       fundsDataRef.current = next;
       setFundsData(next);
     };
-    const applyTick = (code: string, val: FundValuation, capturedAt: number) => {
-      pendingCodes.delete(code);
-      pendingTickRef.map.set(code, { val, capturedAt });
-      if (!pendingTickRef.raf) {
-        pendingTickRef.raf = requestAnimationFrame(flushPendingTicks);
-      }
-    };
-    const applyClosed = (code: string, info: { lastVal: FundValuation | null; closedAt: number }) => {
-      const price = info.lastVal ? (parseFloat(info.lastVal.gsz) || parseFloat(info.lastVal.dwjz)) : 0;
-      const hasUsableQuote = Number.isFinite(price) && price > 0;
-      if (hasUsableQuote) pendingCodes.delete(code);
-      // 收盘事件：保留最后一次真实行情；无有效报价时不能用伪造的 0 值覆盖 UI。
-      setClosedCodes(prev => ({ ...prev, [code]: info }));
-      if (hasUsableQuote && info.lastVal) {
-        // 防御：旧服务端或滚动发布期间的 closed 事件不能把代理旧价继续标为“实时”。
-        const closedVal = info.lastVal.quoteTimestamp
-          ? { ...info.lastVal, quoteSession: 'closed' as const, quoteFreshness: 'stale' as const,
-              quoteAgeMs: Math.max(0, info.closedAt - info.lastVal.quoteTimestamp),
-              proxyFallbackReason: info.lastVal.proxyFallbackReason || '交易时段已结束，保留最后有效代理报价' }
-          : info.lastVal;
-        const next = { ...fundsDataRef.current, [code]: { ...closedVal, capturedAt: info.closedAt } };
-        fundsDataRef.current = next;
-        setFundsData(next);
-      }
-    };
 
-    // 股票/基金按 market（domestic / hk / us / other）及 kind 分组建立 SSE 订阅，避免全量硬编码为 domestic 导致美股/港股被错判为 A 股交易时段
     const disposers: Array<() => void> = [];
-
-    const groupByMarketAndKind = (targetCodes: string[], defaultKind: 'stock' | 'fund') => {
-      const groups: Record<string, string[]> = {};
+    const groupByMarketAndKind = (targetCodes: string[]) => {
+      const groups: Record<string, { kind: 'stock' | 'fund'; codes: string[] }> = {};
       for (const code of targetCodes) {
         const item = itemMap.get(code.toUpperCase());
+        const kind = item?.kind || 'fund';
         const market = item?.market || detectFundMarket(undefined, code);
-        const key = `${market}`;
-        if (!groups[key]) groups[key] = [];
-        groups[key].push(code);
+        const key = `${kind}:${market}`;
+        if (!groups[key]) groups[key] = { kind, codes: [] };
+        groups[key].codes.push(code);
       }
-      for (const [m, groupCodes] of Object.entries(groups)) {
-        if (groupCodes.length === 0) continue;
+      for (const [key, group] of Object.entries(groups)) {
+        const market = key.slice(key.indexOf(':') + 1) as FundMarket;
         const sub = subscribeValuations({
-          codes: groupCodes,
-          kind: defaultKind,
-          market: m as FundMarket,
-          onTick: t => { applyTick(t.code, t.val, t.capturedAt); setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; }); },
-          onClosed: c => applyClosed(c.code, { lastVal: c.lastVal, closedAt: c.closedAt }),
+          codes: group.codes,
+          kind: group.kind,
+          market,
+          onTick: t => {
+            pendingCodes.delete(t.code);
+            pendingForegroundCodes.delete(t.code);
+            pendingTickRef.map.set(t.code, { val: t.val, capturedAt: t.capturedAt });
+            if (!pendingTickRef.raf) pendingTickRef.raf = requestAnimationFrame(flushPendingTicks);
+            setClosedCodes(prev => { const { [t.code]: _omit, ...rest } = prev; return rest; });
+            if (pendingForegroundCodes.size === 0) activateDeferred();
+          },
+          onClosed: c => {
+            const price = c.lastVal ? (parseFloat(c.lastVal.gsz) || parseFloat(c.lastVal.dwjz)) : 0;
+            const hasUsableQuote = Number.isFinite(price) && price > 0;
+            if (hasUsableQuote) {
+              pendingCodes.delete(c.code);
+              pendingForegroundCodes.delete(c.code);
+            }
+            setClosedCodes(prev => ({ ...prev, [c.code]: c }));
+            if (hasUsableQuote && c.lastVal) {
+              const closedVal = c.lastVal.quoteTimestamp
+                ? { ...c.lastVal, quoteSession: 'closed' as const, quoteFreshness: 'stale' as const,
+                    quoteAgeMs: Math.max(0, c.closedAt - c.lastVal.quoteTimestamp),
+                    proxyFallbackReason: c.lastVal.proxyFallbackReason || '交易时段已结束，保留最后有效代理报价' }
+                : c.lastVal;
+              const next = { ...fundsDataRef.current, [c.code]: { ...closedVal, capturedAt: c.closedAt } };
+              fundsDataRef.current = next;
+              setFundsData(next);
+            }
+            if (pendingForegroundCodes.size === 0) activateDeferred();
+          },
         });
         disposers.push(sub);
       }
     };
 
-    groupByMarketAndKind(stockCodes, 'stock');
-    groupByMarketAndKind(fundCodes, 'fund');
-
-    // SSE 正常时 broker 会立即推首帧。当前页和持仓若 1.2 秒仍未收到，优先 REST 兜底；
-    // 其它未展示标的延后，避免冷启动时和 SSE 同时打满上游。
     const fetchMissingQuotes = (targetCodes: string[]) => {
       const remainingCodes = targetCodes.filter(code => pendingCodes.has(code) && !fundsDataRef.current[code]);
       let cursor = 0;
       const updates: Record<string, FundValuation> = {};
-
       const worker = async () => {
         while (!fallbackCancelled && cursor < remainingCodes.length) {
           const code = remainingCodes[cursor++];
@@ -1360,35 +1457,46 @@ function App() {
           const val = await fetchFundValuation(code, item?.kind);
           if (fallbackCancelled || !val || !pendingCodes.has(code)) continue;
           pendingCodes.delete(code);
-          updates[code] = { ...val, capturedAt: Date.now() };
+          pendingForegroundCodes.delete(code);
+          updates[code] = mergeValuation(fundsDataRef.current[code], val, Date.now());
         }
       };
-
       void Promise.all(Array.from({ length: Math.min(4, remainingCodes.length) }, worker)).then(() => {
         if (fallbackCancelled || Object.keys(updates).length === 0) return;
         const next = { ...fundsDataRef.current, ...updates };
         fundsDataRef.current = next;
         setFundsData(next);
+        if (pendingForegroundCodes.size === 0) activateDeferred();
       });
     };
 
-    const pageCodes = new Set(pagedVisibleList.map(item => item.code.toUpperCase()));
-    const heldCodes = new Set(Object.keys(positionsRef.current).map(code => code.toUpperCase()));
-    const priorityCodes = codes.filter(code => pageCodes.has(code.toUpperCase()) || heldCodes.has(code.toUpperCase()));
-    const visibleFallbackTimer = window.setTimeout(() => fetchMissingQuotes(priorityCodes), 1200);
-    const backgroundFallbackTimer = window.setTimeout(() => {
-      fetchMissingQuotes(codes.filter(code => !pageCodes.has(code.toUpperCase()) && !heldCodes.has(code.toUpperCase())));
-    }, 3500);
+    let deferredFallbackTimer: number | null = null;
+    const activateDeferred = () => {
+      if (deferredStarted || fallbackCancelled) return;
+      deferredStarted = true;
+      if (deferredCodes.length === 0) return;
+      groupByMarketAndKind(deferredCodes);
+      deferredFallbackTimer = window.setTimeout(() => fetchMissingQuotes(deferredCodes), 1200);
+    };
+
+    // 先只订阅当前恢复/停留 Tab 的当前页（和可能已打开的详情）。
+    groupByMarketAndKind(foregroundCodes);
+    const foregroundFallbackTimer = window.setTimeout(() => fetchMissingQuotes(foregroundCodes), 1200);
+    // 某个慢源不能阻塞总资产：短超时后仍后台补齐跨页持仓。
+    const deferredStartTimer = window.setTimeout(activateDeferred, 2200);
+    if (pendingForegroundCodes.size === 0) activateDeferred();
 
     return () => {
       fallbackCancelled = true;
-      window.clearTimeout(visibleFallbackTimer);
-      window.clearTimeout(backgroundFallbackTimer);
+      window.clearTimeout(foregroundFallbackTimer);
+      window.clearTimeout(deferredStartTimer);
+      if (deferredFallbackTimer !== null) window.clearTimeout(deferredFallbackTimer);
       if (pendingTickRef.raf) cancelAnimationFrame(pendingTickRef.raf);
       disposers.forEach(d => d());
     };
-    // eslint-disable-next-line react-hooks-exhaustive-deps
-  }, [currentUser, watchlistSubscriptionKey]);
+    // 订阅重建只由稳定目标 key 驱动；tick 本身不能触发重连。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, quoteTargetSubscriptionKey]);
 
   // 兜底轮询：SSE 静默失效时才按对应市场和品种回退 REST，收盘市场不会请求。
   useEffect(() => {
@@ -1399,7 +1507,7 @@ function App() {
       const itemMap = watchlistItemMapRef.current;
       const now = Date.now();
       const staleKinds = new Set<'stock' | 'fund'>();
-      for (const code of watchlistRef.current) {
+      for (const code of activeQuoteCodesRef.current) {
         const item = itemMap.get(code.toUpperCase());
         const kind = item?.kind || 'fund';
         const value = data[code];
@@ -3279,6 +3387,7 @@ function App() {
               key={selectedFundCode}
               fund={fundsData[selectedFundCode]}
               kind={item?.kind}
+              capitalFlowState={detailFlowState[selectedFundCode]}
               position={positions[selectedFundCode]}
               history={historyMap[selectedFundCode] || []}
               historyLoading={historyLoading}

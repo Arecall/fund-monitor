@@ -56,6 +56,8 @@ interface FundDetailPanelProps {
   basic?: FundBasicInfo | null | undefined;
   holdings?: FundHoldingStock[];
   kind?: 'fund' | 'stock';
+  /** A 股详情主动请求资金流向时的局部状态。 */
+  capitalFlowState?: 'loading' | 'unavailable';
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   onEditPosition?: () => void;
@@ -75,6 +77,7 @@ export function FundDetailPanel({
   basic = null,
   holdings = [],
   kind = 'fund',
+  capitalFlowState,
   isExpanded = false,
   onToggleExpand,
   onEditPosition,
@@ -548,8 +551,12 @@ export function FundDetailPanel({
       )}
 
       {/* ── Capital flow bar chart (仅 A 股个股) ── */}
-      {kind === 'stock' && (fund as any).stockSpecific?.flow && (
-        <CapitalFlowChart flow={(fund as any).stockSpecific.flow} />
+      {kind === 'stock' && (fund.market === 'domestic' || (!fund.market && /^\d{6}$/.test(fund.fundcode))) && (
+        (fund as any).stockSpecific?.flow ? (
+          <CapitalFlowChart flow={(fund as any).stockSpecific.flow} />
+        ) : (
+          <CapitalFlowStatus state={capitalFlowState} />
+        )
       )}
 
       {/* ── Asset allocation pie chart (仅基金) ── */}
@@ -905,6 +912,31 @@ function HoldingsSummaryCard({
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+
+function CapitalFlowStatus({ state }: { state?: 'loading' | 'unavailable' }) {
+  const loading = state === 'loading';
+  return (
+    <div className="rounded-2xl border border-[var(--hairline-border)] p-4 min-h-[142px] flex flex-col justify-center">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">资金流向</h4>
+        <span className="text-[10px] text-slate-400">当日累计</span>
+      </div>
+      {loading ? (
+        <div className="space-y-2.5 animate-pulse" aria-label="资金流向加载中">
+          <div className="h-5 w-32 rounded bg-slate-200/80 dark:bg-white/10" />
+          <div className="h-4 rounded bg-slate-100 dark:bg-white/5" />
+          <div className="h-4 w-4/5 rounded bg-slate-100 dark:bg-white/5" />
+          <p className="pt-1 text-[11px] text-slate-400">正在加载资金流向…</p>
+        </div>
+      ) : (
+        <div className="text-center py-3">
+          <p className="text-sm font-medium text-slate-500 dark:text-slate-400">资金流数据暂不可用</p>
+          <p className="mt-1 text-[11px] text-slate-400">等待实时推送补齐</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * 资金流向条形图（A 股个股）

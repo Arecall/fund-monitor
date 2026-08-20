@@ -333,7 +333,9 @@ class ValuationBroker {
                 turnoverRate: specific.turnoverRate ?? null,
                 flow: specific.flow ?? null,
               });
-              if (enrichmentSig === baseEnrichmentSig || entry.lastEnrichmentSnapshot === enrichmentSig) return;
+              // 每次基础报价 tick 都不带扩展字段，会覆盖前端上一帧的 flow。
+              // 即使资金流数值未变化，也需要再推一次扩展 tick，将其合并回详情页。
+              if (enrichmentSig === baseEnrichmentSig) return;
 
               entry.lastEnrichmentSnapshot = enrichmentSig;
               entry.lastEmittedVal = enriched;
