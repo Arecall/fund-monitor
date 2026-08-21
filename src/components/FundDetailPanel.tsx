@@ -28,9 +28,9 @@ import type {
 import { fetchStockKLine, fetchStockMinute, subscribeDetailChartUpdates } from '../services/api';
 
 const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
-  day: 120,
-  week: 104,
-  month: 60,
+  day: 240,
+  week: 150,
+  month: 80,
   quarter: 40,
   year: 30,
 };
@@ -703,7 +703,7 @@ export function FundDetailPanel({
                 period={klinePeriod}
                 loading={klineLoading}
                 onPeriodChange={setKlinePeriod}
-                height={isExpanded ? 380 : 320}
+                height={isExpanded ? 420 : 360}
               />
             </Suspense>
           ) : (
