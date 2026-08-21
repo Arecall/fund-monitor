@@ -1010,6 +1010,43 @@ export async function removePosition(code: string): Promise<boolean> {
    AI 优质股票筛选与智能研报 API
    ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * 全局 AI 接口凭证与大模型配置（仅限 Admin 管理员）
+ */
+export interface AiSystemConfig {
+  configured: boolean;
+  apiKeyMasked: string;
+  base_url: string;
+  model_name: string;
+  api_format: 'anthropic' | 'openai';
+  auth_header_type: 'ANTHROPIC_AUTH_TOKEN' | 'x-api-key' | 'Authorization';
+  updated_at?: string;
+}
+
+/**
+ * 系统 AI 服务就绪状态（面向所有登录用户）
+ */
+export interface AiSystemStatus {
+  configured: boolean;
+  model_name: string;
+  api_format: string;
+}
+
+/**
+ * 用户个人股票偏好与自动化定时配置（面向所有登录用户）
+ */
+export interface AiUserPreferences {
+  markets: Array<'domestic' | 'hk' | 'us'>;
+  stock_count: number;
+  strategy: 'balanced' | 'growth' | 'value' | 'momentum' | 'defensive';
+  pre_market_enabled: boolean;
+  close_enabled: boolean;
+  updated_at?: string;
+}
+
+/**
+ * 兼容旧版全量配置接口类型
+ */
 export interface AiUserConfig {
   configured: boolean;
   apiKeyMasked: string;
@@ -1064,10 +1101,63 @@ export interface AiJobStatus {
   error?: string | null;
 }
 
+/**
+ * 1. 管理员接口：获取全局 AI 接口凭证与大模型配置
+ */
+export async function fetchAiSystemConfig(): Promise<AiSystemConfig> {
+  return request('/api/ai/system-config');
+}
+
+/**
+ * 2. 管理员接口：保存全局 AI 接口凭证与大模型配置
+ */
+export async function saveAiSystemConfig(params: {
+  api_key?: string;
+  base_url: string;
+  model_name: string;
+  api_format?: 'anthropic' | 'openai';
+  auth_header_type?: 'ANTHROPIC_AUTH_TOKEN' | 'x-api-key' | 'Authorization';
+}): Promise<{ success: boolean; message: string }> {
+  return request('/api/ai/system-config', {
+    method: 'PUT',
+    body: JSON.stringify(params),
+  });
+}
+
+/**
+ * 3. 公共接口：查询系统全局 AI 服务就绪状态
+ */
+export async function fetchAiSystemStatus(): Promise<AiSystemStatus> {
+  return request('/api/ai/status');
+}
+
+/**
+ * 4. 普通用户接口：获取当前用户的个人股票偏好与定时任务
+ */
+export async function fetchAiPreferences(): Promise<AiUserPreferences> {
+  return request('/api/ai/preferences');
+}
+
+/**
+ * 5. 普通用户接口：保存当前用户的个人股票偏好与定时任务
+ */
+export async function saveAiPreferences(params: Partial<AiUserPreferences>): Promise<{ success: boolean; message: string }> {
+  return request('/api/ai/preferences', {
+    method: 'PUT',
+    body: JSON.stringify(params),
+  });
+}
+
+/**
+ * 兼容旧版全量配置读取
+ */
 export async function fetchAiConfig(): Promise<AiUserConfig> {
   return request('/api/ai/config');
 }
 
+/**
+ * 兼容旧版全量配置保存
+ */
 export async function saveAiConfig(params: Partial<AiUserConfig> & { api_key?: string }): Promise<{ success: boolean; message: string }> {
   return request('/api/ai/config', {
     method: 'PUT',
@@ -1075,6 +1165,9 @@ export async function saveAiConfig(params: Partial<AiUserConfig> & { api_key?: s
   });
 }
 
+/**
+ * 管理员接口：测试 AI API 连通性
+ */
 export async function testAiConfig(params: {
   api_key?: string;
   base_url?: string;
@@ -1094,6 +1187,9 @@ export async function testAiConfig(params: {
   });
 }
 
+/**
+ * 发起智能选股分析（所有登录用户均可发起）
+ */
 export async function startAiAnalysis(params?: {
   markets?: string[];
   stock_count?: number;

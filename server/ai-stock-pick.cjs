@@ -1,12 +1,15 @@
 /**
- * ai-stock-pick.cjs — 优质股票智能筛选引擎、Anthropic 客户端与定时调度中心
+ * ai-stock-pick.cjs — 优质股票智能筛选引擎、Anthropic/OpenAI 客户端与定时调度中心
  *
  * 核心设计：
- * 1. 严格多用户隔离与 API Key AES-256-GCM 安全加密存储；
- * 2. 遵循 Anthropic Messages API 规范 (/v1/messages)，支持官方端点与自定义代理中转；
- * 3. 异步任务编排与进度轮询机制（避免大模型推理长连接超时）；
- * 4. 严格防幻觉校验：大模型必须从服务端抓取的真实候选股票池中甄选；
- * 5. 盘前（09:00~09:25）与收盘前 1 小时（14:00~14:50）自动分析调度。
+ * 1. 架构解耦与权限管控 (RBAC)：
+ *    - 全局 AI 接口凭证 (API Key、Base URL、Model、API 格式、认证标头) 仅限 admin 管理员维护；
+ *    - 用户股票偏好配置 (目标市场、推荐只数、选股策略风格、定时自动化) 面向全站所有用户个性化独立配置；
+ * 2. 严格多用户隔离与 API Key AES-256-GCM 安全加密存储；
+ * 3. 遵循 Anthropic Messages API / OpenAI Chat Completions 规范，支持官方端点与自定义中转代理；
+ * 4. 异步任务编排与进度轮询机制（避免大模型推理长连接超时）；
+ * 5. 严格防幻觉校验：大模型必须从服务端抓取的真实候选股票池中甄选；
+ * 6. 盘前（09:00~09:25）与收盘前 1 小时（14:00~14:40）多用户自动化定时调度。
  */
 
 'use strict';
@@ -23,6 +26,18 @@ const router = express.Router();
 // 内存任务状态字典：jobId -> { jobId, userId, reportId, status, stage, error, progress }
 const activeJobs = new Map();
 let jobCounter = 1;
+
+/**
+ * 权限拦截中间件：仅限管理员(admin)操作
+ */
+function requireAdmin(req, res, next) {
+  const user = req.username;
+  if (!user) return res.status(401).json({ error: '需要登录' });
+  if (user.toLowerCase() !== 'admin') {
+    return res.status(403).json({ error: '权限不足：AI 接口凭证与大模型参数配置仅管理员(admin)可用' });
+  }
+  next();
+}
 
 /**
  * 掩码脱敏 API Key (如 sk-ant-api03-xxxx...xxxx -> sk-ant-****5678)
@@ -302,38 +317,41 @@ function parseAndValidateRecommendations(rawText, candidates = []) {
 }
 
 /**
- * 异步执行分析任务
+ * 异步执行分析任务（使用全局 System AI 凭证 + 对应用户的股票偏好与隔离报告）
  */
 async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCount, strategy, triggerType }) {
   const job = activeJobs.get(jobId);
   if (!job) return;
 
   try {
-    // 1. 读取用户配置及解密 API Key
+    // 1. 读取系统全局 AI 配置及解密 API Key
     job.stage = 'reading_config';
-    const configRow = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [userId]);
-    if (!configRow || !configRow.api_key_encrypted) {
-      throw new Error('未配置 Anthropic API Key，请先进入【AI 配置】中保存有效凭证');
+    const sysConfig = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
+    if (!sysConfig || !sysConfig.api_key_encrypted) {
+      throw new Error('管理员尚未配置 AI 接口凭证，请联系管理员配置后再使用');
     }
 
-    const apiKey = decrypt(configRow.api_key_encrypted);
+    const apiKey = decrypt(sysConfig.api_key_encrypted);
     if (!apiKey) {
-      throw new Error('API Key 解密失败，请重新配置并保存');
+      throw new Error('全局 API Key 解密失败，请联系管理员重新配置并保存');
     }
 
-    const baseUrl = configRow.base_url || 'https://api.anthropic.com';
-    const modelName = configRow.model_name || 'claude-3-7-sonnet-20250219';
-    const apiFormat = configRow.api_format || 'anthropic';
-    const authHeaderType = configRow.auth_header_type || 'ANTHROPIC_AUTH_TOKEN';
-    const targetMarkets = markets && markets.length ? markets : JSON.parse(configRow.markets || '["domestic"]');
-    const targetCount = stockCount || configRow.stock_count || 5;
-    const targetStrategy = strategy || configRow.strategy || 'balanced';
+    const baseUrl = sysConfig.base_url || 'https://api.anthropic.com';
+    const modelName = sysConfig.model_name || 'claude-3-7-sonnet-20250219';
+    const apiFormat = sysConfig.api_format || 'anthropic';
+    const authHeaderType = sysConfig.auth_header_type || 'ANTHROPIC_AUTH_TOKEN';
 
-    // 2. 抓取全网实时行情热点、大盘、资金与候选池 (Data Enhancement)
+    // 2. 读取用户个人的股票偏好
+    const userPref = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [userId]);
+    const targetMarkets = markets && markets.length ? markets : JSON.parse(userPref?.markets || '["domestic"]');
+    const targetCount = stockCount || userPref?.stock_count || 5;
+    const targetStrategy = strategy || userPref?.strategy || 'balanced';
+
+    // 3. 抓取全网实时行情热点、大盘、资金与候选池 (Data Enhancement)
     job.stage = 'context';
     const contextSnapshot = await aiContext.buildFullContextSnapshot(targetMarkets, targetCount);
 
-    // 3. 构建 Prompt
+    // 4. 构建 Prompt
     job.stage = 'prompting';
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt({
@@ -343,7 +361,7 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
       contextSnapshot,
     });
 
-    // 4. 调用 AI API (支持 Anthropic / OpenAI 双格式及自定义认证头)
+    // 5. 调用 AI API (支持 Anthropic / OpenAI 双格式及自定义认证头)
     job.stage = 'inferring';
     const result = await callAnthropicMessages({
       apiKey,
@@ -355,11 +373,11 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
       userPrompt,
     });
 
-    // 5. 校验与解析推荐结果
+    // 6. 校验与解析推荐结果
     job.stage = 'parsing';
     const { summary, recommendations } = parseAndValidateRecommendations(result.rawText, contextSnapshot.candidates);
 
-    // 6. 落库保存推荐结果与更新报告
+    // 7. 落库保存推荐结果与更新报告（严格归属当前 userId）
     job.stage = 'saving';
     await dbHelper.run(
       `UPDATE ai_stock_pick_reports
@@ -398,9 +416,9 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
 
     job.status = 'done';
     job.stage = 'completed';
-    console.log(`[ai-stock-pick] 报告 #${reportId} 分析完成，推荐 ${recommendations.length} 只标的`);
+    console.log(`[ai-stock-pick] 用户 #${userId} 报告 #${reportId} 分析完成，推荐 ${recommendations.length} 只标的`);
   } catch (err) {
-    console.error(`[ai-stock-pick] 报告 #${reportId} 执行失败:`, err.message);
+    console.error(`[ai-stock-pick] 用户 #${userId} 报告 #${reportId} 执行失败:`, err.message);
     job.status = 'failed';
     job.error = err.message;
     await dbHelper.run(
@@ -414,10 +432,10 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
 
 /* ─────────────────────────── REST 路由 ─────────────────────────── */
 
-// 1. 获取当前用户 AI 配置（API Key 脱敏）
-router.get('/config', async (req, res) => {
+// 1. 获取全局 AI 接口凭证与大模型配置（仅限 Admin 管理员）
+router.get('/system-config', requireAdmin, async (req, res) => {
   try {
-    const row = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
+    const row = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
     if (!row) {
       return res.json({
         configured: false,
@@ -426,11 +444,6 @@ router.get('/config', async (req, res) => {
         model_name: 'claude-3-7-sonnet-20250219',
         api_format: 'anthropic',
         auth_header_type: 'ANTHROPIC_AUTH_TOKEN',
-        markets: ['domestic'],
-        stock_count: 5,
-        strategy: 'balanced',
-        pre_market_enabled: false,
-        close_enabled: false,
       });
     }
 
@@ -446,20 +459,15 @@ router.get('/config', async (req, res) => {
       model_name: row.model_name || 'claude-3-7-sonnet-20250219',
       api_format: row.api_format || 'anthropic',
       auth_header_type: row.auth_header_type || 'ANTHROPIC_AUTH_TOKEN',
-      markets: JSON.parse(row.markets || '["domestic"]'),
-      stock_count: row.stock_count || 5,
-      strategy: row.strategy || 'balanced',
-      pre_market_enabled: !!row.pre_market_enabled,
-      close_enabled: !!row.close_enabled,
       updated_at: row.updated_at,
     });
   } catch (err) {
-    res.status(500).json({ error: '获取 AI 配置失败: ' + err.message });
+    res.status(500).json({ error: '获取系统 AI 接口配置失败: ' + err.message });
   }
 });
 
-// 2. 保存用户 AI 配置
-router.put('/config', async (req, res) => {
+// 2. 保存全局 AI 接口凭证与大模型配置（仅限 Admin 管理员）
+router.put('/system-config', requireAdmin, async (req, res) => {
   try {
     const {
       api_key,
@@ -467,65 +475,46 @@ router.put('/config', async (req, res) => {
       model_name = 'claude-3-7-sonnet-20250219',
       api_format = 'anthropic',
       auth_header_type = 'ANTHROPIC_AUTH_TOKEN',
-      markets = ['domestic'],
-      stock_count = 5,
-      strategy = 'balanced',
-      pre_market_enabled = false,
-      close_enabled = false,
-    } = req.body;
+    } = req.body || {};
 
-    const count = Math.max(3, Math.min(10, parseInt(stock_count) || 5));
-    const validMarkets = Array.isArray(markets) && markets.length ? markets.filter(m => ['domestic', 'hk', 'us'].includes(m)) : ['domestic'];
-
-    const existing = await dbHelper.get('SELECT api_key_encrypted FROM ai_user_config WHERE user_id = ?', [req.userId]);
+    const existing = await dbHelper.get('SELECT api_key_encrypted FROM ai_system_config WHERE id = 1');
 
     let encKey = existing ? existing.api_key_encrypted : '';
-    // 如果用户提交了新的非空且非掩码的 key，进行加密
+    // 如果管理员提交了新的非空且非掩码的 key，进行加密
     if (api_key && typeof api_key === 'string' && !api_key.includes('****')) {
       encKey = encrypt(api_key.trim());
     }
 
     await dbHelper.run(
-      `INSERT INTO ai_user_config
-       (user_id, api_key_encrypted, base_url, model_name, api_format, auth_header_type, markets, stock_count, strategy, pre_market_enabled, close_enabled, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(user_id) DO UPDATE SET
-         api_key_encrypted = COALESCE(NULLIF(excluded.api_key_encrypted, ''), ai_user_config.api_key_encrypted),
+      `INSERT INTO ai_system_config
+       (id, api_key_encrypted, base_url, model_name, api_format, auth_header_type, updated_at)
+       VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET
+         api_key_encrypted = COALESCE(NULLIF(excluded.api_key_encrypted, ''), ai_system_config.api_key_encrypted),
          base_url = excluded.base_url,
          model_name = excluded.model_name,
          api_format = excluded.api_format,
          auth_header_type = excluded.auth_header_type,
-         markets = excluded.markets,
-         stock_count = excluded.stock_count,
-         strategy = excluded.strategy,
-         pre_market_enabled = excluded.pre_market_enabled,
-         close_enabled = excluded.close_enabled,
          updated_at = CURRENT_TIMESTAMP`,
       [
-        req.userId,
         encKey,
-        base_url.trim(),
-        model_name.trim(),
-        api_format,
-        auth_header_type,
-        JSON.stringify(validMarkets),
-        count,
-        strategy,
-        pre_market_enabled ? 1 : 0,
-        close_enabled ? 1 : 0,
+        (base_url || 'https://api.anthropic.com').trim(),
+        (model_name || 'claude-3-7-sonnet-20250219').trim(),
+        api_format || 'anthropic',
+        auth_header_type || 'ANTHROPIC_AUTH_TOKEN',
       ]
     );
 
-    res.json({ success: true, message: 'AI 配置保存成功' });
+    res.json({ success: true, message: '全局 AI 接口配置已成功保存！所有网站用户均可使用该模型服务' });
   } catch (err) {
-    res.status(500).json({ error: '保存 AI 配置失败: ' + err.message });
+    res.status(500).json({ error: '保存系统 AI 配置失败: ' + err.message });
   }
 });
 
-// 3. 测试 AI API 连通性
-router.post('/test', async (req, res) => {
+// 3. 测试全局 AI API 连通性（仅限 Admin 管理员）
+router.post('/test', requireAdmin, async (req, res) => {
   try {
-    const { api_key, base_url, model_name, api_format, auth_header_type } = req.body;
+    const { api_key, base_url, model_name, api_format, auth_header_type } = req.body || {};
 
     let targetKey = api_key;
     let targetBase = base_url;
@@ -533,11 +522,11 @@ router.post('/test', async (req, res) => {
     let targetFormat = api_format || 'anthropic';
     let targetAuth = auth_header_type || 'ANTHROPIC_AUTH_TOKEN';
 
-    // 如果未传 key 或传了掩码，从 DB 中读取已有 key
+    // 如果未传 key 或传了掩码，从系统配置 DB 中读取已有 key
     if (!targetKey || targetKey.includes('****')) {
-      const row = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
+      const row = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
       if (!row || !row.api_key_encrypted) {
-        return res.status(400).json({ error: '未输入且未保存 API Key，无法测试' });
+        return res.status(400).json({ error: '未输入且系统未保存 API Key，无法测试' });
       }
       targetKey = decrypt(row.api_key_encrypted);
       targetBase = targetBase || row.base_url;
@@ -571,15 +560,212 @@ router.post('/test', async (req, res) => {
   }
 });
 
-// 4. 立即发起智能选股分析
+// 4. 查询系统 AI 服务就绪状态（面向所有登录用户公开，不透露任何密钥）
+router.get('/status', async (req, res) => {
+  try {
+    const row = await dbHelper.get('SELECT api_key_encrypted, model_name, api_format FROM ai_system_config WHERE id = 1');
+    const configured = !!(row && row.api_key_encrypted);
+    res.json({
+      configured,
+      model_name: row?.model_name || 'claude-3-7-sonnet-20250219',
+      api_format: row?.api_format || 'anthropic',
+    });
+  } catch (err) {
+    res.status(500).json({ error: '查询 AI 服务状态失败: ' + err.message });
+  }
+});
+
+// 5. 获取当前用户的个人股票偏好与定时配置（面向所有登录用户）
+router.get('/preferences', async (req, res) => {
+  try {
+    const row = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
+    if (!row) {
+      return res.json({
+        markets: ['domestic'],
+        stock_count: 5,
+        strategy: 'balanced',
+        pre_market_enabled: false,
+        close_enabled: false,
+      });
+    }
+
+    res.json({
+      markets: JSON.parse(row.markets || '["domestic"]'),
+      stock_count: row.stock_count || 5,
+      strategy: row.strategy || 'balanced',
+      pre_market_enabled: !!row.pre_market_enabled,
+      close_enabled: !!row.close_enabled,
+      updated_at: row.updated_at,
+    });
+  } catch (err) {
+    res.status(500).json({ error: '获取股票偏好配置失败: ' + err.message });
+  }
+});
+
+// 6. 保存当前用户的个人股票偏好与定时配置（面向所有登录用户）
+router.put('/preferences', async (req, res) => {
+  try {
+    const {
+      markets = ['domestic'],
+      stock_count = 5,
+      strategy = 'balanced',
+      pre_market_enabled = false,
+      close_enabled = false,
+    } = req.body || {};
+
+    const count = Math.max(3, Math.min(10, parseInt(stock_count) || 5));
+    const validMarkets = Array.isArray(markets) && markets.length
+      ? markets.filter(m => ['domestic', 'hk', 'us'].includes(m))
+      : ['domestic'];
+
+    await dbHelper.run(
+      `INSERT INTO ai_user_config
+       (user_id, markets, stock_count, strategy, pre_market_enabled, close_enabled, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(user_id) DO UPDATE SET
+         markets = excluded.markets,
+         stock_count = excluded.stock_count,
+         strategy = excluded.strategy,
+         pre_market_enabled = excluded.pre_market_enabled,
+         close_enabled = excluded.close_enabled,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        req.userId,
+        JSON.stringify(validMarkets),
+        count,
+        strategy || 'balanced',
+        pre_market_enabled ? 1 : 0,
+        close_enabled ? 1 : 0,
+      ]
+    );
+
+    res.json({ success: true, message: '个人股票偏好与自动化配置保存成功' });
+  } catch (err) {
+    res.status(500).json({ error: '保存股票偏好配置失败: ' + err.message });
+  }
+});
+
+// 7. 兼容旧版 `/config` 端点（根据角色智能返回与处理）
+router.get('/config', async (req, res) => {
+  try {
+    const isAdmin = (req.username || '').toLowerCase() === 'admin';
+    const sysRow = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
+    const userRow = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
+
+    let rawKey = '';
+    if (sysRow && sysRow.api_key_encrypted) {
+      try {
+        rawKey = decrypt(sysRow.api_key_encrypted);
+      } catch {}
+    }
+
+    res.json({
+      configured: !!rawKey,
+      apiKeyMasked: isAdmin ? maskApiKey(rawKey) : '',
+      base_url: sysRow?.base_url || 'https://api.anthropic.com',
+      model_name: sysRow?.model_name || 'claude-3-7-sonnet-20250219',
+      api_format: sysRow?.api_format || 'anthropic',
+      auth_header_type: sysRow?.auth_header_type || 'ANTHROPIC_AUTH_TOKEN',
+      markets: JSON.parse(userRow?.markets || '["domestic"]'),
+      stock_count: userRow?.stock_count || 5,
+      strategy: userRow?.strategy || 'balanced',
+      pre_market_enabled: !!userRow?.pre_market_enabled,
+      close_enabled: !!userRow?.close_enabled,
+      updated_at: userRow?.updated_at,
+    });
+  } catch (err) {
+    res.status(500).json({ error: '获取 AI 配置失败: ' + err.message });
+  }
+});
+
+router.put('/config', async (req, res) => {
+  try {
+    const isAdmin = (req.username || '').toLowerCase() === 'admin';
+    const {
+      api_key,
+      base_url,
+      model_name,
+      api_format,
+      auth_header_type,
+      markets = ['domestic'],
+      stock_count = 5,
+      strategy = 'balanced',
+      pre_market_enabled = false,
+      close_enabled = false,
+    } = req.body || {};
+
+    // 只有 admin 可以修改系统全局 API 接口凭证
+    if (isAdmin && (api_key || base_url || model_name || api_format || auth_header_type)) {
+      const existing = await dbHelper.get('SELECT api_key_encrypted FROM ai_system_config WHERE id = 1');
+      let encKey = existing ? existing.api_key_encrypted : '';
+      if (api_key && typeof api_key === 'string' && !api_key.includes('****')) {
+        encKey = encrypt(api_key.trim());
+      }
+      await dbHelper.run(
+        `INSERT INTO ai_system_config
+         (id, api_key_encrypted, base_url, model_name, api_format, auth_header_type, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(id) DO UPDATE SET
+           api_key_encrypted = COALESCE(NULLIF(excluded.api_key_encrypted, ''), ai_system_config.api_key_encrypted),
+           base_url = COALESCE(excluded.base_url, ai_system_config.base_url),
+           model_name = COALESCE(excluded.model_name, ai_system_config.model_name),
+           api_format = COALESCE(excluded.api_format, ai_system_config.api_format),
+           auth_header_type = COALESCE(excluded.auth_header_type, ai_system_config.auth_header_type),
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          encKey,
+          base_url ? base_url.trim() : 'https://api.anthropic.com',
+          model_name ? model_name.trim() : 'claude-3-7-sonnet-20250219',
+          api_format || 'anthropic',
+          auth_header_type || 'ANTHROPIC_AUTH_TOKEN',
+        ]
+      );
+    }
+
+    // 所有用户保存个人偏好
+    const count = Math.max(3, Math.min(10, parseInt(stock_count) || 5));
+    const validMarkets = Array.isArray(markets) && markets.length
+      ? markets.filter(m => ['domestic', 'hk', 'us'].includes(m))
+      : ['domestic'];
+
+    await dbHelper.run(
+      `INSERT INTO ai_user_config
+       (user_id, markets, stock_count, strategy, pre_market_enabled, close_enabled, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(user_id) DO UPDATE SET
+         markets = excluded.markets,
+         stock_count = excluded.stock_count,
+         strategy = excluded.strategy,
+         pre_market_enabled = excluded.pre_market_enabled,
+         close_enabled = excluded.close_enabled,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        req.userId,
+        JSON.stringify(validMarkets),
+        count,
+        strategy || 'balanced',
+        pre_market_enabled ? 1 : 0,
+        close_enabled ? 1 : 0,
+      ]
+    );
+
+    res.json({ success: true, message: '配置保存成功' });
+  } catch (err) {
+    res.status(500).json({ error: '保存配置失败: ' + err.message });
+  }
+});
+
+// 8. 立即发起智能选股分析（所有登录用户均可发起）
 router.post('/analyze', async (req, res) => {
   try {
-    const { markets, stock_count, strategy } = req.body;
+    const { markets, stock_count, strategy } = req.body || {};
 
-    // 校验配置
-    const configRow = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
-    if (!configRow || !configRow.api_key_encrypted) {
-      return res.status(400).json({ error: '请先在【AI 配置】中填入并保存有效的 Anthropic API Key' });
+    // 校验系统级全局 API 凭证
+    const sysConfig = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
+    if (!sysConfig || !sysConfig.api_key_encrypted) {
+      return res.status(400).json({
+        error: '系统尚未配置 AI 接口凭证，请联系管理员(admin)在【AI 接口配置】中保存有效密钥后再使用',
+      });
     }
 
     // 检查是否有该用户正在运行的任务
@@ -589,16 +775,18 @@ router.post('/analyze', async (req, res) => {
       }
     }
 
-    const targetMarkets = markets && markets.length ? markets : JSON.parse(configRow.markets || '["domestic"]');
-    const targetCount = stock_count || configRow.stock_count || 5;
-    const targetStrategy = strategy || configRow.strategy || 'balanced';
+    // 读取当前用户偏好
+    const userPref = await dbHelper.get('SELECT * FROM ai_user_config WHERE user_id = ?', [req.userId]);
+    const targetMarkets = markets && markets.length ? markets : JSON.parse(userPref?.markets || '["domestic"]');
+    const targetCount = stock_count || userPref?.stock_count || 5;
+    const targetStrategy = strategy || userPref?.strategy || 'balanced';
 
-    // 创建初始报告记录
+    // 创建初始报告记录（严格绑定 req.userId）
     const reportInsert = await dbHelper.run(
       `INSERT INTO ai_stock_pick_reports
        (user_id, trigger_type, markets, stock_count, strategy, model, status)
        VALUES (?, 'manual', ?, ?, ?, ?, 'running')`,
-      [req.userId, JSON.stringify(targetMarkets), targetCount, targetStrategy, configRow.model_name]
+      [req.userId, JSON.stringify(targetMarkets), targetCount, targetStrategy, sysConfig.model_name]
     );
 
     const reportId = reportInsert.lastID;
@@ -635,7 +823,7 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// 5. 轮询任务进度
+// 9. 轮询任务进度
 router.get('/jobs/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = activeJobs.get(jobId);
@@ -654,7 +842,7 @@ router.get('/jobs/:jobId', (req, res) => {
   });
 });
 
-// 6. 获取历史报告列表 (分页)
+// 10. 获取历史报告列表 (分页，严格用户隔离)
 router.get('/reports', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -687,7 +875,7 @@ router.get('/reports', async (req, res) => {
   }
 });
 
-// 7. 获取单份报告明细与推荐股票列表
+// 11. 获取单份报告明细与推荐股票列表（严格用户隔离）
 router.get('/reports/:id', async (req, res) => {
   try {
     const reportId = parseInt(req.params.id);
@@ -719,7 +907,7 @@ router.get('/reports/:id', async (req, res) => {
   }
 });
 
-// 8. 删除单份报告
+// 12. 删除单份报告（严格用户隔离）
 router.delete('/reports/:id', async (req, res) => {
   try {
     const reportId = parseInt(req.params.id);
@@ -759,11 +947,16 @@ function startScheduler() {
 
       if (!isPreMarketWindow && !isPreCloseWindow) return;
 
-      // 查询所有开启了对应定时任务的用户
+      // 1. 检查系统全局是否已配置好 API 密钥
+      const sysConfig = await dbHelper.get('SELECT * FROM ai_system_config WHERE id = 1');
+      if (!sysConfig || !sysConfig.api_key_encrypted) {
+        return; // 全局未配置，跳过调度
+      }
+
+      // 2. 查询所有开启了对应定时任务的用户偏好
       const configs = await dbHelper.all(
         `SELECT * FROM ai_user_config
-         WHERE (pre_market_enabled = 1 OR close_enabled = 1)
-           AND api_key_encrypted != ''`
+         WHERE (pre_market_enabled = 1 OR close_enabled = 1)`
       );
 
       for (const cfg of configs) {
@@ -776,7 +969,7 @@ function startScheduler() {
             `INSERT INTO ai_stock_pick_reports
              (user_id, trigger_type, markets, stock_count, strategy, model, status)
              VALUES (?, 'pre_market', ?, ?, ?, ?, 'running')`,
-            [cfg.user_id, cfg.markets, cfg.stock_count, cfg.strategy, cfg.model_name]
+            [cfg.user_id, cfg.markets || '["domestic"]', cfg.stock_count || 5, cfg.strategy || 'balanced', sysConfig.model_name]
           );
 
           const jobId = `sched_pre_${Date.now()}_${cfg.user_id}`;
@@ -802,7 +995,7 @@ function startScheduler() {
             `INSERT INTO ai_stock_pick_reports
              (user_id, trigger_type, markets, stock_count, strategy, model, status)
              VALUES (?, 'close', ?, ?, ?, ?, 'running')`,
-            [cfg.user_id, cfg.markets, cfg.stock_count, cfg.strategy, cfg.model_name]
+            [cfg.user_id, cfg.markets || '["domestic"]', cfg.stock_count || 5, cfg.strategy || 'balanced', sysConfig.model_name]
           );
 
           const jobId = `sched_close_${Date.now()}_${cfg.user_id}`;
@@ -824,7 +1017,7 @@ function startScheduler() {
     }
   }, 60 * 1000);
 
-  console.log('[ai-scheduler] AI 选股盘前与收盘前定时调度器已启动');
+  console.log('[ai-scheduler] AI 选股盘前与收盘前定时调度器已启动（支持多用户隔离调度）');
 }
 
 module.exports = {
