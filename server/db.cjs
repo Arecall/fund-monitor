@@ -234,7 +234,53 @@ function initTables() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_watchlist_user_kind ON watchlist (user_id, kind)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)`);
 
-    // 7. 用户 AI 选股配置表
+    // 7. 全局 AI 接口凭证与大模型配置表（仅限 Admin 管理员维护，单例 id=1）
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_system_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        api_key_encrypted TEXT DEFAULT '',
+        base_url TEXT DEFAULT 'https://api.anthropic.com',
+        model_name TEXT DEFAULT 'claude-3-7-sonnet-20250219',
+        api_format TEXT DEFAULT 'anthropic',
+        auth_header_type TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 确保全局单例行存在
+    db.run(`
+      INSERT OR IGNORE INTO ai_system_config (id, api_key_encrypted, base_url, model_name, api_format, auth_header_type)
+      VALUES (1, '', 'https://api.anthropic.com', 'claude-3-7-sonnet-20250219', 'anthropic', 'ANTHROPIC_AUTH_TOKEN')
+    `);
+
+    // 自动平滑迁移：若旧版 ai_user_config 中已配置过 API 密钥，自动同步到系统全局配置中
+    db.run(`
+      UPDATE ai_system_config
+      SET api_key_encrypted = COALESCE(
+            (SELECT api_key_encrypted FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' ORDER BY user_id ASC LIMIT 1),
+            api_key_encrypted
+          ),
+          base_url = COALESCE(
+            (SELECT base_url FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' ORDER BY user_id ASC LIMIT 1),
+            base_url
+          ),
+          model_name = COALESCE(
+            (SELECT model_name FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' ORDER BY user_id ASC LIMIT 1),
+            model_name
+          ),
+          api_format = COALESCE(
+            (SELECT api_format FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' ORDER BY user_id ASC LIMIT 1),
+            api_format
+          ),
+          auth_header_type = COALESCE(
+            (SELECT auth_header_type FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' ORDER BY user_id ASC LIMIT 1),
+            auth_header_type
+          )
+      WHERE (api_key_encrypted IS NULL OR api_key_encrypted = '')
+        AND EXISTS (SELECT 1 FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '')
+    `);
+
+    // 8. 用户个人股票偏好与自动化定时配置表（每位用户独立个性化配置）
     db.run(`
       CREATE TABLE IF NOT EXISTS ai_user_config (
         user_id INTEGER PRIMARY KEY,
@@ -268,7 +314,7 @@ function initTables() {
       });
     }
 
-    // 8. AI 选股分析报告表
+    // 9. AI 选股分析报告表
     db.run(`
       CREATE TABLE IF NOT EXISTS ai_stock_pick_reports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -21,6 +21,8 @@ import {
 import {
   Sparkles,
   Settings,
+  Sliders,
+  ShieldCheck,
   Zap,
   RefreshCw,
   Plus,
@@ -35,8 +37,11 @@ import {
   Target,
 } from 'lucide-react';
 import {
-  fetchAiConfig,
-  saveAiConfig,
+  fetchAiSystemStatus,
+  fetchAiSystemConfig,
+  saveAiSystemConfig,
+  fetchAiPreferences,
+  saveAiPreferences,
   testAiConfig,
   startAiAnalysis,
   pollAiJob,
@@ -44,12 +49,16 @@ import {
   fetchAiReportDetail,
   deleteAiReport,
   addWatchlistItem,
-  type AiUserConfig,
+  type AiSystemStatus,
+  type AiSystemConfig,
+  type AiUserPreferences,
   type AiStockPickReport,
   type AiStockRecommendation,
 } from '../services/api';
 
 interface AiStockPickTabProps {
+  isAdmin?: boolean;
+  currentUser?: string;
   onOpenDetail?: (code: string, market: 'domestic' | 'hk' | 'us' | 'other') => void;
 }
 
@@ -66,13 +75,27 @@ const MODEL_PRESETS = [
   { value: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022 (高精度)' },
   { value: 'claude-3-5-haiku-20241022', label: 'claude-3-5-haiku-20241022 (极速轻量)' },
   { value: 'claude-opus-4-5-20250501', label: 'claude-opus-4-5-20250501 (旗舰算力)' },
+  { value: 'deepseek-chat', label: 'deepseek-chat (DeepSeek V3 高性价比)' },
+  { value: 'deepseek-reasoner', label: 'deepseek-reasoner (DeepSeek R1 深度思考)' },
+  { value: 'gpt-4o', label: 'gpt-4o (OpenAI 旗舰多模态)' },
+  { value: 'gpt-4o-mini', label: 'gpt-4o-mini (OpenAI 轻量极速)' },
 ];
 
-export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
-  const [config, setConfig] = useState<AiUserConfig | null>(null);
-  const [configModalOpen, setConfigModalOpen] = useState(false);
-  const [loadingConfig, setLoadingConfig] = useState(false);
+export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail }: AiStockPickTabProps) {
+  const isUserAdmin = isAdmin || currentUser.toLowerCase() === 'admin';
 
+  // System AI Status & Admin Config
+  const [systemStatus, setSystemStatus] = useState<AiSystemStatus | null>(null);
+  const [systemConfig, setSystemConfig] = useState<AiSystemConfig | null>(null);
+  const [adminModalOpen, setAdminModalOpen] = useState(false);
+  const [loadingAdminConfig, setLoadingAdminConfig] = useState(false);
+
+  // User Stock Preferences
+  const [preferences, setPreferences] = useState<AiUserPreferences | null>(null);
+  const [prefModalOpen, setPrefModalOpen] = useState(false);
+  const [loadingPreferences, setLoadingPreferences] = useState(false);
+
+  // Reports state
   const [reports, setReports] = useState<AiStockPickReport[]>([]);
   const [totalReports, setTotalReports] = useState(0);
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
@@ -88,20 +111,44 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
   // Added to watchlist feedback tracker
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
 
-  // 1. Load User Config
-  const loadConfig = useCallback(async () => {
-    setLoadingConfig(true);
+  // 1. Load System AI Status
+  const loadSystemStatus = useCallback(async () => {
     try {
-      const data = await fetchAiConfig();
-      setConfig(data);
+      const status = await fetchAiSystemStatus();
+      setSystemStatus(status);
     } catch (err: any) {
-      console.error('加载 AI 配置失败:', err);
-    } finally {
-      setLoadingConfig(false);
+      console.error('加载系统 AI 服务状态失败:', err);
     }
   }, []);
 
-  // 2. Load Reports History
+  // 2. Load Admin Full AI System Config (Admin only)
+  const loadAdminConfig = useCallback(async () => {
+    if (!isUserAdmin) return;
+    setLoadingAdminConfig(true);
+    try {
+      const data = await fetchAiSystemConfig();
+      setSystemConfig(data);
+    } catch (err: any) {
+      console.error('加载管理员 AI 接口配置失败:', err);
+    } finally {
+      setLoadingAdminConfig(false);
+    }
+  }, [isUserAdmin]);
+
+  // 3. Load User Preferences
+  const loadPreferences = useCallback(async () => {
+    setLoadingPreferences(true);
+    try {
+      const data = await fetchAiPreferences();
+      setPreferences(data);
+    } catch (err: any) {
+      console.error('加载个人选股偏好失败:', err);
+    } finally {
+      setLoadingPreferences(false);
+    }
+  }, []);
+
+  // 4. Load Reports History
   const loadReports = useCallback(async (selectFirst = true) => {
     try {
       const data = await fetchAiReports(1, 10);
@@ -116,7 +163,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
     }
   }, []);
 
-  // 3. Load Report Detail
+  // 5. Load Report Detail
   const loadReportDetail = useCallback(async (id: number) => {
     setLoadingReportDetail(true);
     try {
@@ -131,9 +178,13 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
   }, []);
 
   useEffect(() => {
-    loadConfig();
+    loadSystemStatus();
+    loadPreferences();
     loadReports(true);
-  }, [loadConfig, loadReports]);
+    if (isUserAdmin) {
+      loadAdminConfig();
+    }
+  }, [loadSystemStatus, loadPreferences, loadReports, loadAdminConfig, isUserAdmin]);
 
   useEffect(() => {
     if (selectedReportId) {
@@ -144,7 +195,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
     }
   }, [selectedReportId, loadReportDetail]);
 
-  // 4. Job Poller
+  // 6. Job Poller
   useEffect(() => {
     if (!activeJobId) return;
 
@@ -177,11 +228,15 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
     return () => clearInterval(timer);
   }, [activeJobId, loadReports]);
 
-  // 5. Trigger Immediate Analysis
+  // 7. Trigger Immediate Analysis
   const handleStartAnalysis = async () => {
-    if (!config?.configured) {
-      message.warning('请先配置并保存 Anthropic API Key');
-      setConfigModalOpen(true);
+    if (!systemStatus?.configured) {
+      if (isUserAdmin) {
+        message.warning('请先在【AI 接口配置】中保存有效的 API 密钥');
+        setAdminModalOpen(true);
+      } else {
+        message.info('管理员尚未配置 AI 接口凭证，请联系管理员配置后再使用。');
+      }
       return;
     }
 
@@ -191,7 +246,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
       const res = await startAiAnalysis();
       if (res.jobId) {
         setActiveJobId(res.jobId);
-        message.loading({ content: '正在抓取全网热点与资金数据并调用 AI 推理...', key: 'ai-analyzing', duration: 3 });
+        message.loading({ content: '正在抓取全网实时行情与资金数据并调用 AI 推理...', key: 'ai-analyzing', duration: 3 });
       }
     } catch (err: any) {
       setAnalyzing(false);
@@ -199,7 +254,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
     }
   };
 
-  // 6. Add to watchlist
+  // 8. Add to watchlist
   const handleAddToWatchlist = async (rec: AiStockRecommendation) => {
     try {
       const res = await addWatchlistItem({
@@ -218,7 +273,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
     }
   };
 
-  // 7. Delete report
+  // 9. Delete report
   const handleDeleteReport = async (reportId: number) => {
     try {
       await deleteAiReport(reportId);
@@ -242,19 +297,33 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
             <Sparkles size={22} className="animate-pulse" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="apple-display-heading text-lg font-bold text-slate-800 dark:text-slate-100">
                 优质股票智能筛选
               </h2>
-              <Tag color={config?.configured ? 'blue' : 'default'} className="rounded-full text-[10px] px-2">
-                {config?.configured ? (
+              {systemStatus?.configured ? (
+                <Tag color="blue" className="rounded-full text-[10px] px-2.5 m-0 font-medium">
                   <span className="flex items-center gap-1 font-mono">
-                    <CheckCircle2 size={10} /> {config.model_name.split('-')[1] || 'Claude'} 已连接
+                    <CheckCircle2 size={11} className="text-emerald-500" />
+                    {systemStatus.model_name.split('-')[1] || systemStatus.model_name || 'AI'} 算力已就绪
                   </span>
-                ) : (
-                  '未配置 API'
-                )}
-              </Tag>
+                </Tag>
+              ) : isUserAdmin ? (
+                <Tag
+                  color="warning"
+                  onClick={() => setAdminModalOpen(true)}
+                  className="rounded-full text-[10px] px-2.5 m-0 font-medium cursor-pointer hover:opacity-80"
+                >
+                  <span className="flex items-center gap-1">
+                    <AlertTriangle size={11} />
+                    未配置全局 API (点击配置)
+                  </span>
+                </Tag>
+              ) : (
+                <Tag color="default" className="rounded-full text-[10px] px-2.5 m-0 font-medium text-slate-400">
+                  AI 服务准备中 (待管理员配置)
+                </Tag>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               全网宏观大盘 · 热点领涨板块 · 主力资金动向 · 财经快讯与真实标的候选池深度推理
@@ -263,14 +332,34 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
         </div>
 
         <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
+          {/* 1. 股票偏好设置（所有用户均可见） */}
           <Button
-            icon={<Settings size={14} />}
-            onClick={() => setConfigModalOpen(true)}
+            icon={<Sliders size={14} />}
+            onClick={() => setPrefModalOpen(true)}
             className="rounded-full text-xs font-semibold"
           >
-            AI 接口配置
+            选股偏好设置
           </Button>
 
+          {/* 2. API 接口配置（仅限 admin 用户可见） */}
+          {isUserAdmin && (
+            <Tooltip title="全局大模型与 API 接口凭证设置 (仅管理员可见)">
+              <Button
+                icon={<Settings size={14} />}
+                onClick={() => {
+                  loadAdminConfig();
+                  setAdminModalOpen(true);
+                }}
+                className="rounded-full text-xs font-semibold border-indigo-200 dark:border-indigo-800/60 text-indigo-600 dark:text-indigo-400 hover:border-indigo-400"
+              >
+                <span className="flex items-center gap-1">
+                  <ShieldCheck size={13} className="text-indigo-500" /> AI 接口配置
+                </span>
+              </Button>
+            </Tooltip>
+          )}
+
+          {/* 3. 立即选股按钮 */}
           <Button
             type="primary"
             icon={<Zap size={14} />}
@@ -292,19 +381,23 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
               <span>全网实时热点抓取与 AI 深度分析中</span>
             </div>
             <span className="text-[11px] font-mono text-blue-500 font-medium">
+              {jobStage === 'reading_config' && '正在读取选股策略与模型配置...'}
               {jobStage === 'context' && '正在拉取实时大盘、领涨板块与主力资金流向...'}
               {jobStage === 'prompting' && '正在构建防幻觉真实股票候选池...'}
-              {jobStage === 'inferring' && 'Anthropic Messages API 正在进行多维度逻辑推理...'}
+              {jobStage === 'inferring' && '大模型正在进行多维度投资逻辑推理...'}
               {jobStage === 'parsing' && '正在解析校验推荐结果与风险提示...'}
+              {jobStage === 'saving' && '正在生成并落库结构化投资研报...'}
               {(!jobStage || jobStage === 'queued') && '任务已入队，准备就绪...'}
             </span>
           </div>
           <Progress
             percent={
-              jobStage === 'context' ? 30
-                : jobStage === 'prompting' ? 50
+              jobStage === 'reading_config' ? 15
+                : jobStage === 'context' ? 35
+                : jobStage === 'prompting' ? 55
                 : jobStage === 'inferring' ? 80
-                : jobStage === 'parsing' ? 95 : 15
+                : jobStage === 'parsing' ? 92
+                : jobStage === 'saving' ? 98 : 10
             }
             status="active"
             strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
@@ -319,7 +412,7 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
         <div className="lg:col-span-1 flex flex-col gap-3">
           <div className="flex items-center justify-between px-1">
             <span className="apple-eyebrow flex items-center gap-1.5">
-              <Clock size={13} className="text-slate-400" /> 分析历史 ({totalReports})
+              <Clock size={13} className="text-slate-400" /> 我的分析历史 ({totalReports})
             </span>
             <Button
               type="text"
@@ -547,31 +640,175 @@ export function AiStockPickTab({ onOpenDetail }: AiStockPickTabProps) {
         </div>
       </div>
 
-      {/* ── AI Config Modal ── */}
-      <AiConfigModal
-        open={configModalOpen}
-        config={config}
-        loading={loadingConfig}
-        onClose={() => setConfigModalOpen(false)}
-        onSaved={loadConfig}
+      {/* ── 1. 个人股票偏好设置弹窗 (所有用户均可配置) ── */}
+      <AiPreferencesModal
+        open={prefModalOpen}
+        preferences={preferences}
+        loading={loadingPreferences}
+        onClose={() => setPrefModalOpen(false)}
+        onSaved={loadPreferences}
       />
+
+      {/* ── 2. 管理员全局 API 接口与模型配置弹窗 (仅限 Admin 用户) ── */}
+      {isUserAdmin && (
+        <AiAdminConfigModal
+          open={adminModalOpen}
+          config={systemConfig}
+          loading={loadingAdminConfig}
+          onClose={() => setAdminModalOpen(false)}
+          onSaved={() => {
+            loadAdminConfig();
+            loadSystemStatus();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 /* ───────────────────────────────────────────────────────────────────
-   AI Config Modal
+   1. 个人股票偏好与自动化策略设置弹窗 (面向所有网站用户)
    ─────────────────────────────────────────────────────────────────── */
 
-interface AiConfigModalProps {
+interface AiPreferencesModalProps {
   open: boolean;
-  config: AiUserConfig | null;
+  preferences: AiUserPreferences | null;
   loading: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
 
-function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
+function AiPreferencesModal({ open, preferences, onClose, onSaved }: AiPreferencesModalProps) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (preferences && open) {
+      form.setFieldsValue({
+        markets: preferences.markets || ['domestic'],
+        stock_count: preferences.stock_count || 5,
+        strategy: preferences.strategy || 'balanced',
+        pre_market_enabled: !!preferences.pre_market_enabled,
+        close_enabled: !!preferences.close_enabled,
+      });
+    }
+  }, [preferences, open, form]);
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      const res = await saveAiPreferences(values);
+      if (res.success) {
+        message.success('个人选股偏好与定时策略保存成功！');
+        onSaved();
+        onClose();
+      }
+    } catch (err: any) {
+      message.error(err.message || '保存偏好失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={
+        <div className="flex items-center gap-2 text-slate-800 dark:text-slate-100 font-bold">
+          <Sliders size={18} className="text-blue-500" />
+          <span>个人选股偏好与自动化策略设置</span>
+        </div>
+      }
+      open={open}
+      onCancel={onClose}
+      footer={[
+        <Button key="cancel" onClick={onClose} className="rounded-full text-xs">
+          取消
+        </Button>,
+        <Button key="save" type="primary" loading={saving} onClick={handleSave} className="rounded-full text-xs font-bold bg-blue-600">
+          保存偏好
+        </Button>,
+      ]}
+      width={560}
+      destroyOnClose
+    >
+      <Form form={form} layout="vertical" className="mt-4">
+        {/* 1. Target Markets & Stock Count */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Form.Item
+            name="markets"
+            label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">目标筛选市场 (多选)</span>}
+            rules={[{ required: true, message: '请至少选择一个市场' }]}
+          >
+            <Checkbox.Group
+              options={[
+                { label: 'A股', value: 'domestic' },
+                { label: '港股', value: 'hk' },
+                { label: '美股', value: 'us' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="stock_count"
+            label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">推荐股票数量 (3~10 只)</span>}
+          >
+            <Slider min={3} max={10} marks={{ 3: '3只', 5: '5只', 8: '8只', 10: '10只' }} />
+          </Form.Item>
+        </div>
+
+        {/* 2. Strategy */}
+        <Form.Item
+          name="strategy"
+          label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">选股投资风格偏好</span>}
+        >
+          <Select options={STRATEGY_OPTIONS} className="rounded-xl" />
+        </Form.Item>
+
+        {/* 3. Scheduled Triggers */}
+        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/5 border border-[var(--hairline-border)] flex flex-col gap-3">
+          <span className="font-bold text-xs text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+            <Clock size={13} className="text-blue-500" /> 自动化定时分析策略
+          </span>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">盘前自动分析</div>
+              <div className="text-[10px] text-slate-400">交易日 09:00~09:25 自动结合隔夜要闻与集合竞价生成研报</div>
+            </div>
+            <Form.Item name="pre_market_enabled" valuePropName="checked" className="m-0">
+              <Switch />
+            </Form.Item>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-200/50 dark:border-white/5">
+            <div>
+              <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">收盘前 1 小时自动分析</div>
+              <div className="text-[10px] text-slate-400">交易日 14:00~14:40 自动捕捉日内强势异动与尾盘抢筹机会</div>
+            </div>
+            <Form.Item name="close_enabled" valuePropName="checked" className="m-0">
+              <Switch />
+            </Form.Item>
+          </div>
+        </div>
+      </Form>
+    </Modal>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────────
+   2. 管理员全局 API 接口与模型配置弹窗 (仅限 Admin 管理员)
+   ─────────────────────────────────────────────────────────────────── */
+
+interface AiAdminConfigModalProps {
+  open: boolean;
+  config: AiSystemConfig | null;
+  loading: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigModalProps) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -584,11 +821,6 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
         model_name: config.model_name || 'claude-3-7-sonnet-20250219',
         api_format: config.api_format || 'anthropic',
         auth_header_type: config.auth_header_type || 'ANTHROPIC_AUTH_TOKEN',
-        markets: config.markets || ['domestic'],
-        stock_count: config.stock_count || 5,
-        strategy: config.strategy || 'balanced',
-        pre_market_enabled: !!config.pre_market_enabled,
-        close_enabled: !!config.close_enabled,
       });
     }
   }, [config, open, form]);
@@ -620,14 +852,14 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      const res = await saveAiConfig(values);
+      const res = await saveAiSystemConfig(values);
       if (res.success) {
-        message.success('AI 选股配置保存成功！');
+        message.success('全局 AI 接口配置保存成功！所有网站用户均可使用');
         onSaved();
         onClose();
       }
     } catch (err: any) {
-      message.error(err.message || '保存配置失败');
+      message.error(err.message || '保存全局配置失败');
     } finally {
       setSaving(false);
     }
@@ -637,8 +869,8 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
     <Modal
       title={
         <div className="flex items-center gap-2 text-slate-800 dark:text-slate-100 font-bold">
-          <Settings size={18} className="text-blue-500" />
-          <span>Anthropic API 接口与选股策略配置</span>
+          <ShieldCheck size={18} className="text-indigo-600 dark:text-indigo-400" />
+          <span>全局 AI 接口凭证与大模型配置 (管理员专属)</span>
         </div>
       }
       open={open}
@@ -650,21 +882,25 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
         <Button key="cancel" onClick={onClose} className="rounded-full text-xs">
           取消
         </Button>,
-        <Button key="save" type="primary" loading={saving} onClick={handleSave} className="rounded-full text-xs font-bold bg-blue-600">
-          保存配置
+        <Button key="save" type="primary" loading={saving} onClick={handleSave} className="rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500">
+          保存全局配置
         </Button>,
       ]}
       width={620}
       destroyOnClose
     >
-      <Form form={form} layout="vertical" className="mt-4">
+      <div className="p-3 mb-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/50 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300">
+        💡 <b>管理员提示</b>：在此配置的 API 密钥及大模型将作为全站的公共 AI 算力底座，所有注册用户均可直接使用智能选股服务，普通用户无权查看或修改任何密钥。
+      </div>
+
+      <Form form={form} layout="vertical">
         {/* 1. API Key */}
         <Form.Item
           name="api_key"
           label={
             <div className="flex items-center justify-between w-full gap-2">
               <span className="font-semibold text-xs text-slate-700 dark:text-slate-200">
-                Anthropic API Key (API 密钥)
+                API Key (密钥凭证)
               </span>
               {config?.configured && (
                 <span className="text-[10px] font-mono text-emerald-600 font-normal">
@@ -673,10 +909,10 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
               )}
             </div>
           }
-          extra="密钥采用 AES-256-GCM 独立加密存储，留空表示保留已有密钥。"
+          extra="密钥采用 AES-256-GCM 服务端硬件级加密存储，留空表示保留已有密钥。"
         >
           <Input.Password
-            placeholder={config?.configured ? '留空保留原密钥，输入新 Key 覆盖' : 'sk-ant-api03-...'}
+            placeholder={config?.configured ? '留空保留原密钥，输入新 Key 覆盖' : 'sk-ant-... / sk-...'}
             className="rounded-xl"
           />
         </Form.Item>
@@ -686,7 +922,7 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
           name="base_url"
           label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">模型调用地址 (Base URL)</span>}
           rules={[{ required: true, message: '请输入模型调用地址' }]}
-          extra="支持官方地址 https://api.anthropic.com 或第三方中转代理地址。"
+          extra="支持官方地址 https://api.anthropic.com 或第三方中转代理地址（如 https://api.openai.com/v1 或 OneAPI / NewAPI / 聚合中转站）。"
         >
           <Input placeholder="https://api.anthropic.com" className="rounded-xl" />
         </Form.Item>
@@ -697,13 +933,13 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
           label={
             <div className="flex items-center justify-between w-full">
               <span className="font-semibold text-xs text-slate-700 dark:text-slate-200">
-                模型名称 (Model)
+                模型名称 (Model Name)
               </span>
               <span className="text-[10px] text-blue-500 font-normal">支持直接输入任意自定义模型</span>
             </div>
           }
           rules={[{ required: true, message: '请选择或输入模型名称' }]}
-          extra="支持自由输入任意自定义模型名称（如 deepseek-r1、gpt-4o、claude-3-7-sonnet 等），亦可从预设推荐中快速选择。"
+          extra="支持自由输入任意自定义模型名称（如 deepseek-r1, gpt-4o, claude-3-7-sonnet 等），亦可从预设推荐中快速选择。"
         >
           <AutoComplete
             options={MODEL_PRESETS.map(p => ({ value: p.value, label: `${p.value} (${p.label.split('(')[1] || ''}` }))}
@@ -717,7 +953,7 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
         </Form.Item>
 
         {/* 高级选项 (API 格式与认证字段，对齐 cc-switch 规范) */}
-        <div className="mb-4">
+        <div className="mb-2">
           <Collapse
             ghost
             items={[
@@ -725,7 +961,7 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
                 key: 'advanced',
                 label: (
                   <span className="font-semibold text-xs text-slate-700 dark:text-slate-200">
-                    高级选项
+                    高级协议选项 (对齐 cc-switch 规范)
                   </span>
                 ),
                 children: (
@@ -733,14 +969,14 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
                     {/* API 格式 */}
                     <Form.Item
                       name="api_format"
-                      label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">API 格式</span>}
-                      extra="选择供应商 API 的输入格式"
+                      label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">API 格式协议</span>}
+                      extra="选择供应商 API 的输入协议格式"
                       className="mb-3"
                     >
                       <Select
                         options={[
-                          { label: 'Anthropic Messages (原生)', value: 'anthropic' },
-                          { label: 'OpenAI Chat Completions', value: 'openai' },
+                          { label: 'Anthropic Messages (原生 /v1/messages)', value: 'anthropic' },
+                          { label: 'OpenAI Chat Completions (/v1/chat/completions)', value: 'openai' },
                         ]}
                         className="rounded-xl"
                       />
@@ -749,15 +985,15 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
                     {/* 认证字段 */}
                     <Form.Item
                       name="auth_header_type"
-                      label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">认证字段</span>}
-                      extra="选择写入配置的认证环境变量名 / 请求头认证字段"
+                      label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">认证标头字段</span>}
+                      extra="选择 HTTP 请求头携带密钥的方式"
                       className="mb-0"
                     >
                       <Select
                         options={[
-                          { label: 'ANTHROPIC_AUTH_TOKEN (默认)', value: 'ANTHROPIC_AUTH_TOKEN' },
-                          { label: 'x-api-key', value: 'x-api-key' },
-                          { label: 'Authorization (Bearer)', value: 'Authorization' },
+                          { label: 'ANTHROPIC_AUTH_TOKEN (默认双重兼容: x-api-key + Bearer)', value: 'ANTHROPIC_AUTH_TOKEN' },
+                          { label: 'x-api-key (标准 Anthropic 标头)', value: 'x-api-key' },
+                          { label: 'Authorization (Bearer 令牌)', value: 'Authorization' },
                         ]}
                         className="rounded-xl"
                       />
@@ -767,65 +1003,6 @@ function AiConfigModal({ open, config, onClose, onSaved }: AiConfigModalProps) {
               },
             ]}
           />
-        </div>
-
-        {/* 4. Target Markets & Stock Count */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Form.Item
-            name="markets"
-            label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">目标筛选市场 (多选)</span>}
-            rules={[{ required: true, message: '请至少选择一个市场' }]}
-          >
-            <Checkbox.Group
-              options={[
-                { label: 'A股', value: 'domestic' },
-                { label: '港股', value: 'hk' },
-                { label: '美股', value: 'us' },
-              ]}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="stock_count"
-            label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">推荐股票数量 (3~10 只)</span>}
-          >
-            <Slider min={3} max={10} marks={{ 3: '3只', 5: '5只', 8: '8只', 10: '10只' }} />
-          </Form.Item>
-        </div>
-
-        {/* 5. Strategy */}
-        <Form.Item
-          name="strategy"
-          label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">选股投资风格偏好</span>}
-        >
-          <Select options={STRATEGY_OPTIONS} className="rounded-xl" />
-        </Form.Item>
-
-        {/* 6. Scheduled Triggers */}
-        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/5 border border-[var(--hairline-border)] flex flex-col gap-3">
-          <span className="font-bold text-xs text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-            <Clock size={13} className="text-blue-500" /> 自动化定时分析策略
-          </span>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">盘前自动分析</div>
-              <div className="text-[10px] text-slate-400">交易日 09:00~09:25 自动结合隔夜要闻与集合竞价生成研报</div>
-            </div>
-            <Form.Item name="pre_market_enabled" valuePropName="checked" className="m-0">
-              <Switch />
-            </Form.Item>
-          </div>
-
-          <div className="flex items-center justify-between pt-2 border-t border-slate-200/50 dark:border-white/5">
-            <div>
-              <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">收盘前 1 小时自动分析</div>
-              <div className="text-[10px] text-slate-400">交易日 14:00~14:50 自动捕捉日内强势异动与尾盘抢筹机会</div>
-            </div>
-            <Form.Item name="close_enabled" valuePropName="checked" className="m-0">
-              <Switch />
-            </Form.Item>
-          </div>
         </div>
       </Form>
     </Modal>

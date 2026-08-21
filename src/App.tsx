@@ -2401,7 +2401,11 @@ function App() {
               <Spin size="large" tip="正在加载优质股票智能筛选中心..." />
             </div>
           }>
-            <AiStockPickTab onOpenDetail={handleAiOpenDetail} />
+            <AiStockPickTab
+              isAdmin={currentUser.toLowerCase() === 'admin'}
+              currentUser={currentUser}
+              onOpenDetail={handleAiOpenDetail}
+            />
           </React.Suspense>
         </div>
       ) : (
