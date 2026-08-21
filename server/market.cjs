@@ -1094,11 +1094,13 @@ async function fetchStockMinuteData(code, market, kind = null) {
   let result = null;
   try {
     // 1. 【优先从本地数据库获取】：读取 quote_snapshots 表保存的打点历史
-    const dbSnapshots = await fetchSnapshotMinuteData(code, targetMarket);
-    // 美股或个股分时图需要连续波动点，若数据库中打点点数 >= 10，认为拥有有效历史轨迹，直接采用
-    if (dbSnapshots && dbSnapshots.length >= 10) {
-      result = dbSnapshots;
-    } else if (targetTicker !== code) {
+    if (targetTicker === code) {
+      const dbSnapshots = await fetchSnapshotMinuteData(code, targetMarket);
+      if (dbSnapshots && dbSnapshots.length >= 10) {
+        result = dbSnapshots;
+      }
+    } else {
+      // 代理标的（如 001668 对应 QQQ）：从数据库读取代理标的（QQQ）的原生未缩放快照，后续再结合最新 dwjz 动态缩放
       const proxySnapshots = await fetchSnapshotMinuteData(targetTicker, targetMarket);
       if (proxySnapshots && proxySnapshots.length >= 10) {
         result = proxySnapshots;
@@ -1106,27 +1108,42 @@ async function fetchStockMinuteData(code, market, kind = null) {
     }
 
     // 2. 若本地数据库历史打点少于 10 个（例如刚添加或非交易时段只有少量静态打点），
-    //    则补充从第三方 API 抓取全量分钟 K 线（美股含 391 个 1 分钟点）
+    //    则补充从第三方 API 抓取全量分钟 K 线（含全量 1 分钟点与历史交易日时间戳）
     if (!result || result.length < 10) {
-      // 2.1 美股优先使用东财 Trends2 API（覆盖全面，含 391 个全量 1 分钟点，规避腾讯接口美股单点问题）
-      if (targetMarket === 'us') {
-        try {
-          const emUrl = `https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=105.${targetTicker}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
-          const r = await axios.get(emUrl, { timeout: 3000 });
+      // 2.1 东财 Trends2 API（支持美股、A股全市场含北交所、港股，覆盖全面且携带真实交易日日期）
+      try {
+        let emSecid = null;
+        if (targetMarket === 'us') {
+          emSecid = `105.${targetTicker.toUpperCase()}`;
+        } else if (targetMarket === 'domestic' || targetMarket === 'other' || /^\d{6}$/.test(targetTicker)) {
+          const pure = String(targetTicker).replace(/^(SH|SZ|BJ)/i, '');
+          if (/^(60|68|50|51|52|56|58)/.test(pure)) {
+            emSecid = `1.${pure}`;
+          } else if (/^(00|30|15|16|18|8|4|9)/.test(pure)) {
+            emSecid = `0.${pure}`;
+          }
+        } else if (targetMarket === 'hk') {
+          const pure = String(targetTicker).replace(/^HK/i, '').padStart(5, '0');
+          emSecid = `116.${pure}`;
+        }
+
+        if (emSecid) {
+          const emUrl = `https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${emSecid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
+          const r = await axios.get(emUrl, { timeout: 3500 });
           const trends = r.data?.data?.trends;
           const emPreClose = parseFloat(r.data?.data?.prePrice || r.data?.data?.preClose || r.data?.data?.preSettlement) || 0;
           if (Array.isArray(trends) && trends.length >= 2) {
             result = trends.map(line => {
               const parts = line.split(',');
               if (parts.length < 3) return null;
-              const timeStr = parts[0]; // "2026-08-18 21:30"
+              const timeStr = parts[0]; // "2026-08-18 09:30"
               const closePrice = parseFloat(parts[2]);
               const vol = parseFloat(parts[5]) || 0;
               const amt = parseFloat(parts[6]) || 0;
               if (isNaN(closePrice) || closePrice <= 0) return null;
               return {
                 time: `${timeStr}:00`,
-                open: closePrice,
+                open: parseFloat(parts[1]) || closePrice,
                 high: parseFloat(parts[3]) || closePrice,
                 low: parseFloat(parts[4]) || closePrice,
                 close: closePrice,
@@ -1138,15 +1155,15 @@ async function fetchStockMinuteData(code, market, kind = null) {
               result.preClose = emPreClose;
             }
           }
-        } catch (err) {
-          console.warn(`[minute] 东财美股 API ${targetTicker} 获取失败:`, err.message);
         }
+      } catch (err) {
+        console.warn(`[minute] 东财 Trends2 API ${targetTicker} 获取失败:`, err.message);
       }
 
-      // 2.2 腾讯分钟数据 API（覆盖 A 股、港股，以及部分美股）
+      // 2.2 腾讯分钟数据 API（覆盖 A 股、港股，以及部分美股降级备用）
       if (!result || result.length < 2) {
         let tencentSym = null;
-        if (targetMarket === 'domestic') {
+        if (targetMarket === 'domestic' || targetMarket === 'other') {
           tencentSym = getMainlandExchangeSymbol(targetTicker, { includeListedEtf: true, isStock })?.symbol || null;
         } else if (targetMarket === 'hk') {
           tencentSym = `hk${targetTicker.padStart(5, '0')}`;
@@ -1158,12 +1175,21 @@ async function fetchStockMinuteData(code, market, kind = null) {
           try {
             const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tencentSym}`;
             const r = await axios.get(url, { timeout: 3000 });
-            const rawArr = r.data?.data?.[tencentSym]?.data?.data;
+            const stockData = r.data?.data?.[tencentSym]?.data;
+            const rawArr = stockData?.data;
             if (Array.isArray(rawArr) && rawArr.length >= 2) {
-              const today = new Date();
-              const yyyy = today.getFullYear();
-              const M = String(today.getMonth() + 1).padStart(2, '0');
-              const d = String(today.getDate()).padStart(2, '0');
+              const dateRaw = String(stockData?.date || '');
+              let yyyy, M, d;
+              if (dateRaw && dateRaw.length === 8) {
+                yyyy = dateRaw.slice(0, 4);
+                M = dateRaw.slice(4, 6);
+                d = dateRaw.slice(6, 8);
+              } else {
+                const today = new Date();
+                yyyy = today.getFullYear();
+                M = String(today.getMonth() + 1).padStart(2, '0');
+                d = String(today.getDate()).padStart(2, '0');
+              }
 
               let prevCumVol = 0;
               let prevCumAmt = 0;
@@ -1339,10 +1365,8 @@ async function fetchStockMinuteData(code, market, kind = null) {
               close: scaledClose,
             };
           });
-          saveMinuteBarsToDb(code, scaledResult);
+          // 代理标的分钟数据按最新 dwjz 动态缩放后返回，不永久落库到 code 避免官方净值更新后基准错位
           result = scaledResult;
-        } else {
-          saveMinuteBarsToDb(code, result);
         }
       } else {
         saveMinuteBarsToDb(code, result);

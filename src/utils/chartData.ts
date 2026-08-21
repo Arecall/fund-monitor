@@ -168,6 +168,7 @@ function getIntradayWindow(
   const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
   const today = (y: number, m: number, date: number, h: number, min: number) =>
     beijingWallTimeToTimestamp(y, m, date, h, min);
+  const DAY = 24 * 3600 * 1000;
 
   if (market === 'us') {
     // US session 跨日：今天 21:30 → 明天 04:00（夏令）/ 05:00（冬令）
@@ -176,7 +177,6 @@ function getIntradayWindow(
     const startM = 30;
     const closeH = dst ? 4 : 5;
     const preH = dst ? 16 : 17; // 盘前 Pre-Market 起始时间：16:00（夏令）/ 17:00（冬令）
-    const DAY = 24 * 3600 * 1000;
 
     const todayStart = today(year, month, day, startH, startM);
     const todayClose = today(year, month, day, closeH, 0);
@@ -186,45 +186,143 @@ function getIntradayWindow(
     let endTs: number;
     let preMarket = false;
 
-    if (now < todayClose) {
-      // 凌晨 0–close：US session 从昨天 21:30 持续到今天 close
-      startTs = todayStart - DAY;
-      endTs = Math.min(now, todayClose);
+    if (weekday === 'Sat') {
+      if (now < todayClose) {
+        // 周六凌晨 00:00–04:00：周五夜间 US session 正在进行收尾
+        startTs = todayStart - DAY;
+        endTs = Math.min(now, todayClose);
+        preMarket = false;
+      } else {
+        // 周六 04:00 之后（已收盘）：展示周五 21:30 → 周六 04:00 的完整走势
+        startTs = todayStart - DAY;
+        endTs = todayClose;
+        preMarket = false;
+      }
+    } else if (weekday === 'Sun') {
+      // 周日全天：展示周五 21:30 → 周六 04:00 的完整走势
+      startTs = todayStart - 2 * DAY;
+      endTs = todayClose - DAY;
       preMarket = false;
-    } else if (now < preMarketStart) {
-      // 白天 close–16:00/17:00：美股盘后 (04:00-08:00) 及夜盘 (08:00-16:00) 阶段
-      // 渲染上一个美股交易日（昨天 21:30 → 今天 04:00）的完整/最新走势，不判定为盘前待开盘
-      startTs = todayStart - DAY;
-      endTs = todayClose;
-      preMarket = false;
-    } else if (now < todayStart) {
-      // 下午 16:00/17:00–21:30/22:30：处于美股【盘前】阶段
-      // 仅在工作日（Mon-Fri，今晚将有美股交易）时判定为盘前待开盘，触发待开盘蒙层遮罩与开盘倒计时
-      startTs = todayStart;
-      endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
-      preMarket = isWeekday;
+    } else if (weekday === 'Mon') {
+      if (now < todayClose) {
+        // 周一凌晨 00:00–04:00：周日无常规盘，展示上周五走势
+        startTs = todayStart - 3 * DAY;
+        endTs = todayClose - 2 * DAY;
+        preMarket = false;
+      } else if (now < preMarketStart) {
+        // 周一白天 04:00–16:00：展示上周五完整走势
+        startTs = todayStart - 3 * DAY;
+        endTs = todayClose - 2 * DAY;
+        preMarket = false;
+      } else if (now < todayStart) {
+        // 周一下午 16:00–21:30：进入美股【盘前倒计时】阶段
+        startTs = todayStart;
+        endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
+        preMarket = true;
+      } else {
+        // 周一 21:30–24:00：周一常规交易进行中
+        startTs = todayStart;
+        endTs = now;
+        preMarket = false;
+      }
     } else {
-      // 21:30–24:00：今天的 US session 正在进行
-      startTs = todayStart;
-      endTs = now;
-      preMarket = false;
+      // 周二至周五常规工作日
+      if (now < todayClose) {
+        // 凌晨 00:00–04:00：昨夜 21:30 开始的 session 进行中
+        startTs = todayStart - DAY;
+        endTs = Math.min(now, todayClose);
+        preMarket = false;
+      } else if (now < preMarketStart) {
+        // 白天 04:00–16:00：展示昨夜完整走势
+        startTs = todayStart - DAY;
+        endTs = todayClose;
+        preMarket = false;
+      } else if (now < todayStart) {
+        // 下午 16:00–21:30：进入当晚美股【盘前倒计时】阶段
+        startTs = todayStart;
+        endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
+        preMarket = true;
+      } else {
+        // 当晚 21:30–24:00：今夜 session 进行中
+        startTs = todayStart;
+        endTs = now;
+        preMarket = false;
+      }
     }
 
     return { startTs, endTs, xLabelMode: 'ny', preMarket };
   }
+
   if (market === 'hk') {
     const preStartTs = today(year, month, day, 9, 0); // 港股开市前时段 09:00
     const startTs = today(year, month, day, 9, 30);
     const endTs = today(year, month, day, 16, 0);
+
+    // 确定是否处于开市前倒计时 (09:00 - 09:30 工作日)
     const preMarket = isWeekday && now >= preStartTs && now < startTs;
-    return { startTs, endTs, xLabelMode: 'local', preMarket };
+
+    if (preMarket) {
+      return { startTs, endTs, xLabelMode: 'local', preMarket: true };
+    }
+
+    // 若处于非交易时段（周末或早晨 09:00 之前），回溯到最近一个交易日（周五或昨天）的走势窗口
+    if (!isWeekday || now < preStartTs) {
+      let offsetDays = 1;
+      if (weekday === 'Sat') offsetDays = 1;
+      else if (weekday === 'Sun') offsetDays = 2;
+      else if (weekday === 'Mon') offsetDays = 3;
+      else offsetDays = 1; // 周二至周五早晨 09:00 前回溯到昨天
+
+      const tradeDayTs = now - offsetDays * DAY;
+      const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
+      const tY = Number(tradeParts.year);
+      const tM = Number(tradeParts.month) - 1;
+      const tD = Number(tradeParts.day);
+      return {
+        startTs: today(tY, tM, tD, 9, 30),
+        endTs: today(tY, tM, tD, 16, 0),
+        xLabelMode: 'local',
+        preMarket: false,
+      };
+    }
+
+    return { startTs, endTs, xLabelMode: 'local', preMarket: false };
   }
-  // A 股 / other
+
+  // A 股 / other (国内市场 / 北交所)
   const preStartTs = today(year, month, day, 9, 15); // A 股集合竞价 09:15
   const startTs = today(year, month, day, 9, 30);
   const endTs = today(year, month, day, 15, 0);
+
+  // 确定是否处于盘前倒计时 (09:15 - 09:30 工作日)
   const preMarket = isWeekday && now >= preStartTs && now < startTs;
-  return { startTs, endTs, xLabelMode: 'local', preMarket };
+
+  if (preMarket) {
+    return { startTs, endTs, xLabelMode: 'local', preMarket: true };
+  }
+
+  // 若处于非交易时段（周末或早晨 09:15 之前），回溯到最近一个有效交易日（周五或昨天）的时段窗口
+  if (!isWeekday || now < preStartTs) {
+    let offsetDays = 1;
+    if (weekday === 'Sat') offsetDays = 1;
+    else if (weekday === 'Sun') offsetDays = 2;
+    else if (weekday === 'Mon') offsetDays = 3;
+    else offsetDays = 1; // 周二至周五早晨 09:15 前回溯到昨天
+
+    const tradeDayTs = now - offsetDays * DAY;
+    const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
+    const tY = Number(tradeParts.year);
+    const tM = Number(tradeParts.month) - 1;
+    const tD = Number(tradeParts.day);
+    return {
+      startTs: today(tY, tM, tD, 9, 30),
+      endTs: today(tY, tM, tD, 15, 0),
+      xLabelMode: 'local',
+      preMarket: false,
+    };
+  }
+
+  return { startTs, endTs, xLabelMode: 'local', preMarket: false };
 }
 
 /**
@@ -406,15 +504,22 @@ export function buildSeries(
       const hasRealBars = realBars.length >= 2;
       if (hasRealBars) {
         // 把真实分钟数据/打点轨迹映射到 [startTs, endTs] 窗口；当前时间之后的数据截掉
-        const filtered = realBars
-          .filter(b => b.t >= startTs && b.t <= endTs)
-          .map(b => ({
-            t: b.t,
-            v: b.v,
-            volume: b.volume,
-            turnover: b.turnover,
-            real: true,
-          }));
+        let candidateBars = realBars.filter(b => b.t >= startTs && b.t <= endTs);
+        // 如果严格按 startTs/endTs 过滤为空，但 realBars 本身是上游提供的有效最近交易日分钟数据，
+        // 则以 realBars 首尾时间作为真实 session 窗口，防止因节假日或跨天偏差误杀整段真实走势
+        if (candidateBars.length === 0 && realBars.length >= 2) {
+          candidateBars = realBars;
+          startTs = realBars[0].t;
+          endTs = realBars[realBars.length - 1].t;
+        }
+
+        const filtered = candidateBars.map(b => ({
+          t: b.t,
+          v: b.v,
+          volume: b.volume,
+          turnover: b.turnover,
+          real: true,
+        }));
         // 如果打点首项晚于 startTs，在起点补充昨收/今开基准点
         if (filtered.length > 0 && filtered[0].t > startTs + 60_000) {
           filtered.unshift({ t: startTs, v: startValue, volume: undefined, turnover: undefined, real: true });
