@@ -527,6 +527,13 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                   const isAdded = !!addedMap[rec.code];
                   const marketLabel = rec.market === 'us' ? '美股' : rec.market === 'hk' ? '港股' : 'A股';
                   const marketTagColor = rec.market === 'us' ? 'purple' : rec.market === 'hk' ? 'cyan' : 'blue';
+                  const capCategory = rec.cap_category || '中盘成长';
+                  const capTagColor =
+                    capCategory === '大盘蓝筹' ? 'blue'
+                    : capCategory === '中盘成长' ? 'purple'
+                    : capCategory === '小盘潜力' ? 'orange'
+                    : capCategory === '专精特新' ? 'green'
+                    : 'cyan';
 
                   return (
                     <div
@@ -534,22 +541,33 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                       className="apple-card p-5 flex flex-col justify-between gap-4 border border-[var(--hairline-border)] hover:border-blue-300/60 dark:hover:border-blue-700/60 transition-all shadow-sm group"
                     >
                       <div>
-                        {/* Card Header: Rank, Name, Code, Market, Confidence */}
+                        {/* Card Header: Rank, Name, Code, Market, Cap Category, Confidence */}
                         <div className="flex items-start justify-between gap-2 mb-3">
                           <div className="flex items-center gap-2.5">
                             <div className="w-7 h-7 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 font-mono font-bold text-xs flex items-center justify-center border border-blue-200/50 dark:border-blue-800/40">
                               #{rec.rank}
                             </div>
                             <div>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
                                   {rec.name}
                                 </h4>
                                 <Tag color={marketTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
                                   {marketLabel}
                                 </Tag>
+                                <Tag color={capTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
+                                  {capCategory}
+                                </Tag>
                               </div>
-                              <span className="text-[11px] font-mono text-slate-400">{rec.code}</span>
+                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                <span className="text-[11px] font-mono text-slate-400">{rec.code}</span>
+                                {rec.growth_theme && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded-md border border-[var(--hairline-border)]">
+                                    <Zap size={10} className="text-amber-500" />
+                                    {rec.growth_theme}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
 
