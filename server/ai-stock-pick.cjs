@@ -55,26 +55,33 @@ function buildSystemPrompt() {
   return `你是一位专业、严谨、深谙全球金融市场的首席证券分析师与量化策略专家。
 你的职责是：基于服务端提供的【全网实时大盘】、【热点领涨行业】、【主力资金流向】、【财经要闻快讯】以及【真实股票候选池】，为投资者精选出最具潜力的优质股票，并提供深度的结构化投资决策逻辑。
 
+【核心理念与市值分层原则】：
+1. 优质股票推荐绝不仅限于万亿大盘白马！你必须具备开阔的选股视野，综合考察【大盘蓝筹】、【中盘高成长】、【小盘高弹性潜力黑马】与【专精特新隐形冠军】。
+2. 小盘潜力股与专精特新隐形冠军具备市值弹性大、技术突破、订单放量及高Beta爆发力等独特优势；大盘核心资产具备高护城河与安全边际；中盘成长股兼具成长性与流动性。
+3. 请根据用户的【投资策略偏好】，合理科学地配置不同市值梯队的标的比例。
+
 【核心防幻觉铁律】：
 1. 你推荐的每一只股票，其代码（code）和市场（market）必须严格存在于提供的【真实候选股票池】列表中！绝不允许凭空捏造、编造任何代码或混淆市场！
-2. 对于 A 股，代码通常为 6 位数字（如 600519, 002594, 300750）；对于港股，代码通常为 5 位数字（如 00700, 09988）；对于美股，代码为大写字母代码（如 NVDA, AAPL, MSFT）。
+2. 对于 A 股，代码通常为 6 位数字（如 600519, 300308, 688498）；对于港股，代码通常为 5 位数字（如 00700, 09880）；对于美股，代码为大写字母代码（如 NVDA, PLTR, APP, ASTS）。
 3. 必须输出严格且合法的纯 JSON 格式（包含在 \`\`\`json \`\`\` 围栏中），严禁输出任何 JSON 之外的问候语或附带文字。
 
 【输出 JSON 数据结构规范】：
 \`\`\`json
 {
-  "summary": "本次选股策略宏观研判与盘面综述（100字以内）",
+  "summary": "本次选股策略宏观研判与盘面综述（100字以内，点明大盘趋势与风格偏好）",
   "recommendations": [
     {
-      "code": "600519",
-      "name": "贵州茅台",
+      "code": "300502",
+      "name": "新易盛",
       "market": "domestic",
       "rank": 1,
-      "confidence": 88.5,
-      "reason_fundamental": "基本面与业绩亮点分析（核心壁垒、估值水平、盈利质量）",
-      "reason_technical": "技术面与量价形态分析（均线趋势、突破信号、量能支撑）",
-      "reason_catalyst": "短期/中期潜在催化剂（行业政策、新品发布、资金净流入）",
-      "risk_warning": "具体风险提示（避免泛泛而谈，指出关键阻力位或下行风险）"
+      "confidence": 91.5,
+      "cap_category": "中盘成长",
+      "growth_theme": "AI算力高速光模块放量",
+      "reason_fundamental": "基本面与业绩亮点分析（核心壁垒、高业绩增速、订单与盈利质量）",
+      "reason_technical": "技术面与量价形态分析（均线趋势、换手率突破、成交量配合）",
+      "reason_catalyst": "短期/中期潜在催化剂（行业利好政策、技术迭代节点、主力资金持续净流入）",
+      "risk_warning": "具体风险提示（避免泛泛而谈，指出关键支撑位或下行风险）"
     }
   ]
 }
@@ -86,10 +93,11 @@ function buildSystemPrompt() {
  */
 function buildUserPrompt({ strategy, stockCount, markets, contextSnapshot }) {
   const strategyMap = {
-    balanced: '均衡配置（兼顾价值安全边际与成长弹性）',
-    growth: '高景气成长（侧重科技突破、业绩高增速与领涨行业龙头）',
-    value: '深度价值与高股息（低估值、高分红、强现金流防守标的）',
-    momentum: '动量突破（主力资金大幅净流入、技术形态均线多头排列）',
+    balanced: '综合均衡配置（核心大盘稳健底仓 + 中小盘高弹性潜力成长股组合，兼顾安全边际与爆发力）',
+    small_cap_potential: '潜力黑马与中小盘高弹性（重点甄选中盘成长、小盘高弹性、专精特新隐形冠军，占比 ≥70%，追求高爆发力与超额阿尔法收益）',
+    growth: '高景气中大盘成长（侧重科技突破、业绩高增速、领涨行业龙头与高成长赛道）',
+    value: '深度价值与红利高股息（低估值、高分红、强现金流防守标的）',
+    momentum: '动量突破与量价爆发（高换手率突破、主力资金持续净流入、均线多头形态）',
     defensive: '稳健防御（抗通胀、低波动率、穿越牛熊必选消费/公用事业）',
   };
 
@@ -97,23 +105,29 @@ function buildUserPrompt({ strategy, stockCount, markets, contextSnapshot }) {
 【期望甄选股票数量】：${stockCount} 只
 【目标覆盖市场】：${markets.map(m => m === 'domestic' ? 'A股' : m === 'hk' ? '港股' : '美股').join('、')}
 
+【选股与市值分配执行指令】：
+1. 请根据策略要求，在【大盘蓝筹】、【中盘成长】、【小盘潜力】、【专精特新】各层次中择优甄选。
+2. 若策略为“潜力黑马与中小盘高弹性”，请优先倾斜推荐中小市值、专精特新与高弹性题材突围黑马标的；
+3. 若策略为“综合均衡配置”，请合理搭配大盘蓝筹底仓与中小盘成长潜力股；
+4. 必须输出 cap_category（如 "大盘蓝筹" / "中盘成长" / "小盘潜力" / "专精特新"）和 growth_theme（如 "AI光模块" / "人形机器人执行器" / "专精特新半导体设备"）。
+
 【当前实时全网行情快照与上下文】：
 1. 全球大盘核心指数：
 ${JSON.stringify(contextSnapshot.indices || {}, null, 2)}
 
-2. 今日领涨行业板块 Top 8：
+2. 今日领涨行业板块与ETF：
 ${JSON.stringify(contextSnapshot.sectors || [], null, 2)}
 
-3. 主力资金净流入领先行业：
+3. 主力资金动向领先赛道：
 ${JSON.stringify(contextSnapshot.flows || [], null, 2)}
 
-4. 财经要闻快讯摘要：
+4. 7x24 财经要闻快讯摘要：
 ${JSON.stringify(contextSnapshot.news || [], null, 2)}
 
-5. 【真实股票候选池】（你精选的股票必须 100% 来源于此池，代码必须完全一致）：
+5. 【真实股票多层次候选池】（包含大盘蓝筹、中盘成长、小盘潜力与专精特新，你精选的标的必须 100% 来源于此池，代码必须完全一致）：
 ${JSON.stringify(contextSnapshot.candidates || [], null, 2)}
 
-请基于以上全网实时数据与候选池，严格输出包含 ${stockCount} 只优质推荐股票的 JSON 数据。`;
+请基于以上全网实时数据与多层次候选池，严格输出包含 ${stockCount} 只优质推荐股票的 JSON 数据。`;
 }
 
 /**
@@ -302,6 +316,8 @@ function parseAndValidateRecommendations(rawText, candidates = []) {
       market: candidate ? candidate.market : (item.market || 'domestic'),
       rank: item.rank || (idx + 1),
       confidence: Number(item.confidence) || 80,
+      cap_category: item.cap_category || candidate?.cap_category || '中盘成长',
+      growth_theme: item.growth_theme || candidate?.growth_theme || candidate?.industry || '',
       reason_fundamental: item.reason_fundamental || '基本面稳健，行业处于景气上升周期。',
       reason_technical: item.reason_technical || '技术形态均线向上发散，成交量配合良好。',
       reason_catalyst: item.reason_catalyst || '行业利好政策驱动与机构资金关注。',
@@ -391,12 +407,12 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
       [result.model, JSON.stringify({ summary, contextSnapshot }), result.promptTokens, result.completionTokens, reportId, userId]
     );
 
-    // 批量写入 recommendations
+    // 批量写入 recommendations (包含 cap_category 与 growth_theme)
     for (const rec of recommendations) {
       await dbHelper.run(
         `INSERT INTO ai_stock_pick_recs
-         (report_id, user_id, code, name, market, rank, confidence, reason_fundamental, reason_technical, reason_catalyst, risk_warning, in_candidate_pool)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (report_id, user_id, code, name, market, rank, confidence, cap_category, growth_theme, reason_fundamental, reason_technical, reason_catalyst, risk_warning, in_candidate_pool)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           reportId,
           userId,
@@ -405,6 +421,8 @@ async function executeAnalysisTask({ jobId, reportId, userId, markets, stockCoun
           rec.market,
           rec.rank,
           rec.confidence,
+          rec.cap_category || '中盘成长',
+          rec.growth_theme || '',
           rec.reason_fundamental,
           rec.reason_technical,
           rec.reason_catalyst,

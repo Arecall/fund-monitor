@@ -346,6 +346,8 @@ function initTables() {
         market TEXT,
         rank INTEGER,
         confidence REAL,
+        cap_category TEXT DEFAULT '中盘成长',
+        growth_theme TEXT DEFAULT '',
         reason_fundamental TEXT,
         reason_technical TEXT,
         reason_catalyst TEXT,
@@ -356,6 +358,19 @@ function initTables() {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    // 针对已有 recommendations 表的字段平滑增量迁移
+    const aiRecsCols = [
+      ['cap_category', "TEXT DEFAULT '中盘成长'"],
+      ['growth_theme', "TEXT DEFAULT ''"],
+    ];
+    for (const [colName, colDef] of aiRecsCols) {
+      db.run(`ALTER TABLE ai_stock_pick_recs ADD COLUMN ${colName} ${colDef}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] ai_stock_pick_recs migration failed for ${colName}:`, err.message);
+        }
+      });
+    }
 
     db.run(`CREATE INDEX IF NOT EXISTS idx_ai_reports_user_created ON ai_stock_pick_reports (user_id, created_at DESC)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_ai_recs_report ON ai_stock_pick_recs (report_id)`);

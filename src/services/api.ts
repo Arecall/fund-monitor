@@ -1038,7 +1038,7 @@ export interface AiSystemStatus {
 export interface AiUserPreferences {
   markets: Array<'domestic' | 'hk' | 'us'>;
   stock_count: number;
-  strategy: 'balanced' | 'growth' | 'value' | 'momentum' | 'defensive';
+  strategy: 'balanced' | 'small_cap_potential' | 'growth' | 'value' | 'momentum' | 'defensive';
   pre_market_enabled: boolean;
   close_enabled: boolean;
   updated_at?: string;
@@ -1056,7 +1056,7 @@ export interface AiUserConfig {
   auth_header_type?: 'ANTHROPIC_AUTH_TOKEN' | 'x-api-key' | 'Authorization';
   markets: Array<'domestic' | 'hk' | 'us'>;
   stock_count: number;
-  strategy: 'balanced' | 'growth' | 'value' | 'momentum' | 'defensive';
+  strategy: 'balanced' | 'small_cap_potential' | 'growth' | 'value' | 'momentum' | 'defensive';
   pre_market_enabled: boolean;
   close_enabled: boolean;
   updated_at?: string;
@@ -1070,6 +1070,8 @@ export interface AiStockRecommendation {
   market: 'domestic' | 'hk' | 'us';
   rank: number;
   confidence: number;
+  cap_category?: '大盘蓝筹' | '中盘成长' | '小盘潜力' | '专精特新' | string;
+  growth_theme?: string;
   reason_fundamental: string;
   reason_technical: string;
   reason_catalyst: string;
