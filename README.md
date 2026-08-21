@@ -1,6 +1,6 @@
 # 全球基金与股票监控终端 (Fund & Stock Monitor)
 
-[![Version](https://img.shields.io/badge/version-1.4.8-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.4.9-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
@@ -206,7 +206,7 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.4.8
+    image: fund-monitor:1.4.9
     container_name: fund-monitor
     restart: unless-stopped
     ports:
