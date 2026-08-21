@@ -1,6 +1,6 @@
 # 全球基金与股票监控终端 (Fund & Stock Monitor)
 
-[![Version](https://img.shields.io/badge/version-1.4.3-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.4.4-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
@@ -152,7 +152,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                    全球基金与股票监控终端 (v1.4.3)                   │
+│                    全球基金与股票监控终端 (v1.4.4)                   │
 ├──────────────────┬──────────────────────────┬────────────────────────┤
 │ 1. 顶部全球大盘   │ 2. 自选看板 (Watchlist)  │ 3. 黄金行情专区        │
 │  - A股/港股/美股 │  - 场内股票/场外基金分Tab │  - 伦敦金 / 国际金    │
@@ -203,7 +203,7 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.4.3
+    image: fund-monitor:1.4.4
     container_name: fund-monitor
     restart: unless-stopped
     ports:

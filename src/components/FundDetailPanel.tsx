@@ -150,6 +150,8 @@ export function FundDetailPanel({
   const [klinePeriod, setKlinePeriod] = useState<StockKLinePeriod>('day');
   const [klineData, setKlineData] = useState<StockKLinePoint[]>([]);
   const [klineLoading, setKlineLoading] = useState(false);
+  const [klineVisible, setKlineVisible] = useState(false);
+  const klineContainerRef = useRef<HTMLDivElement | null>(null);
 
   // 切换标的：清空残留曲线与去重签名，进入加载态（手动刷新走 chartKey，不在此重置，避免闪烁）
   useEffect(() => {
@@ -249,6 +251,40 @@ export function FundDetailPanel({
   useEffect(() => {
     setKlinePeriod('day');
     setKlineData([]);
+    setKlineVisible(false);
+  }, [fund.fundcode, fund.market, kind]);
+
+  // 视口懒加载：仅当 K 线图区域进入（或即将进入）可视区时才激活数据请求
+  useEffect(() => {
+    if (kind !== 'stock' || !fund.fundcode) {
+      setKlineVisible(false);
+      return;
+    }
+
+    if (typeof IntersectionObserver === 'undefined') {
+      setKlineVisible(true);
+      return;
+    }
+
+    const el = klineContainerRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting) {
+          setKlineVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '120px' }
+    );
+
+    observer.observe(el);
+
+    return () => {
+      observer.disconnect();
+    };
   }, [fund.fundcode, fund.market, kind]);
 
   // 历史 K 线继续由 REST 权威提供；实时报价只临时覆盖已存在末根的 close/high/low。
@@ -271,9 +307,11 @@ export function FundDetailPanel({
   }, [liveKlineSignature]);
 
   useEffect(() => {
-    if (kind !== 'stock' || !fund.fundcode) {
-      setKlineData([]);
-      setKlineLoading(false);
+    if (kind !== 'stock' || !fund.fundcode || !klineVisible) {
+      if (!klineVisible) {
+        setKlineData([]);
+        setKlineLoading(false);
+      }
       return;
     }
 
@@ -290,7 +328,7 @@ export function FundDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [fund.fundcode, fund.market, kind, klinePeriod, chartKey]);
+  }, [fund.fundcode, fund.market, kind, klinePeriod, chartKey, klineVisible]);
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
@@ -647,27 +685,35 @@ export function FundDetailPanel({
         </Suspense>
       </section>
 
-      {/* ── Daily candlestick chart (仅股票，位于分时图下方) ── */}
+      {/* ── Daily candlestick chart (仅股票，位于分时图下方，视口滚入懒加载) ── */}
       {kind === 'stock' && (
-        <Suspense fallback={
-          <div className="h-[320px] rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] flex items-center justify-center">
-            <Spin size="large" tip="正在加载 K 线图模块..." />
-          </div>
-        }>
-          <StockKLineChart
-            code={fund.fundcode}
-            market={fund.market}
-            data={klineData}
-            period={klinePeriod}
-            loading={klineLoading}
-            onPeriodChange={setKlinePeriod}
-            height={isExpanded ? 380 : 320}
-          />
-        </Suspense>
+        <div ref={klineContainerRef}>
+          {klineVisible ? (
+            <Suspense fallback={
+              <div className="h-[320px] rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] flex items-center justify-center">
+                <Spin size="large" tip="正在加载 K 线图模块..." />
+              </div>
+            }>
+              <StockKLineChart
+                code={fund.fundcode}
+                market={fund.market}
+                data={klineData}
+                period={klinePeriod}
+                loading={klineLoading}
+                onPeriodChange={setKlinePeriod}
+                height={isExpanded ? 380 : 320}
+              />
+            </Suspense>
+          ) : (
+            <div className="h-[320px] rounded-2xl border border-[var(--hairline-border)] bg-white/20 dark:bg-white/[0.01] flex items-center justify-center">
+              <Spin size="small" tip="等待可视区激活..." />
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Capital flow bar chart (仅 A 股个股) ── */}
-      {kind === 'stock' && (fund.market === 'domestic' || (!fund.market && /^\d{6}$/.test(fund.fundcode))) && (
+      {kind === 'stock' && (fund.market === 'domestic' || fund.market === 'other' || (!fund.market && /^(SH|SZ|BJ)?\d{6}$/i.test(fund.fundcode))) && (
         (fund as any).stockSpecific?.flow ? (
           <CapitalFlowChart flow={(fund as any).stockSpecific.flow} />
         ) : (
