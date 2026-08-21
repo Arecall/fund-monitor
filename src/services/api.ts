@@ -1005,3 +1005,129 @@ export async function removePosition(code: string): Promise<boolean> {
     return false;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   AI 优质股票筛选与智能研报 API
+   ═══════════════════════════════════════════════════════════════════ */
+
+export interface AiUserConfig {
+  configured: boolean;
+  apiKeyMasked: string;
+  base_url: string;
+  model_name: string;
+  api_format?: 'anthropic' | 'openai';
+  auth_header_type?: 'ANTHROPIC_AUTH_TOKEN' | 'x-api-key' | 'Authorization';
+  markets: Array<'domestic' | 'hk' | 'us'>;
+  stock_count: number;
+  strategy: 'balanced' | 'growth' | 'value' | 'momentum' | 'defensive';
+  pre_market_enabled: boolean;
+  close_enabled: boolean;
+  updated_at?: string;
+}
+
+export interface AiStockRecommendation {
+  id?: number;
+  report_id?: number;
+  code: string;
+  name: string;
+  market: 'domestic' | 'hk' | 'us';
+  rank: number;
+  confidence: number;
+  reason_fundamental: string;
+  reason_technical: string;
+  reason_catalyst: string;
+  risk_warning: string;
+  in_candidate_pool: number;
+}
+
+export interface AiStockPickReport {
+  id: number;
+  user_id: number;
+  trigger_type: 'manual' | 'pre_market' | 'close';
+  markets: Array<'domestic' | 'hk' | 'us'>;
+  stock_count: number;
+  strategy: string;
+  model: string;
+  status: 'running' | 'success' | 'failed';
+  error?: string | null;
+  summary?: string;
+  rec_count?: number;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface AiJobStatus {
+  jobId: string;
+  status: 'running' | 'done' | 'failed';
+  stage: string;
+  reportId: number;
+  error?: string | null;
+}
+
+export async function fetchAiConfig(): Promise<AiUserConfig> {
+  return request('/api/ai/config');
+}
+
+export async function saveAiConfig(params: Partial<AiUserConfig> & { api_key?: string }): Promise<{ success: boolean; message: string }> {
+  return request('/api/ai/config', {
+    method: 'PUT',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function testAiConfig(params: {
+  api_key?: string;
+  base_url?: string;
+  model_name?: string;
+  api_format?: 'anthropic' | 'openai';
+  auth_header_type?: 'ANTHROPIC_AUTH_TOKEN' | 'x-api-key' | 'Authorization';
+}): Promise<{
+  success: boolean;
+  latencyMs?: number;
+  model?: string;
+  message?: string;
+  error?: string;
+}> {
+  return request('/api/ai/test', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function startAiAnalysis(params?: {
+  markets?: string[];
+  stock_count?: number;
+  strategy?: string;
+}): Promise<{ success: boolean; jobId: string; reportId: number; message?: string }> {
+  return request('/api/ai/analyze', {
+    method: 'POST',
+    body: JSON.stringify(params || {}),
+  });
+}
+
+export async function pollAiJob(jobId: string): Promise<AiJobStatus> {
+  return request(`/api/ai/jobs/${jobId}`);
+}
+
+export async function fetchAiReports(page = 1, pageSize = 10): Promise<{
+  reports: AiStockPickReport[];
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
+  return request(`/api/ai/reports?page=${page}&pageSize=${pageSize}`);
+}
+
+export async function fetchAiReportDetail(reportId: number): Promise<{
+  report: AiStockPickReport;
+  recommendations: AiStockRecommendation[];
+}> {
+  return request(`/api/ai/reports/${reportId}`);
+}
+
+export async function deleteAiReport(reportId: number): Promise<{ success: boolean; message: string }> {
+  return request(`/api/ai/reports/${reportId}`, {
+    method: 'DELETE',
+  });
+}
+

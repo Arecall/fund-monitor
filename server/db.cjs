@@ -234,6 +234,87 @@ function initTables() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_watchlist_user_kind ON watchlist (user_id, kind)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)`);
 
+    // 7. 用户 AI 选股配置表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_user_config (
+        user_id INTEGER PRIMARY KEY,
+        api_key_encrypted TEXT DEFAULT '',
+        base_url TEXT DEFAULT 'https://api.anthropic.com',
+        model_name TEXT DEFAULT 'claude-3-7-sonnet-20250219',
+        api_format TEXT DEFAULT 'anthropic',
+        auth_header_type TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN',
+        markets TEXT DEFAULT '["domestic"]',
+        stock_count INTEGER DEFAULT 5,
+        strategy TEXT DEFAULT 'balanced',
+        pre_market_enabled INTEGER DEFAULT 0,
+        close_enabled INTEGER DEFAULT 0,
+        last_pre_run TEXT,
+        last_close_run TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 针对已有表的迁移
+    const aiConfigCols = [
+      ['api_format', "TEXT DEFAULT 'anthropic'"],
+      ['auth_header_type', "TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN'"],
+    ];
+    for (const [colName, colDef] of aiConfigCols) {
+      db.run(`ALTER TABLE ai_user_config ADD COLUMN ${colName} ${colDef}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] ai_user_config migration failed for ${colName}:`, err.message);
+        }
+      });
+    }
+
+    // 8. AI 选股分析报告表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_stock_pick_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        trigger_type TEXT NOT NULL,
+        markets TEXT NOT NULL,
+        stock_count INTEGER,
+        strategy TEXT,
+        model TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        error TEXT,
+        context_snapshot TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 9. AI 推荐股票明细表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_stock_pick_recs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        name TEXT,
+        market TEXT,
+        rank INTEGER,
+        confidence REAL,
+        reason_fundamental TEXT,
+        reason_technical TEXT,
+        reason_catalyst TEXT,
+        risk_warning TEXT,
+        in_candidate_pool INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES ai_stock_pick_reports(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_ai_reports_user_created ON ai_stock_pick_reports (user_id, created_at DESC)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_ai_recs_report ON ai_stock_pick_recs (report_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_ai_config_sched ON ai_user_config (pre_market_enabled, close_enabled)`);
+
     // 自动清理历史因 QDII 代理标的原生分钟 K 线（如 QQQ 美金 718 元）未缩放错误写入 6 位基金代码的污染打点 (> 50 元)
     db.run(`
       DELETE FROM quote_snapshots

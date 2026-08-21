@@ -2,7 +2,7 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.4.6
+    image: fund-monitor:1.4.7
     container_name: fund-monitor
     restart: unless-stopped
     environment:
