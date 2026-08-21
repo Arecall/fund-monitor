@@ -59,6 +59,7 @@ import { Sparkline } from './components/Sparkline';
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
 const NotificationLogModal = React.lazy(() => import('./components/NotificationLogModal').then(m => ({ default: m.NotificationLogModal })));
 const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ default: m.GoldTab })));
+const AiStockPickTab = React.lazy(() => import('./components/AiStockPickTab').then(m => ({ default: m.AiStockPickTab })));
 const loadFundDetailPanel = () => import('./components/FundDetailPanel').then(m => ({ default: m.FundDetailPanel }));
 const FundDetailPanel = React.lazy(loadFundDetailPanel);
 
@@ -746,14 +747,31 @@ function App() {
   const [watchlistPage, setWatchlistPage] = useState(1);
   const [watchlistPageSize, setWatchlistPageSize] = useState(10);
   const isDesktopWatchlist = useMediaQuery('(min-width: 768px)');
-  const [mainTab, setMainTab] = useState<'portfolio' | 'gold'>(() => {
+  const [mainTab, setMainTab] = useState<'portfolio' | 'gold' | 'ai-stock-pick'>(() => {
     // 刷新停留在哪个 tab — 从 localStorage 恢复
     try {
       const saved = localStorage.getItem('fund_main_tab');
-      if (saved === 'portfolio' || saved === 'gold') return saved;
+      if (saved === 'portfolio' || saved === 'gold' || saved === 'ai-stock-pick') return saved;
     } catch {}
     return 'portfolio';
   });
+
+  const [detailOverrideMap, setDetailOverrideMap] = useState<Record<string, { kind: 'fund' | 'stock'; market: string }>>({});
+
+  const handleAiOpenDetail = useCallback(async (code: string, market: 'domestic' | 'hk' | 'us' | 'other') => {
+    setDetailOverrideMap(prev => ({ ...prev, [code]: { kind: 'stock', market } }));
+    if (!fundsData[code]) {
+      try {
+        const val = await fetchFundValuation(code, 'stock', { enrich: true });
+        if (val) {
+          setFundsData(prev => ({ ...prev, [code]: val }));
+        }
+      } catch (e) {
+        console.warn('获取股票即时行情失败:', e);
+      }
+    }
+    setSelectedFundCode(code);
+  }, [fundsData]);
 
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
@@ -1652,7 +1670,7 @@ function App() {
   /* ---------- Watchlist CRUD ---------- */
 
   /**
-   * 名称搜索下拉的输入变化：250ms 防抖后请求后端搜索；仅当输入含非 ASCII 字符才触发
+   * 名称搜索下拉的输入变化：200ms 防抖后请求后端搜索（全面支持中英文、Ticker与代码）
    * IME 拼音输入进行中不发请求，等 compositionEnd 后再发
    */
   const handleAddInputChange = (value: string) => {
@@ -1665,10 +1683,7 @@ function App() {
       searchTimerRef.current = null;
     }
 
-    // 纯代码形态（仅含 A-Z / 0-9）→ 不发搜索请求
-    // 用 lowercase 比对，因为 toUpperCase 对中文是 no-op、且会改变 aapl→AAPL 这种纯字母输入
-    const isCodeLike = /^[a-z0-9]+$/i.test(value);
-    if (isCodeLike || value.length < 1) {
+    if (value.trim().length < 1) {
       setSearchResults([]);
       setDropdownOpen(false);
       return;
@@ -1682,9 +1697,9 @@ function App() {
       if (composingRef.current) return;
       setSearchBusy(true);
       try {
-        const results = await searchByName(value, selfTab);
+        const results = await searchByName(value.trim(), selfTab);
         // 请求返回时用户可能已经清空/切换，要核对一次当前输入
-        if (!composingRef.current && value.length > 0) {
+        if (!composingRef.current && value.trim().length > 0) {
           setSearchResults(results);
           setHighlightIdx(0);
           setDropdownOpen(results.length > 0);
@@ -1695,7 +1710,7 @@ function App() {
       } finally {
         setSearchBusy(false);
       }
-    }, 250);
+    }, 200);
   };
 
   /**
@@ -1785,41 +1800,61 @@ function App() {
 
   const handleAddFund = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 如果下拉开着，回车应该已经选中 → 这里拦一道
+    // 如果下拉开着且有高亮项，回车直接选中
     if (dropdownOpen && searchResults[highlightIdx]) {
       addFromSearchResult(searchResults[highlightIdx]);
       return;
     }
-    const code = newCode.trim();
-    // 接受：A 股 6 位 / 港股 5 位 / 美股 1-5 位字母
-    if (!/^(\d{6}|\d{4,5}|[A-Za-z]{1,5})$/.test(code)) {
-      setSearchError('请输入 A 股 6 位 / 港股 5 位 / 美股 ticker，或输入中文名搜索');
-      return;
-    }
-    // 根据 selfTab 决定请求分类；后端会验证场内 ETF 后返回最终分类。
+    const inputVal = newCode.trim();
+    if (!inputVal) return;
+
     const kind: 'fund' | 'stock' = selfTab === 'stock' ? 'stock' : 'fund';
     setSearchLoading(true);
     setSearchError('');
+
+    // 1. 若输入为标准代码形态（A股6位/港股4-5位/美股1-6位Ticker），尝试直接添加
+    const isStandardCode = /^(\d{4,6}|[A-Za-z]{1,6}(\.[A-Za-z]{1,2})?)$/.test(inputVal);
+    if (isStandardCode) {
+      try {
+        const directCode = inputVal.toUpperCase();
+        const res = await addWatchlistItem({ code: directCode, kind });
+        if (!res.success && res.prompt?.type === 'listed_etf_wrong_tab') {
+          setListedEtfPrompt({ code: directCode, message: res.message });
+          setSearchLoading(false);
+          return;
+        }
+        const finalKind = res.kind;
+        const fund = res.quote || await fetchFundValuation(directCode, finalKind);
+        if (fund) {
+          setWatchlist(prev => prev.includes(directCode) ? prev : [...prev, directCode]);
+          setWatchlistItems(prev => {
+            const item = { fund_code: directCode, kind: finalKind, market: res.market, sector: res.sector, created_at: new Date().toISOString() } as WatchlistItem;
+            const existing = prev.findIndex(x => x.fund_code === directCode);
+            return existing >= 0 ? prev.map((x, i) => i === existing ? { ...x, ...item } : x) : [...prev, item];
+          });
+          setFundsData(prev => ({ ...prev, [directCode]: fund }));
+          setNewCode('');
+          setSearchResults([]);
+          setDropdownOpen(false);
+          showToast(res.message || `已订阅${finalKind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
+          setSearchLoading(false);
+          return;
+        }
+      } catch {
+        // 直接代码失败，自动回退到名称/英文联想搜索
+      }
+    }
+
+    // 2. 智能中英文/名称联想搜索并自动采纳第一条结果
     try {
-      const res = await addWatchlistItem({ code, kind });
-      if (!res.success && res.prompt?.type === 'listed_etf_wrong_tab') {
-        setListedEtfPrompt({ code, message: res.message });
+      const results = await searchByName(inputVal, selfTab);
+      if (results && results.length > 0) {
+        await addFromSearchResult(results[0]);
         return;
       }
-      const finalKind = res.kind;
-      const fund = res.quote || await fetchFundValuation(code, finalKind);
-      if (!fund) throw new Error('未找到该代码，请确认是否正确');
-      setWatchlist(prev => prev.includes(code) ? prev : [...prev, code]);
-      setWatchlistItems(prev => {
-        const item = { fund_code: code, kind: finalKind, market: res.market, sector: res.sector, created_at: new Date().toISOString() } as WatchlistItem;
-        const existing = prev.findIndex(x => x.fund_code === code);
-        return existing >= 0 ? prev.map((x, i) => i === existing ? { ...x, ...item } : x) : [...prev, item];
-      });
-      setFundsData(prev => ({ ...prev, [code]: fund }));
-      setNewCode('');
-      showToast(res.message || `已订阅${finalKind === 'stock' ? '股票' : '基金'}: ${fund.name}`);
+      setSearchError('未找到相关标的，请输入正确的代码或中英文名称 (如 NVDA / TSLA / 00700 / 腾讯)');
     } catch (err: any) {
-      setSearchError(err.message || '获取数据失败，请确认代码');
+      setSearchError(err.message || '获取数据失败，请确认代码或名称');
     } finally {
       setSearchLoading(false);
     }
@@ -2198,11 +2233,12 @@ function App() {
             <span className="hidden md:inline">全球基金监控终端</span>
           </h1>
 
-          {/* 主 tab: 自选 (portfolio) / 金价 (gold) */}
+          {/* 主 tab: 自选 (portfolio) / 金价 (gold) / 优质选股 (ai-stock-pick) */}
           <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5 shrink-0">
             {([
-              { key: 'portfolio', label: '自选', icon: '📋' },
-              { key: 'gold',       label: '金价', icon: '💰' },
+              { key: 'portfolio',     label: '自选', icon: '📋' },
+              { key: 'gold',          label: '金价', icon: '💰' },
+              { key: 'ai-stock-pick', label: '优质选股', icon: '✨' },
             ] as const).map(t => {
               const active = mainTab === t.key;
               return (
@@ -2347,7 +2383,7 @@ function App() {
         )}
       </div>
 
-      {/* Main grid — 金价 tab 占满整页时只渲染金价 */}
+      {/* Main grid — 页面分支渲染 */}
       {mainTab === 'gold' ? (
         <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
           <React.Suspense fallback={
@@ -2356,6 +2392,16 @@ function App() {
             </div>
           }>
             <GoldTab />
+          </React.Suspense>
+        </div>
+      ) : mainTab === 'ai-stock-pick' ? (
+        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
+          <React.Suspense fallback={
+            <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
+              <Spin size="large" tip="正在加载优质股票智能筛选中心..." />
+            </div>
+          }>
+            <AiStockPickTab onOpenDetail={handleAiOpenDetail} />
           </React.Suspense>
         </div>
       ) : (
@@ -2478,7 +2524,7 @@ function App() {
                   <input
                     type="text"
                     maxLength={20}
-                    placeholder={selfTab === 'stock' ? '代码 或 名称 (如 00700 / 腾讯)' : '代码 或 名称 (如 161039 / 三花)'}
+                    placeholder={selfTab === 'stock' ? '代码或名称，支持中英文 (如 NVDA / TSLA / 00700 / 腾讯 / 苹果)' : '代码或名称，支持中英文 (如 161039 / 易方达 / 标普500)'}
                     value={newCode}
                     onChange={(e) => handleAddInputChange(e.target.value)}
                     onCompositionStart={() => { composingRef.current = true; }}
@@ -3434,7 +3480,11 @@ function App() {
 
       <AnimatePresence>
         {selectedFundCode && fundsData[selectedFundCode] && (() => {
-          const item = watchlistItems.find(w => w.fund_code === selectedFundCode);
+          const item = watchlistItems.find(w => w.fund_code === selectedFundCode) || (detailOverrideMap[selectedFundCode] ? {
+            fund_code: selectedFundCode,
+            kind: detailOverrideMap[selectedFundCode].kind,
+            market: detailOverrideMap[selectedFundCode].market,
+          } : undefined);
           const isStock = item?.kind === 'stock';
           return (
           <DetailDrawer

@@ -3281,22 +3281,167 @@ async function getMarketIndices() {
   }
 }
 
+// 预置全球/中概/核心蓝筹股票与 ETF 的常用英文/缩写/别名精准映射库（秒级响应与首选排序保障）
+const CURATED_ALIASES = [
+  // 美股核心科技巨头
+  { keywords: ['tesla', 'tsla', 'tesila', '特斯'], code: 'TSLA', name: '特斯拉', market: 'us', kind: 'stock' },
+  { keywords: ['nvidia', 'nvda', 'yingweida', '英伟'], code: 'NVDA', name: '英伟达', market: 'us', kind: 'stock' },
+  { keywords: ['apple', 'aapl', 'pingguo', '苹果'], code: 'AAPL', name: '苹果', market: 'us', kind: 'stock' },
+  { keywords: ['microsoft', 'msft', 'weiruan', '微软'], code: 'MSFT', name: '微软', market: 'us', kind: 'stock' },
+  { keywords: ['google', 'googl', 'goog', 'alphabet', 'guge', '谷歌'], code: 'GOOGL', name: '谷歌-A', market: 'us', kind: 'stock' },
+  { keywords: ['amazon', 'amzn', 'yamaxun', '亚马逊'], code: 'AMZN', name: '亚马逊', market: 'us', kind: 'stock' },
+  { keywords: ['meta', 'facebook', 'fb', 'lianpu', '脸书'], code: 'META', name: 'Meta (Facebook)', market: 'us', kind: 'stock' },
+  { keywords: ['netflix', 'nflx', 'naifei', '奈飞', '网飞'], code: 'NFLX', name: '奈飞', market: 'us', kind: 'stock' },
+  { keywords: ['amd', 'advanced micro devices', 'chaowei', '超威半导体'], code: 'AMD', name: '超威半导体', market: 'us', kind: 'stock' },
+  { keywords: ['intel', 'intc', 'yingteer', '英特尔'], code: 'INTC', name: '英特尔', market: 'us', kind: 'stock' },
+  { keywords: ['tsmc', 'taiwan semiconductor', 'taijidian', '台积电', '2330'], code: 'TSM', name: '台积电', market: 'us', kind: 'stock' },
+  { keywords: ['asml', 'asimei', '阿斯麦', '光刻机'], code: 'ASML', name: '阿斯麦', market: 'us', kind: 'stock' },
+  { keywords: ['broadcom', 'avgo', 'botong', '博通'], code: 'AVGO', name: '博通', market: 'us', kind: 'stock' },
+  { keywords: ['qualcomm', 'qcom', 'gaotong', '高通'], code: 'QCOM', name: '高通', market: 'us', kind: 'stock' },
+  { keywords: ['arm', 'anmou', '安谋'], code: 'ARM', name: 'ARM Holdings', market: 'us', kind: 'stock' },
+  { keywords: ['palantir', 'pltr'], code: 'PLTR', name: 'Palantir', market: 'us', kind: 'stock' },
+  { keywords: ['coinbase', 'coin'], code: 'COIN', name: 'Coinbase', market: 'us', kind: 'stock' },
+  { keywords: ['smci', 'super micro', 'chaojiweidian', '超微电脑'], code: 'SMCI', name: '超微电脑', market: 'us', kind: 'stock' },
+  { keywords: ['micron', 'mu', 'meiguang', '美光科技'], code: 'MU', name: '美光科技', market: 'us', kind: 'stock' },
+  { keywords: ['uber', 'youbu', '优步'], code: 'UBER', name: '优步', market: 'us', kind: 'stock' },
+  { keywords: ['airbnb', 'abnb', 'aibiying', '爱彼迎'], code: 'ABNB', name: '爱彼迎', market: 'us', kind: 'stock' },
+  { keywords: ['spotify', 'spot', 'shengfeitian'], code: 'SPOT', name: 'Spotify', market: 'us', kind: 'stock' },
+  { keywords: ['oracle', 'orcl', 'jiaguwen', '甲骨文'], code: 'ORCL', name: '甲骨文', market: 'us', kind: 'stock' },
+  { keywords: ['adobe', 'adbe', 'aoduobi', '奥多比'], code: 'ADBE', name: 'Adobe', market: 'us', kind: 'stock' },
+  { keywords: ['salesforce', 'crm', 'saifushi', '赛富时'], code: 'CRM', name: '赛富时', market: 'us', kind: 'stock' },
+  { keywords: ['cisco', 'csco', 'sike', '思科'], code: 'CSCO', name: '思科', market: 'us', kind: 'stock' },
+  { keywords: ['ibm', 'guojishangyejiqi', '国际商业机器'], code: 'IBM', name: 'IBM', market: 'us', kind: 'stock' },
+  { keywords: ['snow', 'snowflake', 'xuehua'], code: 'SNOW', name: 'Snowflake', market: 'us', kind: 'stock' },
+  { keywords: ['crwd', 'crowdstrike'], code: 'CRWD', name: 'CrowdStrike', market: 'us', kind: 'stock' },
+  { keywords: ['panw', 'palo alto'], code: 'PANW', name: 'Palo Alto Networks', market: 'us', kind: 'stock' },
+
+  // 全球蓝筹与传统行业龙头
+  { keywords: ['berkshire', 'brk', 'brkb', 'boxier', '伯克希尔'], code: 'BRK.B', name: '伯克希尔哈撒韦-B', market: 'us', kind: 'stock' },
+  { keywords: ['jpmorgan', 'jpm', 'mogen', '摩根大通'], code: 'JPM', name: '摩根大通', market: 'us', kind: 'stock' },
+  { keywords: ['goldman', 'gs', 'gaosheng', '高盛'], code: 'GS', name: '高盛', market: 'us', kind: 'stock' },
+  { keywords: ['morgan stanley', 'ms', 'mogenshidali', '摩根士丹利'], code: 'MS', name: '摩根士丹利', market: 'us', kind: 'stock' },
+  { keywords: ['visa', 'weisa', '维萨'], code: 'V', name: 'Visa', market: 'us', kind: 'stock' },
+  { keywords: ['mastercard', 'wanshida', '万事达'], code: 'MA', name: '万事达', market: 'us', kind: 'stock' },
+  { keywords: ['disney', 'dis', 'dishini', '迪士尼'], code: 'DIS', name: '迪士尼', market: 'us', kind: 'stock' },
+  { keywords: ['nike', 'nke', 'naike', '耐克'], code: 'NKE', name: '耐克', market: 'us', kind: 'stock' },
+  { keywords: ['starbucks', 'sbux', 'xingbake', '星巴克'], code: 'SBUX', name: '星巴克', market: 'us', kind: 'stock' },
+  { keywords: ['coca cola', 'coke', 'ko', 'kekoukele', '可口可乐'], code: 'KO', name: '可口可乐', market: 'us', kind: 'stock' },
+  { keywords: ['pepsi', 'pep', 'baishikele', '百事可乐'], code: 'PEP', name: '百事可乐', market: 'us', kind: 'stock' },
+  { keywords: ['mcdonalds', 'mcdonald', 'mcd', 'maidanglao', '麦当劳'], code: 'MCD', name: '麦当劳', market: 'us', kind: 'stock' },
+  { keywords: ['walmart', 'wmt', 'woerma', '沃尔玛'], code: 'WMT', name: '沃尔玛', market: 'us', kind: 'stock' },
+  { keywords: ['costco', 'cost', 'kaishike', '开市客', '好市多'], code: 'COST', name: '开市客 (Costco)', market: 'us', kind: 'stock' },
+  { keywords: ['boeing', 'ba', 'boyin', '波音'], code: 'BA', name: '波音', market: 'us', kind: 'stock' },
+  { keywords: ['lilly', 'eli lilly', 'lly', 'lilai', '礼来'], code: 'LLY', name: '礼来制药', market: 'us', kind: 'stock' },
+  { keywords: ['novo nordisk', 'nvo', 'nuohe', '诺和诺德'], code: 'NVO', name: '诺和诺德', market: 'us', kind: 'stock' },
+  { keywords: ['pfizer', 'pfe', 'huirui', '辉瑞'], code: 'PFE', name: '辉瑞制药', market: 'us', kind: 'stock' },
+  { keywords: ['moderna', 'mrna', 'modena', '莫德纳'], code: 'MRNA', name: '莫德纳', market: 'us', kind: 'stock' },
+  { keywords: ['jnj', 'johnson', 'qiangsheng', '强生'], code: 'JNJ', name: '强生', market: 'us', kind: 'stock' },
+  { keywords: ['exxon', 'xom', 'aikesen', '埃克森美孚'], code: 'XOM', name: '埃克森美孚', market: 'us', kind: 'stock' },
+  { keywords: ['chevron', 'cvx', 'xuefolong', '雪佛龙'], code: 'CVX', name: '雪佛龙', market: 'us', kind: 'stock' },
+
+  // 全球核心 ETF
+  { keywords: ['spy', 'spdr s&p 500', 'biaopu500', '标普500etf'], code: 'SPY', name: '标普500ETF (SPY)', market: 'us', kind: 'stock' },
+  { keywords: ['qqq', 'invesco qqq', 'nasdaq 100', 'nasidake100', '纳指100etf', '纳指etf'], code: 'QQQ', name: '纳斯达克100ETF (QQQ)', market: 'us', kind: 'stock' },
+  { keywords: ['voo', 'vanguard s&p 500'], code: 'VOO', name: '标普500ETF (VOO)', market: 'us', kind: 'stock' },
+  { keywords: ['soxx', 'semiconductor etf', 'bandaotietf', '半导体etf'], code: 'SOXX', name: '费城半导体ETF (SOXX)', market: 'us', kind: 'stock' },
+  { keywords: ['smh', 'vaneck semiconductor'], code: 'SMH', name: '半导体ETF (SMH)', market: 'us', kind: 'stock' },
+  { keywords: ['gld', 'spdr gold', 'huangjinetf', '黄金etf'], code: 'GLD', name: '黄金ETF (GLD)', market: 'us', kind: 'stock' },
+  { keywords: ['kweb', 'china internet', 'zhonggaihulian', '中概互联etf'], code: 'KWEB', name: '中国海外互联网ETF (KWEB)', market: 'us', kind: 'stock' },
+
+  // 港股 / 中概 / A股核心龙头 (全面支持英文搜索)
+  { keywords: ['tencent', 'txkg', 'tengxunkonggu', '腾讯', '腾讯控股'], code: '00700', name: '腾讯控股', market: 'hk', kind: 'stock' },
+  { keywords: ['alibaba', 'albb', 'ali', 'alibabaw', '阿里巴巴', '阿里'], code: '09988', name: '阿里巴巴-W', market: 'hk', kind: 'stock' },
+  { keywords: ['baba'], code: 'BABA', name: '阿里巴巴 (BABA)', market: 'us', kind: 'stock' },
+  { keywords: ['meituan', 'mt', 'meituanw', '美团'], code: '03690', name: '美团-W', market: 'hk', kind: 'stock' },
+  { keywords: ['xiaomi', 'xm', 'xiaomiw', '小米', '小米集团'], code: '01810', name: '小米集团-W', market: 'hk', kind: 'stock' },
+  { keywords: ['byd', 'biyadi', '比亚迪'], code: '002594', name: '比亚迪', market: 'domestic', kind: 'stock' },
+  { keywords: ['byd hk', 'bydgf'], code: '01211', name: '比亚迪股份', market: 'hk', kind: 'stock' },
+  { keywords: ['pdd', 'pinduoduo', 'pingduoduo', '拼多多'], code: 'PDD', name: '拼多多', market: 'us', kind: 'stock' },
+  { keywords: ['bilibili', 'bili', 'bilibiliw', '哔哩哔哩', 'B站'], code: '09626', name: '哔哩哔哩-W', market: 'hk', kind: 'stock' },
+  { keywords: ['baidu', 'bidu', 'baiduw', '百度'], code: '09888', name: '百度集团-SW', market: 'hk', kind: 'stock' },
+  { keywords: ['jd', 'jdcom', 'jingdong', '京东'], code: '09618', name: '京东集团-SW', market: 'hk', kind: 'stock' },
+  { keywords: ['netease', 'ntes', 'wangyi', '网易'], code: '09999', name: '网易-S', market: 'hk', kind: 'stock' },
+  { keywords: ['nio', 'weilai', '蔚来'], code: 'NIO', name: '蔚来汽车', market: 'us', kind: 'stock' },
+  { keywords: ['xpeng', 'xiaopeng', '小鹏汽车', '小鹏'], code: 'XPEV', name: '小鹏汽车', market: 'us', kind: 'stock' },
+  { keywords: ['li auto', 'li', 'lixiang', '理想汽车', '理想'], code: 'LI', name: '理想汽车', market: 'us', kind: 'stock' },
+  { keywords: ['smic', 'zhongxingguoji', '中芯国际'], code: '688981', name: '中芯国际', market: 'domestic', kind: 'stock' },
+  { keywords: ['moutai', 'maotai', 'gzmt', '贵州茅台', '茅台'], code: '600519', name: '贵州茅台', market: 'domestic', kind: 'stock' },
+  { keywords: ['catl', 'ningdeshidai', '宁德时代', '宁德'], code: '300750', name: '宁德时代', market: 'domestic', kind: 'stock' },
+  { keywords: ['ping an', 'pingan', 'zhongguopingan', '中国平安', '平安'], code: '601318', name: '中国平安', market: 'domestic', kind: 'stock' },
+  { keywords: ['eastmoney', 'dongfangcaifu', 'dongcai', '东方财富'], code: '300059', name: '东方财富', market: 'domestic', kind: 'stock' },
+  { keywords: ['cmb', 'zhaoshangyinhang', 'zhaohang', '招商银行'], code: '600036', name: '招商银行', market: 'domestic', kind: 'stock' },
+];
+
+function getCuratedMatches(q, targetKind) {
+  const query = q.trim().toLowerCase();
+  if (!query) return [];
+  const matched = [];
+  for (const item of CURATED_ALIASES) {
+    if (item.keywords.some(k => k === query || k.startsWith(query) || (query.length >= 3 && k.includes(query)))) {
+      matched.push({
+        code: item.code,
+        name: item.name,
+        market: item.market,
+        kind: targetKind || item.kind,
+        curated: true,
+      });
+    }
+  }
+  return matched;
+}
+
 /**
- * 把上游搜索结果规范化为统一的 SearchResult 数组
+ * 把上游搜索结果规范化为统一的 SearchResult 数组，并根据相关性智能打分排序
  * @param {Array} items - 各上游的原始结果
+ * @param {string} query - 用户查询词
  * @returns {Array<{code, name, market, kind}>}
  */
-function normalizeSearchResults(items) {
+function normalizeSearchResults(items, query = '') {
+  const q = String(query || '').trim().toLowerCase();
+  const qUpper = q.toUpperCase();
   const dedup = new Map();
-  for (const it of items) {
+
+  function getScore(it) {
+    let score = 0;
+    const code = String(it.code || '').toUpperCase();
+    const name = String(it.name || '').toLowerCase();
+
+    // 1. 代码完全匹配 -> 最高优先级
+    if (code === qUpper) score += 120;
+    else if (code.startsWith(qUpper)) score += 60;
+    else if (code.includes(qUpper)) score += 30;
+
+    // 2. 精选别名匹配
+    if (it.curated) score += 90;
+
+    // 3. 名称匹配
+    if (name === q) score += 80;
+    else if (name.startsWith(q)) score += 50;
+    else if (name.includes(q)) score += 25;
+
+    // 4. 市场权重加成
+    if (it.market === 'us' || it.market === 'hk' || it.market === 'domestic') score += 10;
+    return score;
+  }
+
+  const sorted = [...items].sort((a, b) => getScore(b) - getScore(a));
+
+  for (const it of sorted) {
     if (!it || !it.code || !it.name) continue;
-    // 过滤掉明显无效的 code：太短、含奇怪字符、纯数字但长度不对
     const code = String(it.code).trim().toUpperCase();
-    if (!/^(\d{4,6}|[A-Z]{1,5})$/.test(code)) continue;
+    // 允许 A股6位/港股4-5位/美股1-6位及带.的Ticker (如 BRK.B)
+    if (!/^(\d{4,6}|[A-Z]{1,6}(\.[A-Z]{1,2})?)$/.test(code)) continue;
     const name = String(it.name).replace(/<[^>]+>/g, '').trim();
     if (!name) continue;
     const key = `${it.market}:${code}`;
-    if (dedup.has(key)) continue;
+    if (dedup.has(key)) {
+      const existing = dedup.get(key);
+      // 如果新名称包含中文而旧名称不含，则替换为更易识别的名称
+      if (!/[一-龥]/.test(existing.name) && /[一-龥]/.test(name)) {
+        existing.name = name.slice(0, 60);
+      }
+      continue;
+    }
     dedup.set(key, {
       code,
       name: name.slice(0, 60),
@@ -3304,7 +3449,59 @@ function normalizeSearchResults(items) {
       kind: it.kind,
     });
   }
-  return Array.from(dedup.values()).slice(0, 10);
+  return Array.from(dedup.values()).slice(0, 12);
+}
+
+/**
+ * 腾讯 Smartbox 高性能行情联想搜索接口（支持全球代码、拼音与英文名称）
+ * GET https://smartbox.gtimg.cn/s3/?t=all&q=<q>
+ * 返回: v_hint="us~tsla.oq~Tesla~tesla~GP^hk~00700~腾讯控股~txkg~GP"
+ */
+async function searchTencentSmartbox(q, targetKind = 'stock') {
+  const url = `https://smartbox.gtimg.cn/s3/?t=all&q=${encodeURIComponent(q)}`;
+  try {
+    const { data } = await axios.get(url, { responseType: 'arraybuffer', timeout: 5000 });
+    const text = iconv.decode(data, 'gbk');
+    const m = text.match(/v_hint="([^"]*)"/);
+    if (!m || !m[1]) return [];
+    const items = m[1].split('^').filter(Boolean);
+    const results = [];
+    for (const item of items) {
+      const parts = item.split('~');
+      if (parts.length < 4) continue;
+      const [marketPrefix, rawCode, name, _pinyin, tag] = parts;
+      let cleanCode = String(rawCode || '').trim();
+      let market = 'domestic';
+      let kind = 'stock';
+
+      if (marketPrefix === 'us') {
+        market = 'us';
+        cleanCode = cleanCode.replace(/\..*$/, '').toUpperCase();
+      } else if (marketPrefix === 'hk') {
+        market = 'hk';
+        cleanCode = cleanCode.replace(/\..*$/, '').padStart(5, '0');
+      } else if (marketPrefix === 'jj') {
+        market = 'domestic';
+        kind = 'fund';
+      } else if (marketPrefix === 'sh' || marketPrefix === 'sz' || marketPrefix === 'bj') {
+        market = 'domestic';
+        if (tag && (tag.includes('FJ') || tag.includes('LOF') || tag.includes('ETF') || tag.includes('KJ'))) {
+          kind = 'fund';
+        }
+      }
+
+      if (!cleanCode || !name) continue;
+      results.push({
+        code: cleanCode,
+        name: name.trim(),
+        market,
+        kind: targetKind || kind,
+      });
+    }
+    return results;
+  } catch (e) {
+    return [];
+  }
 }
 
 /**
@@ -3362,13 +3559,13 @@ async function searchStocksEastMoney(q, type) {
 }
 
 /**
- * 新浪 suggest3 接口（混合基金 + 股票）
- *   GET /suggest/type=11,12,13,14,15&key=<q>
+ * 新浪 suggest3 接口（混合基金 + 股票 + 美港股英文）
+ *   GET /suggest/type=11,12,13,14,15,31,41&key=<q>
  *   返回 JS 字符串: var suggest_type_...="code1,name1,exchange1,...;code2,name2,...";
- *   11/13/14 = 沪深基金; 12 = 港股; 15 = 美股(带前缀 gb_)
+ *   11/13/14 = 沪深基金; 12/31 = 港股; 15/41 = 美股及英文名检索
  */
 async function searchSinaSuggest(q, targetKind = 'fund') {
-  const url = `http://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=${encodeURIComponent(q)}`;
+  const url = `http://suggest3.sinajs.cn/suggest/type=11,12,13,14,15,31,41&key=${encodeURIComponent(q)}`;
   try {
     const { data } = await axios.get(url, {
       timeout: 5000,
@@ -3382,18 +3579,25 @@ async function searchSinaSuggest(q, targetKind = 'fund') {
     return rows.map((row) => {
       const cols = row.split(',');
       if (cols.length < 4) return null;
-      const code = String(cols[1] || cols[0] || '').trim().toUpperCase();
-      const name = String(cols[3] || cols[2] || '').trim();
+      const type = String(cols[1] || cols[0] || '').trim();
+      let code = String(cols[2] || cols[1] || cols[0] || '').trim().toUpperCase();
+      let name = String(cols[4] || cols[3] || cols[2] || cols[0] || '').trim();
+      if (!name) name = String(cols[0] || '').trim();
       const exchange = String(cols[2] || '').toLowerCase();
-      const type = String(cols[0] || '').toLowerCase();
       if (!code || !name) return null;
+
       let market = 'domestic';
-      if (exchange === 'hk' || /^\d{4,5}$/.test(code)) market = 'hk';
-      else if (exchange.startsWith('gb') || /^[A-Z]{1,5}$/.test(code)) market = 'us';
+      if (type === '41' || type === '15' || exchange.startsWith('gb') || /^[A-Z]{1,5}$/.test(code)) {
+        market = 'us';
+        code = code.toUpperCase();
+      } else if (type === '12' || type === '31' || exchange === 'hk' || /^\d{4,5}$/.test(code)) {
+        market = 'hk';
+        code = code.padStart(5, '0');
+      }
 
       // 根据新浪返回的 type 或特征精确判断 kind
       let kind = 'fund';
-      if (market === 'hk' || market === 'us' || name.includes('ETF') || name.includes('股票') || type === '11' || type === '12' || type === '15') {
+      if (market === 'hk' || market === 'us' || name.includes('ETF') || name.includes('股票') || type === '11' || type === '12' || type === '15' || type === '41') {
         kind = targetKind; // 尊重目标 Tab
       }
       return { code, name, market, kind };
@@ -3405,7 +3609,7 @@ async function searchSinaSuggest(q, targetKind = 'fund') {
 }
 
 /**
- * 公开接口：根据名字搜索代码
+ * 公开接口：根据名字/代码搜索标的（全方位支持中文、拼音、英文名及美股 Ticker）
  * @param {string} query - 用户输入的关键字
  * @param {'fund'|'stock'} kind - 当前 tab 类型
  */
@@ -3419,6 +3623,13 @@ async function searchByName(query, kind = 'fund') {
   }
 
   const tasks = [];
+  // 1. 精选常用别名/英文库匹配
+  const curated = getCuratedMatches(q, kind);
+
+  // 2. 腾讯 Smartbox 高性能联想（极强中英文与 Ticker 支持）
+  tasks.push(searchTencentSmartbox(q, kind));
+
+  // 3. 东财多市场接口
   if (kind === 'fund') {
     tasks.push(searchFundsEastMoney(q));
   } else {
@@ -3428,11 +3639,12 @@ async function searchByName(query, kind = 'fund') {
       searchStocksEastMoney(q, '22')
     );
   }
-  // 双源：新浪也跑一次
+
+  // 4. 新浪 suggest 接口（含 41 美股中英文）
   tasks.push(searchSinaSuggest(q, kind));
 
   const settled = await Promise.allSettled(tasks);
-  const all = [];
+  const all = [...curated];
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status !== 'fulfilled') continue;
@@ -3441,7 +3653,7 @@ async function searchByName(query, kind = 'fund') {
     }
   }
 
-  const final = normalizeSearchResults(all);
+  const final = normalizeSearchResults(all, q);
   searchCache[key] = { ts: Date.now(), value: final };
   return final;
 }

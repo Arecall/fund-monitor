@@ -10,6 +10,7 @@ const { hashPassword, verifyPassword, passwordMeetsPolicy } = require('./auth.cj
 const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldings, aggregateBySector } = require('./sectors.cjs');
 const marketTime = require('./time.cjs');
 const { createHoldingsPrefetch } = require('./holdings-prefetch.cjs');
+const aiStockPick = require('./ai-stock-pick.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -1565,9 +1566,14 @@ app.get('/api/stream/stats', (_req, res) => {
   }
 });
 
+// 挂载 AI 优质股票筛选路由
+app.use('/api/ai', aiStockPick.router);
+
 // ==========================================
 // 启动服务
 // ==========================================
 app.listen(PORT, () => {
   console.log(`[基金监控全栈系统] 后端API服务已在端口 ${PORT} 启动`);
+  // 启动 AI 选股盘前与收盘前定时调度器
+  aiStockPick.startScheduler();
 });
