@@ -1,28 +1,39 @@
-# Dependencies and build outputs
-node_modules/
-dist/
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Runtime data, credentials, and local configuration
-db.sqlite3*
-*.sqlite3
-*.sqlite3-*
+node_modules
+dist
+dist-ssr
+*.local
+
+# Runtime data
+db.sqlite3
+db.sqlite3-journal
+db.sqlite3-wal
+db.sqlite3-shm
 .encryption_key
 email_config.json
-.env
-.env.*
-!.env.example
 
-# Deployment archives, backups, and diagnostic artifacts
-*.tar.gz
-deploy-backups/
-backups/
-*.log
-test-*.png
-
-# Local tooling
+# AI tooling caches (regenerated per machine)
 .agents/
 .claude/
-.tmp-deploy-paramiko/
-.vscode/
-.idea/
+!.claude/skills/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.tar.gz

@@ -174,11 +174,20 @@ function initTables() {
         message_id TEXT,                     -- 邮件服务返回的 messageId
         sent_ok INTEGER NOT NULL DEFAULT 0,
         error TEXT,
+        is_read INTEGER NOT NULL DEFAULT 0,  -- 0 未读 / 1 已读
         sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    // 历史表迁移：添加 is_read 字段
+    db.run(`ALTER TABLE alert_history ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`, (err) => {
+      if (err && !/duplicate column name/i.test(err.message)) {
+        console.error('[db] alert_history migration failed for is_read:', err.message);
+      }
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_alert_history_user_read ON alert_history (user_id, is_read)`);
 
     // 6. 全局设置表（KV 形式）
     db.run(`

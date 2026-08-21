@@ -10,7 +10,8 @@ import {
   X,
   AlertTriangle,
   Send,
-  History
+  History,
+  ExternalLink
 } from 'lucide-react';
 import {
   fetchAlerts,
@@ -33,9 +34,10 @@ interface AlertPanelProps {
   fundCode: string;
   fundName: string;
   onToast?: (msg: string) => void;
+  onOpenNotificationLogs?: () => void;
 }
 
-export function AlertPanel({ fundCode, fundName, onToast }: AlertPanelProps) {
+export function AlertPanel({ fundCode, fundName, onToast, onOpenNotificationLogs }: AlertPanelProps) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [history, setHistory] = useState<AlertHistoryItem[]>([]);
   const [ethereal, setEthereal] = useState(false);
@@ -129,8 +131,20 @@ export function AlertPanel({ fundCode, fundName, onToast }: AlertPanelProps) {
               {/* History (all funds, latest 5) */}
               {history.length > 0 && (
                 <div className="pt-2 border-t border-[var(--hairline-border)]">
-                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mb-2">
-                    <History size={10} /> 最近发送
+                  <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <History size={10} /> 最近发送
+                    </div>
+                    {onOpenNotificationLogs && (
+                      <button
+                        type="button"
+                        onClick={onOpenNotificationLogs}
+                        className="text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-0.5 font-medium"
+                      >
+                        完整日志与订阅中心
+                        <ExternalLink size={9} />
+                      </button>
+                    )}
                   </div>
                   <div className="space-y-1">
                     {history.slice(0, 5).map(h => (
@@ -154,6 +168,19 @@ export function AlertPanel({ fundCode, fundName, onToast }: AlertPanelProps) {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {history.length === 0 && onOpenNotificationLogs && (
+                <div className="pt-2 border-t border-[var(--hairline-border)] flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onOpenNotificationLogs}
+                    className="text-[11px] text-blue-500 hover:text-blue-600 transition-colors flex items-center gap-1 font-medium"
+                  >
+                    查看全部订阅与推送日志
+                    <ExternalLink size={10} />
+                  </button>
                 </div>
               )}
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin, Pagination } from 'antd';
+import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin, Pagination, Tooltip, Badge } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   Plus,
@@ -21,7 +21,8 @@ import {
   Loader2,
   Pencil,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Bell
 } from 'lucide-react';
 import {
   loginUser,
@@ -39,6 +40,8 @@ import {
   removePosition,
   searchByName,
   subscribeValuations,
+  fetchUnreadAlertCount,
+  markAlertsAsRead,
   type SearchResult,
   type FundValuation,
   type MarketIndex,
@@ -54,6 +57,7 @@ import { Sparkline } from './components/Sparkline';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
+const NotificationLogModal = React.lazy(() => import('./components/NotificationLogModal').then(m => ({ default: m.NotificationLogModal })));
 const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ default: m.GoldTab })));
 const loadFundDetailPanel = () => import('./components/FundDetailPanel').then(m => ({ default: m.FundDetailPanel }));
 const FundDetailPanel = React.lazy(loadFundDetailPanel);
@@ -797,7 +801,30 @@ function App() {
   /* ---------- Selection state for detail panel ---------- */
   const [selectedFundCode, setSelectedFundCode] = useState<string | null>(null);
   const [isDetailExpanded, setIsDetailExpanded] = useState(false);
+  const [isNotificationLogOpen, setIsNotificationLogOpen] = useState(false);
+  const [unreadAlertCount, setUnreadAlertCount] = useState(0);
   const [deletingItem, setDeletingItem] = useState<{ code: string; name: string } | null>(null);
+
+  // 加载当前用户未读告警推送数量
+  const refreshUnreadCount = useCallback(async () => {
+    if (!currentUser) return;
+    const count = await fetchUnreadAlertCount();
+    setUnreadAlertCount(count);
+  }, [currentUser]);
+
+  useEffect(() => {
+    refreshUnreadCount();
+    const timer = setInterval(refreshUnreadCount, 30_000);
+    return () => clearInterval(timer);
+  }, [refreshUnreadCount]);
+
+  const handleOpenNotificationLogs = useCallback(async () => {
+    setIsNotificationLogOpen(true);
+    if (unreadAlertCount > 0) {
+      setUnreadAlertCount(0);
+      void markAlertsAsRead();
+    }
+  }, [unreadAlertCount]);
   const [historyMap, setHistoryMap] = useState<Record<string, FundHistoryPoint[]>>({});
   const [historyLoading, setHistoryLoading] = useState(false);
   const [basicMap, setBasicMap] = useState<Record<string, FundBasicInfo | null>>({});
@@ -2232,25 +2259,40 @@ function App() {
           <span className="hidden md:inline h-4 w-px bg-[var(--divider)] shrink-0" />
 
           {/* 桌面端常驻设置按钮 */}
-          <div className="hidden md:flex items-center gap-2">
+          <div className="hidden md:flex items-center gap-1.5">
+            <Tooltip title={unreadAlertCount > 0 ? `预警订阅与推送日志 (${unreadAlertCount} 条未读)` : '预警订阅与推送日志'} placement="bottom">
+              <PressableIconButton
+                onClick={handleOpenNotificationLogs}
+                aria-label="预警订阅与推送日志"
+                className="p-2 rounded-full hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400"
+              >
+                <Badge count={unreadAlertCount} size="small" offset={[2, -2]} overflowCount={99}>
+                  <Bell size={15} />
+                </Badge>
+              </PressableIconButton>
+            </Tooltip>
             <EmailConfigPanel
               isAdmin={currentUser.toLowerCase() === 'admin'}
               currentUser={currentUser}
               onToast={showToast}
             />
-            <PressableIconButton
-              onClick={toggleDarkMode}
-              aria-label={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'}
-              className="p-2 rounded-full hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-            >
-              {isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
-            </PressableIconButton>
-            <PressableButton
-              onClick={toggleColorRule}
-              className="text-[10px] font-bold bg-[#f5f5f7] dark:bg-[#1d1d1f] hover:bg-slate-200/50 dark:hover:bg-slate-800/50 border border-[var(--hairline-border)] px-2.5 py-1.5"
-            >
-              {isIntlColor ? '🟢涨🔴跌' : '🔴涨🟢跌'}
-            </PressableButton>
+            <Tooltip title={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'} placement="bottom">
+              <PressableIconButton
+                onClick={toggleDarkMode}
+                aria-label={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'}
+                className="p-2 rounded-full hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                {isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
+              </PressableIconButton>
+            </Tooltip>
+            <Tooltip title="切换红绿涨跌色彩规则 (中国/国际标准)" placement="bottom">
+              <PressableButton
+                onClick={toggleColorRule}
+                className="text-[10px] font-bold bg-[#f5f5f7] dark:bg-[#1d1d1f] hover:bg-slate-200/50 dark:hover:bg-slate-800/50 border border-[var(--hairline-border)] px-2.5 py-1.5 ml-0.5"
+              >
+                {isIntlColor ? '🟢涨🔴跌' : '🔴涨🟢跌'}
+              </PressableButton>
+            </Tooltip>
           </div>
 
           {/* 移动端设置菜单入口图标 */}
@@ -3084,13 +3126,39 @@ function App() {
                   </button>
                 </div>
 
-                {/* 3. Notification & Watermark */}
+                {/* 3. Push Logs & Subscriptions */}
+                <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm">🔔</span>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                        预警订阅与推送日志
+                        {unreadAlertCount > 0 && (
+                          <Badge count={unreadAlertCount} size="small" overflowCount={99} />
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">查看个人告警记录与订阅规则</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      handleOpenNotificationLogs();
+                    }}
+                    className="text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 px-3 py-1.5 rounded-full border border-blue-200/50 dark:border-blue-900/30 cursor-pointer"
+                  >
+                    查看日志
+                  </button>
+                </div>
+
+                {/* 4. Notification & Watermark (Admin only) */}
                 <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <span className="text-sm">📧</span>
                     <div>
-                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">预警提醒与水位线</div>
-                      <div className="text-[10px] text-slate-400">配置邮件警报接收箱</div>
+                      <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">邮件服务配置</div>
+                      <div className="text-[10px] text-slate-400">配置 SMTP / Resend 服务密钥</div>
                     </div>
                   </div>
                   <React.Suspense fallback={<div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium"><Spin size="small" /> 正在加载...</div>}>
@@ -3102,7 +3170,7 @@ function App() {
                   </React.Suspense>
                 </div>
 
-                {/* 4. User Info & Logout */}
+                {/* 5. User Info & Logout */}
                 <div className="bg-white/60 dark:bg-white/5 border border-[var(--hairline-border)] rounded-2xl p-3.5 flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <div className="w-6 h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[10px]">
@@ -3401,6 +3469,7 @@ function App() {
                 setTimeout(() => openEditPosition(selectedFundCode), 280);
               }}
               onToast={showToast}
+              onOpenNotificationLogs={() => setIsNotificationLogOpen(true)}
             />
             </DetailErrorBoundary>
             </React.Suspense>
@@ -3408,6 +3477,22 @@ function App() {
           );
         })()}
       </AnimatePresence>
+
+      {/* ─────────────────────────────────────────────────────────────
+         Notification Logs & Subscriptions Modal (User-Isolated)
+         ───────────────────────────────────────────────────────────── */}
+      <React.Suspense fallback={null}>
+        <NotificationLogModal
+          open={isNotificationLogOpen}
+          onClose={() => setIsNotificationLogOpen(false)}
+          currentUser={currentUser}
+          onToast={showToast}
+          onSelectFund={(code) => {
+            setSelectedFundCode(code);
+            setIsDetailExpanded(false);
+          }}
+        />
+      </React.Suspense>
     </div>
   );
 }

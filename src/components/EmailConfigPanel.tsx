@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import { Tooltip } from 'antd';
 import {
   Mail,
   X,
@@ -43,17 +44,18 @@ export function EmailConfigPanel({ isAdmin, currentUser, onToast }: EmailConfigP
 
   return (
     <>
-      <motion.button
-        type="button"
-        onClick={() => setOpen(true)}
-        whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
-        transition={SPRING.snap}
-        className="p-2 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors"
-        aria-label="邮件配置"
-        title="邮件配置"
-      >
-        <Mail size={15} />
-      </motion.button>
+      <Tooltip title="邮件服务配置 (Admin)" placement="bottom">
+        <motion.button
+          type="button"
+          onClick={() => setOpen(true)}
+          whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
+          transition={SPRING.snap}
+          className="p-2 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer"
+          aria-label="邮件配置"
+        >
+          <Mail size={15} />
+        </motion.button>
+      </Tooltip>
 
       <AnimatePresence>
         {open && (
