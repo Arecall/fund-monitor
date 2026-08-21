@@ -63,8 +63,9 @@ interface AiStockPickTabProps {
 }
 
 const STRATEGY_OPTIONS = [
-  { value: 'balanced', label: '⚖️ 均衡配置 (兼顾价值安全边际与成长弹性)' },
-  { value: 'growth', label: '🚀 高景气成长 (侧重科技突破与领涨龙头)' },
+  { value: 'balanced', label: '⚖️ 综合均衡配置 (大盘核心底仓 + 中小盘高弹性潜力股)' },
+  { value: 'small_cap_potential', label: '🚀 潜力黑马与中小盘 (高弹性/专精特新/成长突围)' },
+  { value: 'growth', label: '📈 高景气成长 (侧重科技突破与领涨龙头)' },
   { value: 'value', label: '💰 深度价值与红利 (低估值、高分红防守标的)' },
   { value: 'momentum', label: '🔥 动量突破 (主力资金大幅净流入与均线多头)' },
   { value: 'defensive', label: '🛡️ 稳健防御 (抗通胀、低波动抗跌核心资产)' },
