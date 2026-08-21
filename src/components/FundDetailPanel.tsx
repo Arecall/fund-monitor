@@ -115,6 +115,7 @@ interface FundDetailPanelProps {
   onToggleExpand?: () => void;
   onEditPosition?: () => void;
   onToast?: (msg: string) => void;
+  onOpenNotificationLogs?: () => void;
 }
 
 /**
@@ -134,7 +135,8 @@ export function FundDetailPanel({
   isExpanded = false,
   onToggleExpand,
   onEditPosition,
-  onToast
+  onToast,
+  onOpenNotificationLogs
 }: FundDetailPanelProps) {
   const prefersReducedMotion = useReducedMotion();
   const [chartKey, setChartKey] = useState(0);
@@ -740,6 +742,7 @@ export function FundDetailPanel({
           fundCode={fund.fundcode}
           fundName={fund.name}
           onToast={onToast}
+          onOpenNotificationLogs={onOpenNotificationLogs}
         />
       </Suspense>
     </motion.div>

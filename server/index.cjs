@@ -109,7 +109,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.4.4' });
+  res.json({ status: 'ok', version: '1.4.5' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -823,22 +823,94 @@ app.get('/api/alerts', async (req, res) => {
   }
 });
 
-// 列出当前用户的提醒发送历史
+// 列出当前用户的提醒发送历史（严格隔离用户，支持分页与标的筛选）
 app.get('/api/alerts/history', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-    const rows = await dbHelper.all(
-      `SELECT id, alert_id, fund_code, fund_name, email, direction, change_pct,
-              current_price, reference_price, message_id, sent_ok, error, sent_at
-       FROM alert_history WHERE user_id = ? ORDER BY sent_at DESC LIMIT ?`,
-      [req.userId, limit]
-    );
-    // The current mailer supports dev / resend / smtp modes and no longer
-    // exposes the legacy isUsingEthereal() helper. Keep the response field for
-    // frontend compatibility without letting history reads fail at runtime.
-    res.json({ history: rows, ethereal: false });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || req.query.limit) || 20));
+    const offset = (page - 1) * pageSize;
+    const fundCode = req.query.fund_code ? String(req.query.fund_code).trim() : null;
+
+    let countSql = 'SELECT COUNT(*) as total FROM alert_history WHERE user_id = ?';
+    let querySql = `SELECT id, alert_id, fund_code, fund_name, email, direction, change_pct,
+                           current_price, reference_price, message_id, sent_ok, error, sent_at
+                    FROM alert_history WHERE user_id = ?`;
+    const params = [req.userId];
+
+    if (fundCode) {
+      countSql += ' AND fund_code = ?';
+      querySql += ' AND fund_code = ?';
+      params.push(fundCode);
+    }
+
+    querySql += ' ORDER BY sent_at DESC LIMIT ? OFFSET ?';
+    const queryParams = [...params, pageSize, offset];
+
+    const [countRow, rows] = await Promise.all([
+      dbHelper.get(countSql, params),
+      dbHelper.all(querySql, queryParams),
+    ]);
+
+    const total = countRow ? countRow.total : (rows ? rows.length : 0);
+
+    res.json({
+      history: rows || [],
+      total,
+      page,
+      pageSize,
+      ethereal: false
+    });
   } catch (error) {
+    console.error('获取提醒历史失败:', error);
     res.status(500).json({ error: '获取提醒历史失败' });
+  }
+});
+
+// 获取当前用户的未读推送消息数量（严格隔离）
+app.get('/api/alerts/unread-count', async (req, res) => {
+  try {
+    const row = await dbHelper.get('SELECT COUNT(*) as unreadCount FROM alert_history WHERE user_id = ? AND is_read = 0', [req.userId]);
+    res.json({ unreadCount: row ? row.unreadCount : 0 });
+  } catch (error) {
+    console.error('获取未读数量失败:', error);
+    res.status(500).json({ error: '获取未读数量失败' });
+  }
+});
+
+// 将当前用户的未读推送记录标记为已读（严格隔离）
+app.post('/api/alerts/mark-read', async (req, res) => {
+  try {
+    const result = await dbHelper.run('UPDATE alert_history SET is_read = 1 WHERE user_id = ? AND is_read = 0', [req.userId]);
+    res.json({ ok: true, marked: result?.changes || 0 });
+  } catch (error) {
+    console.error('标记已读失败:', error);
+    res.status(500).json({ error: '标记已读失败' });
+  }
+});
+
+// 清空当前用户的所有推送历史记录（严格隔离，仅删除自己的日志）
+app.delete('/api/alerts/history', async (req, res) => {
+  try {
+    await dbHelper.run('DELETE FROM alert_history WHERE user_id = ?', [req.userId]);
+    res.json({ ok: true, message: '推送历史已清空' });
+  } catch (error) {
+    console.error('清空提醒历史失败:', error);
+    res.status(500).json({ error: '清空提醒历史失败' });
+  }
+});
+
+// 删除当前用户的单条推送历史记录（严格隔离）
+app.delete('/api/alerts/history/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: '无效的历史记录ID' });
+    }
+    const result = await dbHelper.run('DELETE FROM alert_history WHERE id = ? AND user_id = ?', [id, req.userId]);
+    res.json({ ok: true, deleted: result?.changes || 1 });
+  } catch (error) {
+    console.error('删除提醒历史记录失败:', error);
+    res.status(500).json({ error: '删除提醒历史记录失败' });
   }
 });
 

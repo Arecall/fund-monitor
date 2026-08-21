@@ -617,6 +617,14 @@ export interface AlertHistoryItem {
   sent_at: string;
 }
 
+export interface AlertHistoryResponse {
+  history: AlertHistoryItem[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  ethereal: boolean;
+}
+
 export async function fetchAlerts(): Promise<AlertItem[]> {
   try {
     const data = await request('/api/alerts');
@@ -627,13 +635,56 @@ export async function fetchAlerts(): Promise<AlertItem[]> {
   }
 }
 
-export async function fetchAlertHistory(limit: number = 10): Promise<{ history: AlertHistoryItem[]; ethereal: boolean }> {
+export async function fetchAlertHistory(params?: {
+  limit?: number;
+  page?: number;
+  pageSize?: number;
+  fund_code?: string;
+} | number): Promise<AlertHistoryResponse> {
   try {
-    return await request(`/api/alerts/history?limit=${limit}`);
+    let query = '';
+    if (typeof params === 'number') {
+      query = `?limit=${params}`;
+    } else if (params) {
+      const q = new URLSearchParams();
+      if (params.limit) q.set('limit', String(params.limit));
+      if (params.page) q.set('page', String(params.page));
+      if (params.pageSize) q.set('pageSize', String(params.pageSize));
+      if (params.fund_code) q.set('fund_code', params.fund_code);
+      query = `?${q.toString()}`;
+    }
+    return await request(`/api/alerts/history${query}`);
   } catch (error) {
     console.error('获取提醒历史失败:', error);
-    return { history: [], ethereal: false };
+    return { history: [], total: 0, page: 1, pageSize: 20, ethereal: false };
   }
+}
+
+export async function fetchUnreadAlertCount(): Promise<number> {
+  try {
+    const res = await request('/api/alerts/unread-count');
+    return typeof res.unreadCount === 'number' ? res.unreadCount : 0;
+  } catch (error) {
+    console.error('获取未读提醒数量失败:', error);
+    return 0;
+  }
+}
+
+export async function markAlertsAsRead(): Promise<{ ok: boolean; marked?: number }> {
+  try {
+    return await request('/api/alerts/mark-read', { method: 'POST' });
+  } catch (error) {
+    console.error('标记提醒已读失败:', error);
+    return { ok: false };
+  }
+}
+
+export async function clearAlertHistory(): Promise<{ ok: boolean; message?: string }> {
+  return request('/api/alerts/history', { method: 'DELETE' });
+}
+
+export async function deleteAlertHistoryItem(id: number): Promise<{ ok: boolean }> {
+  return request(`/api/alerts/history/${id}`, { method: 'DELETE' });
 }
 
 export async function createAlert(params: {
