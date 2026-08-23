@@ -1043,6 +1043,28 @@ async function fetchStockCapitalFlow(code, market) {
 const _minuteCache = {};
 const MINUTE_CACHE_TTL = 10 * 1000;
 
+/**
+ * 代理标的分钟源偶尔会混入跨交易日/复权口径不一致的价格。以整段行情中位数为
+ * 基准剔除极端价格，避免单段错误报价污染基金分时图；正常的美股 ETF 分时波动
+ * 不会接近该阈值。
+ */
+function filterProxyMinuteOutliers(bars, thresholdPct = 12) {
+  if (!Array.isArray(bars) || bars.length < 2) return [];
+  const values = bars
+    .map(bar => Number(bar?.close))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (values.length < 2) return [];
+
+  const median = values[Math.floor(values.length / 2)];
+  if (!Number.isFinite(median) || median <= 0) return [];
+  return bars.filter(bar => {
+    const close = Number(bar?.close);
+    return Number.isFinite(close) && close > 0
+      && Math.abs(close - median) / median * 100 <= thresholdPct;
+  });
+}
+
 async function fetchStockMinuteData(code, market, kind = null) {
   const c = code.toUpperCase();
 
@@ -1338,19 +1360,50 @@ async function fetchStockMinuteData(code, market, kind = null) {
     //    缩放到该 QDII 基金本身的净值（如 5.4355 元）维度，避免走势图与 Tooltip 标注出现 +13119% 量纲错位。
     if (result && result.length >= 2) {
       if (targetTicker !== code) {
+        const filteredProxyBars = filterProxyMinuteOutliers(result);
+        if (filteredProxyBars.length < 2) {
+          console.warn(`[minute] ${c} proxy bars rejected: insufficient valid bars after outlier filtering`);
+          result = null;
+          _minuteCache[cacheKey] = { ts: now, data: result };
+          return result;
+        }
+        result = filteredProxyBars;
         // 先保存代理标的原生 K 线到 quote_snapshots（以 QQQ 等代理代码归档）
         saveMinuteBarsToDb(targetTicker, result);
 
         let lastNav = null;
+        let liveEstimate = null;
         try {
           const val = cache.fund[c]?.data || (await getFundValuation(c, kind).catch(() => null));
           if (val && val.dwjz) {
             lastNav = parseFloat(val.dwjz);
           }
+          if (val?.gsz) {
+            liveEstimate = parseFloat(val.gsz);
+          }
         } catch {}
 
-        const basePrice = result.preClose || result[0]?.close || result[0]?.open || 0;
-        if (lastNav > 0 && basePrice > 0 && Math.abs(basePrice - lastNav) / lastNav > 0.3) {
+        if (!lastNav || isNaN(lastNav) || lastNav <= 0 || lastNav > 50) {
+          try {
+            const lsjz = await fetchEastMoneyLSJZ(c);
+            if (lsjz && lsjz.dwjz) {
+              lastNav = parseFloat(lsjz.dwjz);
+            }
+          } catch {}
+        }
+
+        // 只使用同一批分钟行情的首个有效价格作为缩放基准，绝不混用上游
+        // preClose（该字段可能属于不同交易日或复权口径）。
+        let basePrice = Number(result[0]?.close || result[0]?.open || 0);
+        // 若代理标的为美股 ETF，原生价格应 > 50；若 < 50 说明存在异常污染点，取点集中的中位数作为基准
+        if (targetMarket === 'us' && basePrice < 50) {
+          const validProxyPrices = result.map(b => Number(b.close)).filter(v => v > 50).sort((a, b) => a - b);
+          if (validProxyPrices.length > 0) {
+            basePrice = validProxyPrices[Math.floor(validProxyPrices.length / 2)];
+          }
+        }
+
+        if (lastNav > 0 && lastNav < 50 && basePrice > 0) {
           const scaledResult = result.map(b => {
             const ratio = b.close / basePrice;
             const scaledClose = parseFloat((lastNav * ratio).toFixed(4));
@@ -1365,8 +1418,41 @@ async function fetchStockMinuteData(code, market, kind = null) {
               close: scaledClose,
             };
           });
-          // 代理标的分钟数据按最新 dwjz 动态缩放后返回，不永久落库到 code 避免官方净值更新后基准错位
-          result = scaledResult;
+          // 缩放后的代理曲线若偏离基金净值/当前估值过大，说明基准日或复权口径
+          // 不一致。宁可不返回分时数据，也绝不能输出会误导用户的假涨跌。
+          // 代理标的只能描述盘中波动形状，基金卡片的实时估值才是唯一的终点。
+          // 对曲线施加线性校正，让首点严格锚定昨日净值、末点严格锚定当前估值，
+          // 同时保留代理标的相对分钟波动，避免分时末点与涨跌幅卡片不一致。
+          const reconciledResult = Number.isFinite(liveEstimate) && liveEstimate > 0
+            ? scaledResult.map((bar, index) => {
+                const progress = scaledResult.length <= 1 ? 1 : index / (scaledResult.length - 1);
+                const sourceTrend = scaledResult[scaledResult.length - 1].close - lastNav;
+                const quoteTrend = liveEstimate - lastNav;
+                const correction = (quoteTrend - sourceTrend) * progress;
+                const adjust = value => parseFloat((value + correction).toFixed(4));
+                return {
+                  ...bar,
+                  open: adjust(bar.open),
+                  high: adjust(bar.high),
+                  low: adjust(bar.low),
+                  close: adjust(bar.close),
+                };
+              })
+            : scaledResult;
+          const reference = Number.isFinite(liveEstimate) && liveEstimate > 0 ? liveEstimate : lastNav;
+          const maxDeviationPct = reconciledResult.reduce((max, b) => (
+            Math.max(max, Math.abs(b.close - reference) / reference * 100)
+          ), 0);
+          if (maxDeviationPct > 15) {
+            console.warn(`[minute] ${c} proxy-scaled bars rejected: max deviation ${maxDeviationPct.toFixed(2)}%`);
+            result = null;
+          } else {
+            // 代理标的分钟数据按最新 dwjz 动态缩放后返回，不永久落库到 code 避免官方净值更新后基准错位
+            result = reconciledResult;
+          }
+        } else {
+          console.warn(`[minute] ${c} proxy bars rejected: missing fund NAV anchor`);
+          result = null;
         }
       } else {
         saveMinuteBarsToDb(code, result);
@@ -1389,6 +1475,11 @@ function saveMinuteBarsToDb(code, bars) {
   try {
     for (const b of bars) {
       if (!b.time || typeof b.close !== 'number' || isNaN(b.close) || b.close <= 0) continue;
+      // 保护：6 位基金代码绝不允许将 > 50 的原生 ETF 价格写入
+      if (/^\d{6}$/.test(c) && b.close > 50) continue;
+      // 保护：已知美股/港股代理 ETF（如 QQQ, SPY, SOXX 等），绝不允许将 < 50 的缩放后基金净值写入
+      if (['QQQ', 'SPY', 'SOXX', 'USQQQ'].includes(c) && b.close < 50) continue;
+
       // 解析 Beijing 时间字符串为 timestamp
       const timeStr = b.time.includes('T') ? b.time : b.time.replace(' ', 'T') + '+08:00';
       const ts = Date.parse(timeStr);
@@ -1473,6 +1564,8 @@ async function fetchSnapshotMinuteData(code, market = null) {
       if (typeof r.current !== 'number' || !Number.isFinite(r.current) || r.current <= 0) continue;
       // 若为 6 位公募/QDII 基金代码，过滤掉因历史代理标的原生报价未缩放写入的污染打点 (> 50 元)
       if (/^\d{6}$/.test(c) && r.current > 50) continue;
+      // 若为代理标的 QQQ / SPY 等，过滤掉因历史缩放写入的污染打点 (< 50 元)
+      if (['QQQ', 'SPY', 'SOXX', 'USQQQ'].includes(c) && r.current < 50) continue;
 
       const d = new Date(r.captured_at);
       const bjtHour = marketTime.getBeijingHour(d);

@@ -383,6 +383,19 @@ function initTables() {
         AND current > 50
     `);
 
+    // 自动清理代理标的（QQQ / SPY 等）误写入缩放后小净值的污染打点 (< 50 元)
+    db.run(`
+      DELETE FROM quote_snapshots
+      WHERE code IN ('QQQ', 'SPY', 'SOXX', 'USQQQ', 'usQQQ')
+        AND current < 50
+    `);
+
+    // 清理非法非正数价格
+    db.run(`
+      DELETE FROM quote_snapshots
+      WHERE current IS NULL OR current <= 0
+    `);
+
     console.log('数据库表结构初始化/验证完成');
   });
 }

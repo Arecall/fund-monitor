@@ -110,7 +110,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.4.9' });
+  res.json({ status: 'ok', version: '1.4.10' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -1376,6 +1376,11 @@ function writeSseEvent(res, event, payload) {
 function makeDetailMinutePatch(code, kind, market, val, capturedAt) {
   const price = parseFloat(val?.gsz) || parseFloat(val?.dwjz);
   if (!Number.isFinite(price) || price <= 0 || val?.navOnly || val?.isPlaceholder) return null;
+  const c = String(code || '').toUpperCase();
+  // 保护：6 位基金代码绝不推送 > 50 的原生 ETF 价格
+  if (/^\d{6}$/.test(c) && price > 50) return null;
+  // 保护：已知代理 ETF 绝不推送 < 50 的小净值
+  if (['QQQ', 'SPY', 'SOXX', 'USQQQ'].includes(c) && price < 50) return null;
 
   const effectiveMarket = val?.market || market;
   let timestamp = Number(val?.quoteTimestamp);

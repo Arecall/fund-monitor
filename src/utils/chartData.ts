@@ -352,22 +352,27 @@ export interface MinuteFeed {
 }
 
 /**
- * 过滤实时打点/分钟 K 线中由估值方法突变引起的孤立针状毛刺（Spike Outliers）
+ * 过滤实时打点/分钟 K 线中由估值方法突变引起的孤立针状毛刺（Spike Outliers）与跨量级脏数据
  */
-function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5): ChartPoint[] {
+function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorValue?: number): ChartPoint[] {
   if (!points || points.length < 3) return points;
+  let candidatePoints = points;
+  if (anchorValue && anchorValue > 0) {
+    candidatePoints = points.filter(p => Math.abs(p.v - anchorValue) / anchorValue <= 0.18);
+    if (candidatePoints.length < 2) return [];
+  }
   const result: ChartPoint[] = [];
-  const len = points.length;
+  const len = candidatePoints.length;
 
   for (let i = 0; i < len; i++) {
-    const curr = points[i];
+    const curr = candidatePoints[i];
     const prev = result.length > 0 ? result[result.length - 1] : undefined;
-    let next = i < len - 1 ? points[i + 1] : undefined;
+    let next = i < len - 1 ? candidatePoints[i + 1] : undefined;
 
     if (prev && next) {
       let lookAheadIndex = i + 1;
       while (lookAheadIndex < len && lookAheadIndex <= i + 3) {
-        const candidate = points[lookAheadIndex];
+        const candidate = candidatePoints[lookAheadIndex];
         const diffWithPrev = Math.abs((candidate.v - prev.v) / prev.v) * 100;
         if (diffWithPrev < thresholdPct) {
           next = candidate;
@@ -395,6 +400,40 @@ function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5): ChartPoi
   }
 
   return result;
+}
+
+/**
+ * QDII 的分时形状来自代理标的，而实时估值来自基金自身。将代理曲线的首尾
+ * 对齐到“昨日净值 → 当前估值”，防止图表末点、涨跌额与详情卡片出现两套数据。
+ * 后端已执行同样处理；此处是前端对缓存/旧接口响应的最终保护。
+ */
+function reconcileProxyTrendToQuote(points: ChartPoint[], previous: number, current: number): ChartPoint[] {
+  if (points.length < 2 || !(previous > 0) || !(current > 0)) return points;
+  const first = points[0].v;
+  const last = points[points.length - 1].v;
+  if (!(first > 0) || !(last > 0)) return points;
+
+  // 防御：若首点或末点偏离基准净值超过 15%，说明整段未按正确净值缩放，直接平滑重构
+  if (Math.abs(first - previous) / previous > 0.15 || Math.abs(last - previous) / previous > 0.15) {
+    return points.map((p, i) => ({
+      ...p,
+      v: Number((previous + (current - previous) * (i / (points.length - 1))).toFixed(4))
+    }));
+  }
+
+  const sourceTrend = last - first;
+  const quoteTrend = current - previous;
+  return points.map((point, index) => {
+    const progress = index / (points.length - 1);
+    const sourceBaseline = first + sourceTrend * progress;
+    const quoteBaseline = previous + quoteTrend * progress;
+    const v = Number((point.v + quoteBaseline - sourceBaseline).toFixed(4));
+    // 安全包络：单点偏离 previous 不能超过 15%
+    if (Math.abs(v - previous) / previous > 0.15) {
+      return { ...point, v: Number(quoteBaseline.toFixed(4)) };
+    }
+    return { ...point, v };
+  });
 }
 
 export function buildSeries(
@@ -486,6 +525,8 @@ export function buildSeries(
     let points: ChartPoint[];
     let isRealSnapshot = false;
     const isStock = kind === 'stock';
+    // QDII 场外基金使用代理标的的相对分钟波动构造估值趋势，不是基金自身成交数据。
+    const isProxyQdiiTrend = kind === 'fund' && (market === 'us' || market === 'hk');
     // 股票分时优先用 open 作为起点（避免发行价 8.66 那种"直线起飞"）
     // 仅当 open 合理（>0 且接近 current 量级）时才使用，否则 fallback 到 previous
     const useStockAnchor = isStock && openPrice && openPrice > 0 && current > 0
@@ -513,34 +554,61 @@ export function buildSeries(
           endTs = realBars[realBars.length - 1].t;
         }
 
-        const filtered = candidateBars.map(b => ({
-          t: b.t,
-          v: b.v,
-          volume: b.volume,
-          turnover: b.turnover,
-          real: true,
-        }));
-        // 如果打点首项晚于 startTs，在起点补充昨收/今开基准点
-        if (filtered.length > 0 && filtered[0].t > startTs + 60_000) {
-          filtered.unshift({ t: startTs, v: startValue, volume: undefined, turnover: undefined, real: true });
-        }
-        let rawPoints = filtered;
-        if (rawPoints.length >= 2) {
-          isRealSnapshot = true;
-        }
-        // 末尾追加"当前实时 tick"（仅在实时盘中且当前估值与末点无暴涨暴跌异动离群时追加）
-        if (rawPoints.length > 0) {
-          const last = rawPoints[rawPoints.length - 1];
-          if (last.t < endTs && current > 0 && current !== last.v) {
-            const devPct = Math.abs((current - last.v) / last.v) * 100;
-            // 盘中实时更新且偏离不超过 1.5% 时追加；闭市或白天占位估值跳跃时跳过
-            if (now < endTs && devPct <= 1.5) {
-              rawPoints.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
+        // 基准净值强校验与安全包络网（Fund NAV Sanity Gate）
+        if (startValue > 0) {
+          if (!isStock) {
+            // 场外/QDII 基金：单日波动极大值绝不会超过 ±18%
+            const safeAnchor = startValue;
+            const validBars = candidateBars.filter(b => b.v > 0 && Math.abs(b.v - safeAnchor) / safeAnchor <= 0.18);
+
+            // 若超过 30% 的点违背安全包络（例如 8.17 错配到 5.21 基金上），判定为整段错配污染，直接丢弃
+            if (validBars.length < candidateBars.length * 0.7 || validBars.length < 2) {
+              candidateBars = [];
+            } else {
+              candidateBars = validBars;
             }
+          } else {
+            // 股票：单点价格为正数，且偏离起点不超过 150%
+            candidateBars = candidateBars.filter(b => b.v > 0 && Math.abs(b.v - startValue) / startValue <= 1.5);
           }
         }
-        points = filterSpikeOutliers(rawPoints);
-        // 过滤后为空（快照时间在 session 窗口外，如 QDII 基金白天估值 vs 美股夜间 session）
+
+        if (candidateBars.length >= 2) {
+          const filtered = candidateBars.map(b => ({
+            t: b.t,
+            v: b.v,
+            volume: b.volume,
+            turnover: b.turnover,
+            real: true,
+          }));
+          // 如果打点首项晚于 startTs，在起点补充昨收/今开基准点
+          if (filtered.length > 0 && filtered[0].t > startTs + 60_000) {
+            filtered.unshift({ t: startTs, v: startValue, volume: undefined, turnover: undefined, real: true });
+          }
+          let rawPoints = filtered;
+          if (rawPoints.length >= 2) {
+            isRealSnapshot = !isProxyQdiiTrend;
+          }
+          // 末尾追加"当前实时 tick"（仅在实时盘中且当前估值与末点无暴涨暴跌异动离群时追加）
+          if (rawPoints.length > 0) {
+            const last = rawPoints[rawPoints.length - 1];
+            if (last.t < endTs && current > 0 && current !== last.v) {
+              const devPct = Math.abs((current - last.v) / last.v) * 100;
+              // 盘中实时更新且偏离不超过 1.5% 时追加；闭市或白天占位估值跳跃时跳过
+              if (now < endTs && devPct <= 1.5) {
+                rawPoints.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
+              }
+            }
+          }
+          points = filterSpikeOutliers(rawPoints, 1.5, startValue);
+          if (isProxyQdiiTrend) {
+            points = reconcileProxyTrendToQuote(points, previous, current);
+          }
+        } else {
+          points = [];
+        }
+
+        // 过滤后为空（快照时间在 session 窗口外，如 QDII 基金白天估值 vs 美股夜间 session，或被安全网拦截的污染数据）
         // 无法重建真实走势，降级为诚实直线
         if (points.length === 0) {
           points = buildFundIntradayLine(startValue, current, startTs, endTs);
@@ -578,6 +646,8 @@ export function buildSeries(
 
     const realNote = isStock
       ? `数据来源：上游分钟行情与实时行情采样点的合并。成交量/成交额仅在上游提供真实分钟数据时展示；实时价格采样约每 10 秒更新一次。`
+      : isProxyQdiiTrend
+        ? 'QDII 场外基金无自身分钟 K 线。分时走势由代理标的的相对分钟波动缩放生成，仅用于展示估值趋势，不代表基金实时成交价格。'
       : '数据来源：后端实时估值采样点。分时走势由这些价格打点轨迹连线生成；场外基金不具备交易所分钟成交量/成交额。';
 
     return {

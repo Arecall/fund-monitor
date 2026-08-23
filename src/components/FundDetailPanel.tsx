@@ -35,13 +35,17 @@ const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
   year: 30,
 };
 
-function minuteResponseToFeed(response: StockMinuteResponse | null): MinuteFeed | null {
+function minuteResponseToFeed(response: StockMinuteResponse | null, baseAnchor?: number): MinuteFeed | null {
   if (!response?.data?.length) return null;
   const byMinute = new Map<number, MinuteFeed['bars'][number]>();
+  const isFundScale = typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50;
+
   response.data.forEach((bar) => {
     const t = Date.parse(bar.time.replace(' ', 'T') + '+08:00');
     const v = Number(bar.close);
     if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return;
+    // 防御：若明确为基金且有基准，偏离 > 18% 的脏点跳过
+    if (isFundScale && Math.abs(v - baseAnchor) / baseAnchor > 0.18) return;
     byMinute.set(Math.floor(t / 60_000) * 60_000, {
       t: Math.floor(t / 60_000) * 60_000,
       v,
@@ -53,9 +57,13 @@ function minuteResponseToFeed(response: StockMinuteResponse | null): MinuteFeed 
   return bars.length ? { bars } : null;
 }
 
-function mergeMinutePatch(feed: MinuteFeed | null, patch: DetailMinutePatch): MinuteFeed | null {
+function mergeMinutePatch(feed: MinuteFeed | null, patch: DetailMinutePatch, baseAnchor?: number): MinuteFeed | null {
   const { t, v } = patch.point;
   if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return feed;
+  // 防御：若明确为基金且有基准，偏离 > 18% 的脏 patch 拒绝合入
+  if (typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50) {
+    if (Math.abs(v - baseAnchor) / baseAnchor > 0.18) return feed;
+  }
   const bucket = Math.floor(t / 60_000) * 60_000;
   const bars = [...(feed?.bars || [])];
   const index = bars.findIndex(bar => Math.floor(bar.t / 60_000) * 60_000 === bucket);
@@ -181,6 +189,7 @@ export function FundDetailPanel({
       minuteSigRef.current = sig;
       setMinuteData(next);
     };
+    const anchorNav = parseFloat(fund.dwjz) || parseFloat(fund.gsz) || 0;
     const applyPatch = (patch: DetailMinutePatch) => {
       if (!isCurrent() || patch.code.toUpperCase() !== fund.fundcode.toUpperCase()) return;
       if (!minuteBaselineReadyRef.current) {
@@ -190,7 +199,7 @@ export function FundDetailPanel({
         return;
       }
       setMinuteData(previous => {
-        const next = mergeMinutePatch(previous, patch);
+        const next = mergeMinutePatch(previous, patch, anchorNav);
         const last = next?.bars[next.bars.length - 1];
         const sig = next ? `${next.bars.length}|${last?.t}|${last?.v}` : '';
         if (sig === minuteSigRef.current) return previous;
@@ -202,9 +211,9 @@ export function FundDetailPanel({
       try {
         const response = await fetchStockMinute(fund.fundcode, kind, fund.market);
         if (!isCurrent()) return;
-        let next = minuteResponseToFeed(response);
+        let next = minuteResponseToFeed(response, anchorNav);
         for (const patch of pendingMinutePatchesRef.current.sort((a, b) => a.point.t - b.point.t)) {
-          next = mergeMinutePatch(next, patch);
+          next = mergeMinutePatch(next, patch, anchorNav);
         }
         pendingMinutePatchesRef.current = [];
         minuteBaselineReadyRef.current = true;

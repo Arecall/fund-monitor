@@ -372,6 +372,11 @@ class ValuationBroker {
     const capturedAt = Date.now();
     const current = parseFloat(val.gsz);
     if (!Number.isFinite(current) || current <= 0) return;
+    const c = String(code).toUpperCase();
+    // 保护：6 位基金代码绝不允许写入 > 50 的原生 ETF 价格
+    if (/^\d{6}$/.test(c) && current > 50) return;
+    // 保护：已知美股/港股代理 ETF 绝不允许写入 < 50 的小净值
+    if (['QQQ', 'SPY', 'SOXX', 'USQQQ'].includes(c) && current < 50) return;
 
     // 拦截美股 QDII 基金在白天 A 股开盘阶段上游返回的非交易占位估值
     if (val.market === 'us') {
