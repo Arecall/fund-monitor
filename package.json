@@ -8,6 +8,7 @@
     "server": "node server/index.cjs",
     "start": "npm run server",
     "build": "tsc -b && vite build",
+    "check-market-time": "node scripts/verify-market-time.cjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

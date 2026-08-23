@@ -190,7 +190,7 @@ function getIntradayWindow(
       if (now < todayClose) {
         // 周六凌晨 00:00–04:00：周五夜间 US session 正在进行收尾
         startTs = todayStart - DAY;
-        endTs = Math.min(now, todayClose);
+        endTs = todayClose;
         preMarket = false;
       } else {
         // 周六 04:00 之后（已收盘）：展示周五 21:30 → 周六 04:00 的完整走势
@@ -217,12 +217,12 @@ function getIntradayWindow(
       } else if (now < todayStart) {
         // 周一下午 16:00–21:30：进入美股【盘前倒计时】阶段
         startTs = todayStart;
-        endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
+        endTs = todayClose + DAY;
         preMarket = true;
       } else {
         // 周一 21:30–24:00：周一常规交易进行中
         startTs = todayStart;
-        endTs = now;
+        endTs = todayClose + DAY;
         preMarket = false;
       }
     } else {
@@ -230,7 +230,7 @@ function getIntradayWindow(
       if (now < todayClose) {
         // 凌晨 00:00–04:00：昨夜 21:30 开始的 session 进行中
         startTs = todayStart - DAY;
-        endTs = Math.min(now, todayClose);
+        endTs = todayClose;
         preMarket = false;
       } else if (now < preMarketStart) {
         // 白天 04:00–16:00：展示昨夜完整走势
@@ -240,12 +240,12 @@ function getIntradayWindow(
       } else if (now < todayStart) {
         // 下午 16:00–21:30：进入当晚美股【盘前倒计时】阶段
         startTs = todayStart;
-        endTs = todayStart + (closeH + 24 - startH) * 3600 * 1000;
+        endTs = todayClose + DAY;
         preMarket = true;
       } else {
         // 当晚 21:30–24:00：今夜 session 进行中
         startTs = todayStart;
-        endTs = now;
+        endTs = todayClose + DAY;
         preMarket = false;
       }
     }
