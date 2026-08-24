@@ -452,7 +452,9 @@ export interface StockKLinePoint {
 }
 
 export interface StockMinutePoint {
-  time: string;          // "YYYY-MM-DD HH:MM:SS"
+  time: string;          // "YYYY-MM-DD HH:MM:SS" (标准北京时间)
+  timestamp?: number;    // UTC 绝对时间戳（毫秒）
+  t?: number;            // 别名，UTC 绝对时间戳（毫秒）
   open: number;
   high: number;
   low: number;

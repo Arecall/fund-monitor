@@ -113,6 +113,38 @@ async function verifyHoldingsFallbackRules() {
   assert(filtered.length !== extremeChanges.length, '离群持仓偏离数据未被识别并触发放弃');
 }
 
+// 12. 后端权威时区转换与时间轴规范化校验
+function verifyTimezoneNormalization() {
+  // 夏令时测试（EDT UTC-4）
+  const summerTencentBars = [{ time: '2026-08-21 09:30:00', open: 500, high: 500, low: 500, close: 500 }];
+  const summerEmBars = [{ time: '2026-08-21 21:30:00', open: 500, high: 500, low: 500, close: 500 }];
+  const normSummerTencent = market.normalizeMinuteBarTimes(summerTencentBars, 'us')[0];
+  const normSummerEm = market.normalizeMinuteBarTimes(summerEmBars, 'us')[0];
+
+  assert(normSummerTencent.time === '2026-08-21 21:30:00', '夏令时腾讯美东时间转换北京时间错误');
+  assert(normSummerEm.time === '2026-08-21 21:30:00', '夏令时东财北京时间规范化错误');
+  assert(normSummerTencent.t === normSummerEm.t, '夏令时腾讯与东财毫秒时间戳不一致');
+  assert(normSummerTencent.timestamp === normSummerEm.timestamp, '夏令时腾讯与东财 timestamp 不一致');
+
+  // 冬令时测试（EST UTC-5）
+  const winterTencentBars = [{ time: '2026-01-15 09:30:00', open: 500, high: 500, low: 500, close: 500 }];
+  const winterEmBars = [{ time: '2026-01-15 22:30:00', open: 500, high: 500, low: 500, close: 500 }];
+  const normWinterTencent = market.normalizeMinuteBarTimes(winterTencentBars, 'us')[0];
+  const normWinterEm = market.normalizeMinuteBarTimes(winterEmBars, 'us')[0];
+
+  assert(normWinterTencent.time === '2026-01-15 22:30:00', '冬令时腾讯美东时间转换北京时间错误');
+  assert(normWinterEm.time === '2026-01-15 22:30:00', '冬令时东财北京时间规范化错误');
+  assert(normWinterTencent.t === normWinterEm.t, '冬令时腾讯与东财毫秒时间戳不一致');
+
+  // A 股与港股北京时间保持校验
+  const aShareBars = [{ time: '2026-08-21 09:30:00', open: 100, high: 100, low: 100, close: 100 }];
+  const normAShare = market.normalizeMinuteBarTimes(aShareBars, 'domestic')[0];
+  assert(normAShare.time === '2026-08-21 09:30:00', 'A股分时时间被意外改动');
+  assert(typeof normAShare.t === 'number' && normAShare.t > 0, 'A股分时未挂载毫秒时间戳 t');
+}
+
+verifyTimezoneNormalization();
+
 verifyHoldingsFallbackRules().then(() => {
   console.log('✅ 市场交易时间与规则校验全部通过！');
   process.exit(0);

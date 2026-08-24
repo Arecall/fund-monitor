@@ -473,6 +473,7 @@ const WatchlistCard = React.memo(function WatchlistCard({
           <Sparkline
             key={`${selfTab}:${fund.market || 'domestic'}:${code}`}
             code={code}
+            fundName={fund.name}
             kind={selfTab === 'stock' ? 'stock' : 'fund'}
             market={fund.market}
             currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}
@@ -627,6 +628,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
       <td className="py-3 px-2 text-center align-middle whitespace-nowrap w-[96px]">
         <Sparkline
           code={code}
+          fundName={fund.name}
           kind={selfTab === 'stock' ? 'stock' : 'fund'}
           market={fund.market}
           currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}

@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo, useId } from 'react';
-import { Spin } from 'antd';
+import { Spin, Tag } from 'antd';
 import { fetchStockMinute } from '../services/api';
+import { buildSeries, buildMonotoneSplinePath, minuteResponseToFeed, type MinuteFeed, type FundMarket } from '../utils/chartData';
 
 interface SparklineProps {
   code: string;
+  fundName?: string;
   kind?: 'fund' | 'stock';
   market?: string;
   currentPrice: number;
@@ -14,37 +16,34 @@ interface SparklineProps {
 }
 
 // 模块级全域内存缓存，防止列表重复渲染打爆接口 (TTL = 60s)
-const sparklineCache = new Map<string, { points: number[]; ts: number }>();
-const sparklineInflight = new Map<string, Promise<number[] | null>>();
+const sparklineFeedCache = new Map<string, { feed: MinuteFeed | null; ts: number }>();
+const sparklineFeedInflight = new Map<string, Promise<MinuteFeed | null>>();
 const SPARKLINE_TTL = 60 * 1000;
 
 function getSparklineKey(code: string, kind: 'fund' | 'stock', market: string) {
   return `${kind}:${market}:${code}`;
 }
 
-function loadSparklinePoints(key: string, code: string, kind: 'fund' | 'stock', market: string) {
-  const existing = sparklineInflight.get(key);
+function loadSparklineFeed(key: string, code: string, kind: 'fund' | 'stock', market: string, baseAnchor?: number) {
+  const existing = sparklineFeedInflight.get(key);
   if (existing) return existing;
 
   const request = fetchStockMinute(code, kind, market)
     .then((res) => {
-      if (!res || !Array.isArray(res.data)) return null;
-      const points = res.data
-        .map((point) => point.close)
-        .filter((value) => typeof value === 'number' && !isNaN(value) && value > 0);
-      return points.length >= 2 ? points : null;
+      return minuteResponseToFeed(res, baseAnchor);
     })
     .catch(() => null)
     .finally(() => {
-      sparklineInflight.delete(key);
+      sparklineFeedInflight.delete(key);
     });
 
-  sparklineInflight.set(key, request);
+  sparklineFeedInflight.set(key, request);
   return request;
 }
 
 export function Sparkline({
   code,
+  fundName = '',
   kind = 'stock',
   market = 'domestic',
   currentPrice,
@@ -54,42 +53,40 @@ export function Sparkline({
   height = 28,
 }: SparklineProps) {
   const instrumentKey = getSparklineKey(code, kind, market);
-  const [dataPoints, setDataPoints] = useState<number[] | null>(() => {
-    const cached = sparklineCache.get(instrumentKey);
+  const [feed, setFeed] = useState<MinuteFeed | null>(() => {
+    const cached = sparklineFeedCache.get(instrumentKey);
     if (cached && Date.now() - cached.ts < SPARKLINE_TTL) {
-      return cached.points;
+      return cached.feed;
     }
     return null;
   });
-  const [loading, setLoading] = useState<boolean>(!dataPoints);
+  const [loading, setLoading] = useState<boolean>(!feed);
   const gradientInstanceId = useId().replace(/:/g, '_');
 
   useEffect(() => {
-    const cached = sparklineCache.get(instrumentKey);
+    const cached = sparklineFeedCache.get(instrumentKey);
     let isCurrent = true;
 
-    // 组件身份变化时先清空旧曲线，避免 effect 执行前短暂绘制上一个标的的数据。
+    // 组件身份变化或缓存命中时使用缓存
     if (cached && Date.now() - cached.ts < SPARKLINE_TTL) {
-      setDataPoints(cached.points);
+      setFeed(cached.feed);
       setLoading(false);
       return () => {
         isCurrent = false;
       };
     }
 
-    setDataPoints(null);
+    setFeed(null);
     setLoading(true);
 
-    loadSparklinePoints(instrumentKey, code, kind, market)
-      .then((points) => {
+    const baseAnchor = prevClose > 0 ? prevClose : currentPrice;
+    loadSparklineFeed(instrumentKey, code, kind, market, baseAnchor)
+      .then((minuteFeed) => {
         if (!isCurrent) return;
-        if (points) {
-          sparklineCache.set(instrumentKey, { points, ts: Date.now() });
-          setDataPoints(points);
-        } else {
-          // 临时无数据仅展示本次计算的两点兜底，不能污染全局缓存。
-          setDataPoints([prevClose > 0 ? prevClose : currentPrice, currentPrice].filter((v) => v > 0));
+        if (minuteFeed) {
+          sparklineFeedCache.set(instrumentKey, { feed: minuteFeed, ts: Date.now() });
         }
+        setFeed(minuteFeed);
         setLoading(false);
       });
 
@@ -98,48 +95,59 @@ export function Sparkline({
     };
   }, [instrumentKey, code, kind, market, currentPrice, prevClose]);
 
+  // 复用与详情页 FundChart 完全一致的 buildSeries 引擎，保证图表走势形态 100% 对齐
+  const series = useMemo(() => {
+    return buildSeries(
+      code,
+      currentPrice,
+      prevClose,
+      'intraday',
+      [],
+      fundName,
+      code,
+      kind,
+      undefined,
+      undefined,
+      undefined,
+      feed,
+      market as FundMarket
+    );
+  }, [code, currentPrice, prevClose, fundName, kind, feed, market]);
+
+  // 若当前标的处于盘前阶段，使用 Ant Design 待更新组件展示
+  const isPreMarket = Boolean(series.preMarket);
+
   // 坐标转换计算
   const geometry = useMemo(() => {
-    const values = dataPoints && dataPoints.length >= 2 ? dataPoints : [prevClose > 0 ? prevClose : currentPrice, currentPrice];
-    const validVals = values.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
-    if (validVals.length < 2) return null;
+    if (isPreMarket) return null;
+    const points = series.points;
+    if (!points || points.length < 2) return null;
 
-    const minV = Math.min(...validVals);
-    const maxV = Math.max(...validVals);
-    const span = maxV - minV || (maxV * 0.005 || 1);
+    const values = points.map(p => p.v).filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+    if (values.length < 2) return null;
+
+    const minV = Math.min(...values);
+    const maxV = Math.max(...values);
+    const span = maxV - minV;
 
     const padTop = 3;
     const padBottom = 3;
     const innerH = height - padTop - padBottom;
 
-    const pts = validVals.map((v, i) => ({
-      x: (i / (validVals.length - 1)) * width,
-      y: height - padBottom - ((v - minV) / span) * innerH,
+    const pts = points.map((p, i) => ({
+      x: (i / (points.length - 1)) * width,
+      y: span > 0
+        ? height - padBottom - ((p.v - minV) / span) * innerH
+        : height / 2,
     }));
 
-    // 平滑 Bezier 曲线
-    let lineD = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-    if (pts.length === 2) {
-      lineD = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
-    } else {
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i - 1] || pts[i];
-        const p1 = pts[i];
-        const p2 = pts[i + 1];
-        const p3 = pts[i + 2] || p2;
-        const c1x = p1.x + (p2.x - p0.x) / 6;
-        const c1y = p1.y + (p2.y - p0.y) / 6;
-        const c2x = p2.x - (p3.x - p1.x) / 6;
-        const c2y = p2.y - (p3.y - p1.y) / 6;
-        lineD += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-      }
-    }
-
+    // 单调三次 Hermite 样条曲线（Monotone Cubic Spline）
+    const lineD = buildMonotoneSplinePath(pts);
     const lastPt = pts[pts.length - 1];
     const areaD = `${lineD} L ${lastPt.x.toFixed(1)} ${height} L 0 ${height} Z`;
 
     return { lineD, areaD, lastPt };
-  }, [dataPoints, currentPrice, prevClose, width, height]);
+  }, [isPreMarket, series, height, width]);
 
   const strokeColor = isUp ? 'var(--color-up)' : 'var(--color-down)';
   const gradId = `sparkGrad-${gradientInstanceId}`;
@@ -151,6 +159,20 @@ export function Sparkline({
         style={{ width, height }}
       >
         <Spin size="small" />
+      </div>
+    );
+  }
+
+  if (isPreMarket) {
+    return (
+      <div className="inline-flex items-center justify-center select-none" style={{ width, height }}>
+        <Tag
+          bordered={false}
+          color="default"
+          className="text-[10px] text-slate-400 dark:text-slate-500 bg-slate-100/90 dark:bg-white/5 rounded-full px-2 py-0.5 m-0 font-medium select-none leading-tight"
+        >
+          待更新
+        </Tag>
       </div>
     );
   }

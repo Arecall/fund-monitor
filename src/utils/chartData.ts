@@ -14,7 +14,7 @@
  *   - 美股：21:30 - 04:00 次日（北京时间；对应美东 09:30 - 16:00）
  */
 
-import type { FundHistoryPoint } from '../services/api';
+import type { FundHistoryPoint, StockMinuteResponse } from '../services/api';
 import { detectFundMarket, type FundMarket } from './fundMarket';
 import { beijingWallTimeToTimestamp, getBeijingParts as getSharedBeijingParts, isUsEasternDst } from './time';
 export type { FundMarket } from './fundMarket';
@@ -254,24 +254,21 @@ function getIntradayWindow(
   }
 
   if (market === 'hk') {
-    const preStartTs = today(year, month, day, 9, 0); // 港股开市前时段 09:00
     const startTs = today(year, month, day, 9, 30);
     const endTs = today(year, month, day, 16, 0);
 
-    // 确定是否处于开市前倒计时 (09:00 - 09:30 工作日)
-    const preMarket = isWeekday && now >= preStartTs && now < startTs;
+    // 确定是否处于开市前/盘前阶段 (工作日 09:30 之前)
+    const preMarket = isWeekday && now < startTs;
 
     if (preMarket) {
       return { startTs, endTs, xLabelMode: 'local', preMarket: true };
     }
 
-    // 若处于非交易时段（周末或早晨 09:00 之前），回溯到最近一个交易日（周五或昨天）的走势窗口
-    if (!isWeekday || now < preStartTs) {
+    // 若处于周末非交易时段，回溯到最近一个交易日（周五）的走势窗口
+    if (!isWeekday) {
       let offsetDays = 1;
       if (weekday === 'Sat') offsetDays = 1;
       else if (weekday === 'Sun') offsetDays = 2;
-      else if (weekday === 'Mon') offsetDays = 3;
-      else offsetDays = 1; // 周二至周五早晨 09:00 前回溯到昨天
 
       const tradeDayTs = now - offsetDays * DAY;
       const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
@@ -290,24 +287,21 @@ function getIntradayWindow(
   }
 
   // A 股 / other (国内市场 / 北交所)
-  const preStartTs = today(year, month, day, 9, 15); // A 股集合竞价 09:15
   const startTs = today(year, month, day, 9, 30);
   const endTs = today(year, month, day, 15, 0);
 
-  // 确定是否处于盘前倒计时 (09:15 - 09:30 工作日)
-  const preMarket = isWeekday && now >= preStartTs && now < startTs;
+  // 确定是否处于盘前阶段 (工作日 09:30 之前)
+  const preMarket = isWeekday && now < startTs;
 
   if (preMarket) {
     return { startTs, endTs, xLabelMode: 'local', preMarket: true };
   }
 
-  // 若处于非交易时段（周末或早晨 09:15 之前），回溯到最近一个有效交易日（周五或昨天）的时段窗口
-  if (!isWeekday || now < preStartTs) {
+  // 若处于周末非交易时段，回溯到最近一个有效交易日（周五）的时段窗口
+  if (!isWeekday) {
     let offsetDays = 1;
     if (weekday === 'Sat') offsetDays = 1;
     else if (weekday === 'Sun') offsetDays = 2;
-    else if (weekday === 'Mon') offsetDays = 3;
-    else offsetDays = 1; // 周二至周五早晨 09:15 前回溯到昨天
 
     const tradeDayTs = now - offsetDays * DAY;
     const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
@@ -323,6 +317,82 @@ function getIntradayWindow(
   }
 
   return { startTs, endTs, xLabelMode: 'local', preMarket: false };
+}
+
+/**
+ * 计算时间戳在指定市场当日交易会话时间轴上的百分比进度 (0.0 ~ 1.0)
+ *   - A 股 (domestic)：09:30(0%) -> 11:30/13:00(50%) -> 15:00(100%)，总计 240 分钟
+ *   - 港股 (hk)：09:30(0%) -> 12:00/13:00(45.45%) -> 16:00(100%)，总计 330 分钟
+ *   - 美股 (us)：21:30(0%) -> 00:45(50%) -> 04:00(100%)（夏令时 EDT）/ 22:30->01:45->05:00（冬令时 EST），总计 390 分钟
+ */
+export function getSessionTimeRatio(timestamp: number, market: FundMarket = 'domestic'): number {
+  const d = new Date(timestamp);
+  const parts = getSharedBeijingParts(d);
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+  const timeMin = hour * 60 + minute;
+
+  if (market === 'us') {
+    const dst = isUsEasternDst(d);
+    const startHour = dst ? 21 : 22;
+    const startMin = startHour * 60 + 30; // 21:30 或 22:30
+    const closeHour = dst ? 4 : 5;
+    const closeMin = closeHour * 60; // 04:00 或 05:00
+
+    // 美股跨夜处理
+    if (timeMin >= startMin) {
+      // 当夜前半段 (21:30 - 24:00)
+      const elapsed = timeMin - startMin;
+      return Math.max(0, Math.min(1, elapsed / 390));
+    } else if (timeMin <= closeMin) {
+      // 次日凌晨后半段 (00:00 - 04:00)
+      const firstHalf = 24 * 60 - startMin; // 150 分钟 (21:30-24:00)
+      const elapsed = firstHalf + timeMin;
+      return Math.max(0, Math.min(1, elapsed / 390));
+    } else {
+      // 白天非交易时段
+      return timeMin < 12 * 60 ? 1.0 : 0.0;
+    }
+  }
+
+  if (market === 'hk') {
+    const morningStart = 9 * 60 + 30;  // 09:30
+    const morningEnd = 12 * 60;        // 12:00 (150 mins)
+    const afternoonStart = 13 * 60;    // 13:00
+    const afternoonEnd = 16 * 60;      // 16:00 (180 mins)
+    const totalMins = 330;
+
+    if (timeMin <= morningStart) return 0;
+    if (timeMin <= morningEnd) {
+      return (timeMin - morningStart) / totalMins;
+    }
+    if (timeMin < afternoonStart) {
+      return 150 / totalMins; // 午休停在 150/330
+    }
+    if (timeMin <= afternoonEnd) {
+      return (150 + (timeMin - afternoonStart)) / totalMins;
+    }
+    return 1.0;
+  }
+
+  // A 股 / domestic / other
+  const morningStart = 9 * 60 + 30;  // 09:30
+  const morningEnd = 11 * 60 + 30;   // 11:30 (120 mins)
+  const afternoonStart = 13 * 60;    // 13:00
+  const afternoonEnd = 15 * 60;      // 15:00 (120 mins)
+  const totalMins = 240;
+
+  if (timeMin <= morningStart) return 0;
+  if (timeMin <= morningEnd) {
+    return (timeMin - morningStart) / totalMins;
+  }
+  if (timeMin < afternoonStart) {
+    return 0.5; // 午休停在 120/240 = 50%
+  }
+  if (timeMin <= afternoonEnd) {
+    return 0.5 + (timeMin - afternoonStart) / totalMins;
+  }
+  return 1.0;
 }
 
 /**
@@ -349,6 +419,32 @@ export interface MinuteBar {
  */
 export interface MinuteFeed {
   bars: MinuteBar[];
+}
+
+export function minuteResponseToFeed(response: StockMinuteResponse | null, baseAnchor?: number): MinuteFeed | null {
+  if (!response?.data?.length) return null;
+  const byMinute = new Map<number, MinuteFeed['bars'][number]>();
+  const isFundScale = typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50;
+
+  response.data.forEach((bar) => {
+    // 统一优先消费后端权威计算给出的绝对毫秒时间戳 t / timestamp，避免前端解析字符串的时区/夏令时歧义
+    const rawT = Number(bar.t ?? bar.timestamp);
+    const t = Number.isFinite(rawT) && rawT > 0
+      ? rawT
+      : (bar.time ? Date.parse(bar.time.replace(' ', 'T') + '+08:00') : NaN);
+    const v = Number(bar.close);
+    if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return;
+    // 防御：若明确为基金且有基准，偏离 > 18% 的脏点跳过
+    if (isFundScale && Math.abs(v - baseAnchor) / baseAnchor > 0.18) return;
+    byMinute.set(Math.floor(t / 60_000) * 60_000, {
+      t: Math.floor(t / 60_000) * 60_000,
+      v,
+      volume: Number.isFinite(bar.volume) ? bar.volume : undefined,
+      turnover: Number.isFinite(bar.amount) ? bar.amount : undefined,
+    });
+  });
+  const bars = Array.from(byMinute.values()).sort((a, b) => a.t - b.t);
+  return bars.length ? { bars } : null;
 }
 
 /**
@@ -400,6 +496,74 @@ function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorVal
   }
 
   return result;
+}
+
+/**
+ * 基于 Fritsch-Carlson 调和平均法的单调三次 Hermite 样条插值（Monotone Cubic Spline）
+ * 专为金融时序走势图设计：
+ * 1. 严格保证单调性（在波峰/波谷处切线置 0，彻底根除 Catmull-Rom 样条导致的 overshoot 上冲/下窜毛刺）；
+ * 2. 保证一阶导数 C1 连续，呈现如富途牛牛、雪球、同花顺般丝滑自然的高级流体曲线形态；
+ * 3. 完美兼容非均匀采样点与稀疏快照打点，无任何锯齿或伪震荡。
+ */
+export function buildMonotoneSplinePath(pts: { x: number; y: number }[]): string {
+  if (pts.length < 2) return '';
+  if (pts.length === 2) {
+    return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)} L ${pts[1].x.toFixed(2)} ${pts[1].y.toFixed(2)}`;
+  }
+
+  const n = pts.length;
+  // 1. 计算相邻两点间的水平与垂直增量以及割线斜率
+  const dx = new Array<number>(n - 1);
+  const dy = new Array<number>(n - 1);
+  const slopes = new Array<number>(n - 1);
+
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    dy[i] = pts[i + 1].y - pts[i].y;
+    slopes[i] = dx[i] !== 0 ? dy[i] / dx[i] : 0;
+  }
+
+  // 2. 计算各顶点的单调切线斜率 m_k（Fritsch-Carlson 调和平均）
+  const m = new Array<number>(n);
+  m[0] = slopes[0];
+  m[n - 1] = slopes[n - 2];
+
+  for (let i = 1; i < n - 1; i++) {
+    const s0 = slopes[i - 1];
+    const s1 = slopes[i];
+    if (s0 * s1 <= 0) {
+      // 局部极值点（波峰/波谷）：切线置 0，杜绝任何向上或向下穿透
+      m[i] = 0;
+    } else {
+      // 调和平均保证单调性与平滑过渡
+      m[i] = (2 * s0 * s1) / (s0 + s1);
+    }
+  }
+
+  // 3. 构建三次贝塞尔曲线段（Cubic Bezier Segments）
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const curDx = dx[i];
+    if (curDx <= 0) {
+      d += ` L ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+      continue;
+    }
+    const c1x = p1.x + curDx / 3;
+    let c1y = p1.y + (m[i] * curDx) / 3;
+    const c2x = p2.x - curDx / 3;
+    let c2y = p2.y - (m[i + 1] * curDx) / 3;
+
+    // 单调区间防溢出严格 Clamp
+    const minY = Math.min(p1.y, p2.y);
+    const maxY = Math.max(p1.y, p2.y);
+    c1y = Math.max(minY, Math.min(maxY, c1y));
+    c2y = Math.max(minY, Math.min(maxY, c2y));
+
+    d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
 }
 
 /**

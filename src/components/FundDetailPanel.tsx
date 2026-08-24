@@ -22,7 +22,6 @@ import type {
   FundHoldingStock,
   StockKLinePoint,
   StockKLinePeriod,
-  StockMinuteResponse,
   DetailMinutePatch
 } from '../services/api';
 import { fetchStockKLine, fetchStockMinute, subscribeDetailChartUpdates } from '../services/api';
@@ -34,28 +33,6 @@ const KLINE_BAR_COUNTS: Record<StockKLinePeriod, number> = {
   quarter: 40,
   year: 30,
 };
-
-function minuteResponseToFeed(response: StockMinuteResponse | null, baseAnchor?: number): MinuteFeed | null {
-  if (!response?.data?.length) return null;
-  const byMinute = new Map<number, MinuteFeed['bars'][number]>();
-  const isFundScale = typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50;
-
-  response.data.forEach((bar) => {
-    const t = Date.parse(bar.time.replace(' ', 'T') + '+08:00');
-    const v = Number(bar.close);
-    if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return;
-    // 防御：若明确为基金且有基准，偏离 > 18% 的脏点跳过
-    if (isFundScale && Math.abs(v - baseAnchor) / baseAnchor > 0.18) return;
-    byMinute.set(Math.floor(t / 60_000) * 60_000, {
-      t: Math.floor(t / 60_000) * 60_000,
-      v,
-      volume: Number.isFinite(bar.volume) ? bar.volume : undefined,
-      turnover: Number.isFinite(bar.amount) ? bar.amount : undefined,
-    });
-  });
-  const bars = Array.from(byMinute.values()).sort((a, b) => a.t - b.t);
-  return bars.length ? { bars } : null;
-}
 
 function mergeMinutePatch(feed: MinuteFeed | null, patch: DetailMinutePatch, baseAnchor?: number): MinuteFeed | null {
   const { t, v } = patch.point;
@@ -102,7 +79,7 @@ import { RelativeTime, parseGzTime, MarketStatusBadge } from './RelativeTime';
 import { QuoteSourceBadge } from './QuoteSourceBadge';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
 import { formatMarketCap } from '../utils/format';
-import type { MinuteFeed } from '../utils/chartData';
+import { type MinuteFeed, minuteResponseToFeed } from '../utils/chartData';
 
 const SPRING = {
   panel:  { type: 'spring' as const, bounce: 0.05, duration: 0.4 },

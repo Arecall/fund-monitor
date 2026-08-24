@@ -3,14 +3,17 @@ import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 
 import { RefreshCw, TrendingUp, TrendingDown, Minus, Database, Info, Clock } from 'lucide-react';
 import {
   buildSeries,
+  buildMonotoneSplinePath,
   formatTick,
   formatTooltip,
   changePct,
+  getSessionTimeRatio,
   type RangeKey,
   type ChartPoint,
   type DataSource
 } from '../utils/chartData';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
+import { isUsEasternDst } from '../utils/time';
 import { OpenCountdown, deriveMarketStatus } from './RelativeTime';
 import { useAppEnv } from '../utils/env';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
@@ -121,17 +124,24 @@ export function FundChart({
   );
   const points = series.points;
 
+  // 判断当下时刻该资产所在市场是否开盘及当前市场阶段（美股夜盘/盘前/盘中等）
+  const fundMarket = useMemo(() => market ?? detectFundMarket(fundName, fundCode), [market, fundName, fundCode]);
+  const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
+  const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
+  const marketStatus = useMemo(
+    () => deriveMarketStatus(lastPointTime, timeTick, fundMarket),
+    [lastPointTime, timeTick, fundMarket]
+  );
+
   // ─── Geometry ─────────────────────────────────────────────────────
-  const padding = { top: 18, right: 52, bottom: 28, left: 48 };
+  const padding = { top: 18, right: 52, bottom: 28, left: 58 };
   const innerW = width - padding.left - padding.right;
   const innerH = height - padding.top - padding.bottom;
 
   // Y 轴范围：
-  //  - 默认以所有点的极值为画图范围。
-  //  - 分时图特例：
-  //      (a) 股票 + 已知今日 high/low：直接用 [low, high] 当真实盘中区间，
-  //          这样无论起点（昨收/发行价）离多远都不会被挤压。
-  //      (b) 否则用"除起点外"的极值，并判定起点是否远离，否则退回全范围。
+  //  - 分时图（intraday）：严格以昨收 previous 为基准中轴对称（0.00% 对应垂直正中线），
+  //    保证开盘基准线水平居中，两翼波动幅度严格对称。
+  //  - 历史图表（1D / 1W / 1M）：按所有点的极值展开。
   const rangeBounds = useMemo(() => {
     if (points.length === 0) {
       return { lo: 0, hi: 1 };
@@ -139,77 +149,68 @@ export function FundChart({
     const allValues = points.map(p => p.v);
     const allLo = Math.min(...allValues);
     const allHi = Math.max(...allValues);
-    if (range !== 'intraday' || points.length < 4) {
+    if (range !== 'intraday') {
       return { lo: allLo, hi: allHi };
     }
-    // 路径 (a)：股票 + 已知 high/low → 强制用 [low, high] 当作真实盘中区间
-    if (kind === 'stock' && highPrice && lowPrice && highPrice > lowPrice) {
-      const pad = (highPrice - lowPrice) * 0.04 || highPrice * 0.005;
-      return { lo: lowPrice - pad, hi: highPrice + pad };
-    }
-    // 路径 (b)：通用 — 看起点是否远离其余点
-    const first = points[0].v;
-    const restLo = Math.min(...points.slice(1).map(p => p.v));
-    const restHi = Math.max(...points.slice(1).map(p => p.v));
-    const restSpan = restHi - restLo;
-    if (restSpan <= 0) return { lo: allLo, hi: allHi };
-    const deviation = Math.max(Math.abs(first - restHi), Math.abs(first - restLo));
-    if (deviation / restSpan >= 1.5) {
-      const pad = (restHi - restLo) * 0.04 || restHi * 0.005;
-      return { lo: restLo - pad, hi: restHi + pad };
-    }
-    return { lo: allLo, hi: allHi };
-  }, [points, range, kind, highPrice, lowPrice]);
 
-  const minV = useMemo(() => rangeBounds.lo * 0.999, [rangeBounds]);
-  const maxV = useMemo(() => rangeBounds.hi * 1.001, [rangeBounds]);
+    const basePrice = previous > 0 ? previous : (points[0]?.v || 1);
+    const deviations = points.map(p => Math.abs(p.v - basePrice));
+    if (highPrice && highPrice > 0) deviations.push(Math.abs(highPrice - basePrice));
+    if (lowPrice && lowPrice > 0) deviations.push(Math.abs(lowPrice - basePrice));
+    if (openPrice && openPrice > 0) deviations.push(Math.abs(openPrice - basePrice));
+    if (current && current > 0) deviations.push(Math.abs(current - basePrice));
+
+    // 默认最小波动区间为基准价的 ±0.5%，避免波动极小时线条紧贴画框顶部或底部
+    const maxDev = Math.max(...deviations, basePrice * 0.005);
+    const paddedDev = maxDev * 1.05; // 留 5% 呼吸空间
+
+    return {
+      lo: basePrice - paddedDev,
+      hi: basePrice + paddedDev,
+    };
+  }, [points, range, previous, highPrice, lowPrice, openPrice, current]);
+
+  const minV = useMemo(() => (range === 'intraday' ? rangeBounds.lo : rangeBounds.lo * 0.999), [rangeBounds, range]);
+  const maxV = useMemo(() => (range === 'intraday' ? rangeBounds.hi : rangeBounds.hi * 1.001), [rangeBounds, range]);
   const range_v = maxV - minV || 1;
 
-  const x = useCallback((i: number) => {
+  const getX = useCallback((p: ChartPoint, i: number) => {
+    if (range === 'intraday') {
+      const ratio = getSessionTimeRatio(p.t, fundMarket);
+      return padding.left + ratio * innerW;
+    }
     if (points.length <= 1) return padding.left;
     return padding.left + (i / (points.length - 1)) * innerW;
-  }, [points.length, innerW, padding.left]);
+  }, [range, fundMarket, padding.left, innerW, points.length]);
+
+  const x = useCallback((i: number) => {
+    if (i < 0 || i >= points.length) return padding.left;
+    return getX(points[i], i);
+  }, [points, getX, padding.left]);
 
   const y = useCallback((v: number) => {
     return padding.top + (1 - (v - minV) / range_v) * innerH;
   }, [minV, range_v, innerH, padding.top]);
 
-  const linePath = useMemo(() => {
-    return points
-      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(2)} ${y(p.v).toFixed(2)}`)
-      .join(' ');
-  }, [points, x, y]);
+  const pts = useMemo(() => {
+    return points.map((p, i) => ({ x: getX(p, i), y: y(p.v) }));
+  }, [points, getX, y]);
 
-  // Catmull-Rom 样条曲线：把折线（多段直线）转成平滑曲线，消除锯齿。
-  // 仅 3+ 点时有效，否则退化为单段直线。
+  // 单调三次 Hermite 样条曲线（Monotone Cubic Spline）：
+  // 消除尖锐折角与 Catmull-Rom 的 overshoot 假毛刺，达到主流财经终端（富途、雪球、同花顺）的平滑质感。
   const smoothLinePath = useMemo(() => {
-    if (points.length < 2) return '';
-    if (points.length === 2) return linePath;
-    const pts = points.map((p, i) => ({ x: x(i), y: y(p.v) }));
-    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      // Catmull-Rom → Cubic Bezier 转换（tension = 0.5 / 6）
-      const c1x = p1.x + (p2.x - p0.x) / 6;
-      const c1y = p1.y + (p2.y - p0.y) / 6;
-      const c2x = p2.x - (p3.x - p1.x) / 6;
-      const c2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
-    }
-    return d;
-  }, [points, x, y, linePath]);
+    return buildMonotoneSplinePath(pts);
+  }, [pts]);
 
   const areaPath = useMemo(() => {
-    if (points.length === 0) return '';
-    const first = `M ${x(0).toFixed(2)} ${(padding.top + innerH).toFixed(2)}`;
+    if (pts.length === 0) return '';
+    const bottomY = (padding.top + innerH).toFixed(2);
+    const firstX = pts[0].x.toFixed(2);
+    const lastX = pts[pts.length - 1].x.toFixed(2);
     // 顶部跟随平滑曲线（去掉 smoothLinePath 开头的 M 换成 L）
     const top = smoothLinePath.replace(/^M /, 'L ');
-    const last = `L ${x(points.length - 1).toFixed(2)} ${(padding.top + innerH).toFixed(2)} Z`;
-    return `${first} ${top} ${last}`;
-  }, [points, x, smoothLinePath, padding.top, innerH]);
+    return `M ${firstX} ${bottomY} ${top} L ${lastX} ${bottomY} Z`;
+  }, [pts, smoothLinePath, padding.top, innerH]);
 
   // 均价折线：有真实分钟成交量时使用 VWAP；A 股缺少成交量时以累计简单均价补全，
   // 并以虚线和 Tooltip 标识为“估算均价”，避免与真实成交量加权均价混淆。
@@ -236,26 +237,15 @@ export function FundChart({
       }
     }
 
-    const pts = points.map((_p, i) => ({ x: x(i), y: y(averages[i]) }));
-    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      const c1x = p1.x + (p2.x - p0.x) / 6;
-      const c1y = p1.y + (p2.y - p0.y) / 6;
-      const c2x = p2.x - (p3.x - p1.x) / 6;
-      const c2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
-    }
+    const vwapPts = points.map((p, i) => ({ x: getX(p, i), y: y(averages[i]) }));
+    const d = buildMonotoneSplinePath(vwapPts);
     return {
       path: d,
       last: averages[averages.length - 1],
       perPoint: averages,
       estimated: !hasVol,
     };
-  }, [points, range, x, y]);
+  }, [points, range, getX, y]);
 
   // MA10 均价线（10 周期简单移动平均）
   // 周 ('1W') / 月 ('1M') 维度使用 MA10 均线；分时 ('intraday') 和 1日 ('1D') 维度使用 VWAP。
@@ -279,30 +269,10 @@ export function FundChart({
       }
     }
 
-    const pts = points.map((_p, i) => ({ x: x(i), y: y(vwaps[i]) }));
-    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      const c1x = p1.x + (p2.x - p0.x) / 6;
-      const c1y = p1.y + (p2.y - p0.y) / 6;
-      const c2x = p2.x - (p3.x - p1.x) / 6;
-      const c2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
-    }
+    const maPts = points.map((p, i) => ({ x: getX(p, i), y: y(vwaps[i]) }));
+    const d = buildMonotoneSplinePath(maPts);
     return { path: d, last: vwaps[vwaps.length - 1], perPoint: vwaps };
-  }, [points, range, x, y]);
-
-  // 判断当下时刻该资产所在市场是否开盘及当前市场阶段（美股夜盘/盘前/盘中等）
-  const fundMarket = useMemo(() => market ?? detectFundMarket(fundName, fundCode), [market, fundName, fundCode]);
-  const isCurrentlyOpen = useMemo(() => isMarketOpen(fundMarket), [fundMarket]);
-  const lastPointTime = points.length > 0 ? points[points.length - 1].t : Date.now();
-  const marketStatus = useMemo(
-    () => deriveMarketStatus(lastPointTime, timeTick, fundMarket),
-    [lastPointTime, timeTick, fundMarket]
-  );
+  }, [points, range, getX, y]);
 
   // ─── Y-axis ticks ────────────────────────────────────────────────
   const yTicks = useMemo(() => {
@@ -315,37 +285,65 @@ export function FundChart({
 
   // ─── X-axis ticks ────────────────────────────────────────────────
   const xTicks = useMemo(() => {
-    if (points.length < 2) return [];
     if (range === 'intraday') {
-      const midIdx = Math.floor((points.length - 1) / 2);
-      const lastIdx = points.length - 1;
+      if (fundMarket === 'hk') {
+        return [
+          { x: padding.left, label: '09:30', anchor: 'start' as const },
+          { x: padding.left + (150 / 330) * innerW, label: '12:00/13:00', anchor: 'middle' as const },
+          { x: padding.left + innerW, label: '16:00', anchor: 'end' as const },
+        ];
+      }
+      if (fundMarket === 'us') {
+        const dst = isUsEasternDst(new Date());
+        return [
+          { x: padding.left, label: dst ? '21:30' : '22:30', anchor: 'start' as const },
+          { x: padding.left + 0.5 * innerW, label: dst ? '00:45' : '01:45', anchor: 'middle' as const },
+          { x: padding.left + innerW, label: dst ? '04:00' : '05:00', anchor: 'end' as const },
+        ];
+      }
+      // Domestic A-shares
       return [
-        { idx: 0, label: formatTick(points[0].t, range) },
-        { idx: midIdx, label: formatTick(points[midIdx].t, range) },
-        { idx: lastIdx, label: formatTick(points[lastIdx].t, range) },
+        { x: padding.left, label: '09:30', anchor: 'start' as const },
+        { x: padding.left + 0.5 * innerW, label: '11:30/13:00', anchor: 'middle' as const },
+        { x: padding.left + innerW, label: '15:00', anchor: 'end' as const },
       ];
     }
-    const N = 5;
-    const out: { idx: number; label: string }[] = [];
+    const N = Math.min(5, points.length);
+    if (points.length < 2) return [];
+    const out: { x: number; label: string; anchor: 'start' | 'middle' | 'end' }[] = [];
     for (let i = 0; i < N; i++) {
       const idx = Math.round((i / (N - 1)) * (points.length - 1));
-      out.push({ idx, label: formatTick(points[idx].t, range) });
+      const anchor = i === 0 ? 'start' : i === N - 1 ? 'end' : 'middle';
+      out.push({ x: getX(points[idx], idx), label: formatTick(points[idx].t, range), anchor });
     }
     return out;
-  }, [points, range]);
+  }, [range, fundMarket, padding.left, innerW, points, getX]);
 
   // ─── Hover ───────────────────────────────────────────────────────
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (points.length < 2) return;
+    if (pts.length < 2) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     if (px < padding.left || px > padding.left + innerW) {
       setHoverIdx(null);
       return;
     }
-    const ratio = (px - padding.left) / innerW;
-    const idx = Math.round(ratio * (points.length - 1));
-    setHoverIdx(Math.max(0, Math.min(points.length - 1, idx)));
+    // 找到在 X 轴上离鼠标 px 最近的实际点索引
+    let bestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const diff = Math.abs(pts[i].x - px);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestIdx = i;
+      }
+    }
+    // 若在分时图模式下，鼠标移动到右侧尚未交易的空白区域（离最近点超过 30px），隐藏 hover
+    if (range === 'intraday' && px > pts[pts.length - 1].x + 30) {
+      setHoverIdx(null);
+    } else {
+      setHoverIdx(bestIdx);
+    }
   };
   const onLeave = () => setHoverIdx(null);
 
@@ -630,9 +628,9 @@ export function FundChart({
           {xTicks.map((t, i) => (
             <text
               key={i}
-              x={x(t.idx)}
+              x={t.x}
               y={padding.top + innerH + 18}
-              textAnchor="middle"
+              textAnchor={t.anchor}
               fontSize="10"
               fill="currentColor"
               fillOpacity="0.45"
@@ -777,10 +775,10 @@ export function FundChart({
           })}
 
           {/* Today's live tick — emphasized ring ONLY on the rightmost (latest) point during intraday. */}
-          {range === 'intraday' && points.length > 0 && !isPreMarketState && (() => {
-            const last = points[points.length - 1];
-            const lx = x(points.length - 1);
-            const ly = y(last.v);
+          {range === 'intraday' && pts.length > 0 && !isPreMarketState && (() => {
+            const lastPt = pts[pts.length - 1];
+            const lx = lastPt.x;
+            const ly = lastPt.y;
             return (
               <motion.g
                 key={`live-tick-${animKey}`}
