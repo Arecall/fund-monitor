@@ -198,17 +198,24 @@ function initTables() {
       )
     `);
 
-    // 金价历史快照（服务端累积）— 一分钟一条，三个 key 各存一份。
-    // 自动清理 31 天前数据：金价日内分时粒度 1 分钟足够，月增 ~5 MB。
+    // 金价历史快照（服务端累积与外部回补）— 分时（minute）与宏观日线（day）分流存储
+    // 自动清理 31 天前数据：月增 ~5 MB。
     db.run(`
       CREATE TABLE IF NOT EXISTS gold_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         key TEXT NOT NULL,
         t INTEGER NOT NULL,
-        v REAL NOT NULL
+        v REAL NOT NULL,
+        period TEXT NOT NULL DEFAULT 'minute'
       )
     `);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_gold_history_key_t ON gold_history (key, t)`);
+    db.all(`PRAGMA table_info(gold_history)`, (err, cols) => {
+      if (!err && cols && !cols.some(c => c.name === 'period')) {
+        db.run(`ALTER TABLE gold_history ADD COLUMN period TEXT NOT NULL DEFAULT 'minute'`);
+      }
+    });
+    db.run(`DROP INDEX IF EXISTS uidx_gold_history_key_t`);
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_gold_history_key_period_t ON gold_history (key, period, t)`);
 
     // 行情快照（实时推送 broker 在每次拉到上游数据时写入）：
     //   code + captured_at (epoch ms) 复合主键，确保幂等写入
@@ -234,7 +241,41 @@ function initTables() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_watchlist_user_kind ON watchlist (user_id, kind)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)`);
 
-    // 7. 全局 AI 接口凭证与大模型配置表（仅限 Admin 管理员维护，单例 id=1）
+    // 7. 用户个人股票偏好与自动化定时配置表（每位用户独立个性化配置）
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ai_user_config (
+        user_id INTEGER PRIMARY KEY,
+        api_key_encrypted TEXT DEFAULT '',
+        base_url TEXT DEFAULT 'https://api.anthropic.com',
+        model_name TEXT DEFAULT 'claude-3-7-sonnet-20250219',
+        api_format TEXT DEFAULT 'anthropic',
+        auth_header_type TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN',
+        markets TEXT DEFAULT '["domestic"]',
+        stock_count INTEGER DEFAULT 5,
+        strategy TEXT DEFAULT 'balanced',
+        pre_market_enabled INTEGER DEFAULT 0,
+        close_enabled INTEGER DEFAULT 0,
+        last_pre_run TEXT,
+        last_close_run TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 针对已有表的迁移
+    const aiConfigCols = [
+      ['api_format', "TEXT DEFAULT 'anthropic'"],
+      ['auth_header_type', "TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN'"],
+    ];
+    for (const [colName, colDef] of aiConfigCols) {
+      db.run(`ALTER TABLE ai_user_config ADD COLUMN ${colName} ${colDef}`, (err) => {
+        if (err && !/duplicate column name/i.test(err.message)) {
+          console.error(`[db] ai_user_config migration failed for ${colName}:`, err.message);
+        }
+      });
+    }
+
+    // 8. 全局 AI 接口凭证与大模型配置表（仅限 Admin 管理员维护，单例 id=1）
     db.run(`
       CREATE TABLE IF NOT EXISTS ai_system_config (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -279,40 +320,6 @@ function initTables() {
       WHERE (api_key_encrypted IS NULL OR api_key_encrypted = '')
         AND EXISTS (SELECT 1 FROM ai_user_config WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '')
     `);
-
-    // 8. 用户个人股票偏好与自动化定时配置表（每位用户独立个性化配置）
-    db.run(`
-      CREATE TABLE IF NOT EXISTS ai_user_config (
-        user_id INTEGER PRIMARY KEY,
-        api_key_encrypted TEXT DEFAULT '',
-        base_url TEXT DEFAULT 'https://api.anthropic.com',
-        model_name TEXT DEFAULT 'claude-3-7-sonnet-20250219',
-        api_format TEXT DEFAULT 'anthropic',
-        auth_header_type TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN',
-        markets TEXT DEFAULT '["domestic"]',
-        stock_count INTEGER DEFAULT 5,
-        strategy TEXT DEFAULT 'balanced',
-        pre_market_enabled INTEGER DEFAULT 0,
-        close_enabled INTEGER DEFAULT 0,
-        last_pre_run TEXT,
-        last_close_run TEXT,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-
-    // 针对已有表的迁移
-    const aiConfigCols = [
-      ['api_format', "TEXT DEFAULT 'anthropic'"],
-      ['auth_header_type', "TEXT DEFAULT 'ANTHROPIC_AUTH_TOKEN'"],
-    ];
-    for (const [colName, colDef] of aiConfigCols) {
-      db.run(`ALTER TABLE ai_user_config ADD COLUMN ${colName} ${colDef}`, (err) => {
-        if (err && !/duplicate column name/i.test(err.message)) {
-          console.error(`[db] ai_user_config migration failed for ${colName}:`, err.message);
-        }
-      });
-    }
 
     // 9. AI 选股分析报告表
     db.run(`

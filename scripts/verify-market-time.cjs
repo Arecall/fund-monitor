@@ -141,6 +141,19 @@ function verifyTimezoneNormalization() {
   const normAShare = market.normalizeMinuteBarTimes(aShareBars, 'domestic')[0];
   assert(normAShare.time === '2026-08-21 09:30:00', 'A股分时时间被意外改动');
   assert(typeof normAShare.t === 'number' && normAShare.t > 0, 'A股分时未挂载毫秒时间戳 t');
+
+  // QDII 代理分时在美股闭市后必须覆盖至美东 15:55 以后，不能接受仅到 10:43 的局部快照。
+  const usClosedNow = new Date('2026-08-25T09:00:00+08:00'); // 美东 08/24 21:00（盘后）
+  const partialProxyBars = market.normalizeMinuteBarTimes([
+    { time: '2026-08-24 09:30:00', close: 500 },
+    { time: '2026-08-24 10:43:00', close: 501 },
+  ], 'us');
+  const completeProxyBars = market.normalizeMinuteBarTimes([
+    { time: '2026-08-24 09:30:00', close: 500 },
+    { time: '2026-08-24 16:00:00', close: 501 },
+  ], 'us');
+  assert(market.isUsMinuteSeriesCurrent(partialProxyBars, usClosedNow) === false, 'QDII 代理局部分钟数据被错误当作完整交易日');
+  assert(market.isUsMinuteSeriesCurrent(completeProxyBars, usClosedNow) === true, 'QDII 代理完整分钟数据未通过收盘覆盖校验');
 }
 
 verifyTimezoneNormalization();

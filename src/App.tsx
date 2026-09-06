@@ -478,6 +478,9 @@ const WatchlistCard = React.memo(function WatchlistCard({
             market={fund.market}
             currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}
             prevClose={parseFloat(fund.dwjz)}
+            openPrice={(fund.open ? parseFloat(fund.open) : undefined) ?? (typeof fund.stockSpecific?.open === 'number' && fund.stockSpecific.open > 0 ? fund.stockSpecific.open : undefined)}
+            highPrice={typeof fund.stockSpecific?.high === 'number' && fund.stockSpecific.high > 0 ? fund.stockSpecific.high : undefined}
+            lowPrice={typeof fund.stockSpecific?.low === 'number' && fund.stockSpecific.low > 0 ? fund.stockSpecific.low : undefined}
             isUp={isUp}
             width={80}
             height={26}
@@ -633,6 +636,9 @@ const WatchlistRow = React.memo(function WatchlistRow({
           market={fund.market}
           currentPrice={parseFloat(fund.gsz) || parseFloat(fund.dwjz)}
           prevClose={parseFloat(fund.dwjz)}
+          openPrice={(fund.open ? parseFloat(fund.open) : undefined) ?? (typeof fund.stockSpecific?.open === 'number' && fund.stockSpecific.open > 0 ? fund.stockSpecific.open : undefined)}
+          highPrice={typeof fund.stockSpecific?.high === 'number' && fund.stockSpecific.high > 0 ? fund.stockSpecific.high : undefined}
+          lowPrice={typeof fund.stockSpecific?.low === 'number' && fund.stockSpecific.low > 0 ? fund.stockSpecific.low : undefined}
           isUp={isUp}
           width={80}
           height={24}

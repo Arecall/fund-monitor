@@ -110,7 +110,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.5.0' });
+  res.json({ status: 'ok', version: '1.5.1' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -569,8 +569,24 @@ app.get('/api/market/gold', async (_req, res) => {
   }
 });
 
-// 获取金价历史快照 — 服务端累积，新用户立即看到分时 / 周 / 月走势图
-// range: intraday (24h) | 1W (7d) | 1M (30d)  — 都限定在表内 31 天上限内
+// 金价历史请求并发回补锁与下采样工具
+const goldHistoryBackfillInflight = new Map();
+
+function downsampleGoldPoints(points, targetCount = 150) {
+  if (!Array.isArray(points) || points.length <= targetCount) return points;
+  const result = [points[0]];
+  const step = (points.length - 1) / (targetCount - 1);
+  for (let i = 1; i < targetCount - 1; i++) {
+    const idx = Math.round(i * step);
+    result.push(points[idx]);
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
+
+// 获取金价历史快照 — 支持冷启动外部回补 + 本地自累积 + 服务端时间桶降采样
+// 分流存储：分时（period = 'minute'）与宏观日线（period = 'day'）互不污染
+// range: intraday (24h/72h) | 1W (7d) | 1M (30d)
 app.get('/api/market/gold/:key/history', async (req, res) => {
   const key = String(req.params.key || '');
   const validKeys = ['international', 'domestic', 'london'];
@@ -579,21 +595,90 @@ app.get('/api/market/gold/:key/history', async (req, res) => {
   }
   const range = String(req.query.range || 'intraday');
   const now = Date.now();
+  const dayOfWeek = new Date(now).getDay(); // 0 是周日，6 是周六
+  const isWeekendOrMondayMorning = dayOfWeek === 0 || dayOfWeek === 6 || (dayOfWeek === 1 && new Date(now).getHours() < 9);
+  // 周末黄金休市（周六清晨到周一早晨），分时窗口自动回溯覆盖最近一个交易日（72h）
+  const intradayMs = isWeekendOrMondayMorning ? 72 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  const isDaily = range === '1W' || range === '1M';
+  const targetPeriod = isDaily ? 'day' : 'minute';
   const cutoff =
     range === '1W' ? now - 7  * 24 * 60 * 60 * 1000 :
     range === '1M' ? now - 30 * 24 * 60 * 60 * 1000 :
-                     now - 24 * 60 * 60 * 1000;   // intraday 默认 24h
+                     now - intradayMs;
 
   try {
-    const rows = await dbHelper.all(
-      `SELECT t, v FROM gold_history WHERE key = ? AND t >= ? ORDER BY t ASC`,
-      [key, cutoff]
+    let rows = await dbHelper.all(
+      `SELECT t, v FROM gold_history WHERE key = ? AND period = ? AND t >= ? ORDER BY t ASC`,
+      [key, targetPeriod, cutoff]
     );
+
+    // 冷启动与静止平线自动回补判断：
+    //  - 宏观走势 (1W/1M): 若日K锚点不足（1W需要至少5个交易日，1M需要至少15个），自动拉取权威日K回补
+    //  - 分时 (intraday): 若有效点数少于 15，或所有点价格完全一致（休市死线），自动拉取全天真实分钟走势回补
+    const minPointsNeeded = range === 'intraday' ? 15 : (range === '1W' ? 5 : 15);
+    const isFlatDeadLine = range === 'intraday' && rows && rows.length >= 2 && rows.every(r => r.v === rows[0].v);
+    if (!rows || rows.length < minPointsNeeded || isFlatDeadLine) {
+      const backfillKey = `${key}:${range}`;
+      let backfillPromise = goldHistoryBackfillInflight.get(backfillKey);
+      if (!backfillPromise) {
+        backfillPromise = (async () => {
+          try {
+            const upstream = await marketHelper.fetchUpstreamGoldHistory(key, range);
+            if (Array.isArray(upstream) && upstream.length > 0) {
+              // 若分时之前存在大量相同价格的休市死点，先清理掉休市静止点，让真实交易分时显现
+              if (isFlatDeadLine && rows[0]?.v) {
+                await dbHelper.run(
+                  `DELETE FROM gold_history WHERE key = ? AND period = 'minute' AND v = ? AND t >= ?`,
+                  [key, rows[0].v, cutoff]
+                );
+              }
+
+              const inserts = upstream.map(p =>
+                dbHelper.run(
+                  `INSERT OR REPLACE INTO gold_history (key, t, v, period) VALUES (?, ?, ?, ?)`,
+                  [key, p.t, p.v, targetPeriod]
+                )
+              );
+              await Promise.all(inserts);
+            }
+          } catch (err) {
+            console.warn(`[gold-backfill] ${key} ${range} 自动回补失败:`, err.message);
+          } finally {
+            goldHistoryBackfillInflight.delete(backfillKey);
+          }
+        })();
+        goldHistoryBackfillInflight.set(backfillKey, backfillPromise);
+      }
+      await backfillPromise;
+
+      // 回补完成后重新读取本地完整连续数据
+      rows = await dbHelper.all(
+        `SELECT t, v FROM gold_history WHERE key = ? AND period = ? AND t >= ? ORDER BY t ASC`,
+        [key, targetPeriod, cutoff]
+      );
+
+      // 若处于长假极端情况 cutoff 内仍无数据，回溯展示最近一个有效交易日的数据
+      if ((!rows || rows.length === 0) && range === 'intraday') {
+        const fallbackRows = await dbHelper.all(
+          `SELECT t, v FROM gold_history WHERE key = ? AND period = 'minute' ORDER BY t DESC LIMIT 150`,
+          [key]
+        );
+        if (fallbackRows && fallbackRows.length > 0) {
+          rows = fallbackRows.reverse();
+        }
+      }
+    }
+
+    const rawPoints = (rows || []).map(r => ({ t: r.t, v: r.v }));
+    // 日K线本身已经每天1点，不强行按150下采样截断，原样返回；分时图则按150下采样保证轻量
+    const points = isDaily ? rawPoints : downsampleGoldPoints(rawPoints, 150);
+
     res.json({
       key,
       range,
-      points: rows.map(r => ({ t: r.t, v: r.v })),
-      count: rows.length,
+      points,
+      count: points.length,
+      rawCount: rawPoints.length,
     });
   } catch (e) {
     res.status(500).json({ error: '查询金价历史失败：' + e.message });
@@ -612,13 +697,20 @@ async function pollGoldAndPersist() {
   try {
     const data = await marketHelper.getGoldPrices();
     if (!data) return;
+    const now = new Date();
+    const day = now.getDay();
+    const hour = now.getHours();
+    // 周末黄金全市场休市（周六 06:00 至 周一 06:00），不写入重复的静态占位点，防止覆盖真实分时走势
+    const isWeekendClosed = day === 0 || (day === 6 && hour >= 6) || (day === 1 && hour < 6);
+    if (isWeekendClosed) return;
+
     const ts = Date.now();
     const inserts = [];
     for (const key of GOLD_KEYS) {
       const g = data[key];
       if (!g || g.price == null) continue;
       inserts.push(dbHelper.run(
-        `INSERT INTO gold_history (key, t, v) VALUES (?, ?, ?)`,
+        `INSERT OR REPLACE INTO gold_history (key, t, v, period) VALUES (?, ?, ?, 'minute')`,
         [key, ts, g.price]
       ));
     }

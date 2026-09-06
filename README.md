@@ -1,6 +1,6 @@
 # 全球基金与股票监控终端 (Fund & Stock Monitor)
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.5.1-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
@@ -51,10 +51,8 @@
    - 美币/港币/人民币汇率自动换算，精确计算今日估算盈亏与累计持仓收益率。
 5. **隐私安全与多用户隔离**：
    - 基于 SQLite3 本地持久化，支持多用户免密/密码登录与隔离，数据完全归属于个人服务器。
-<img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/5b0d21f3-2693-4802-bdfc-6bce2cf81da3" />
-<img width="3840" height="1878" alt="image" src="https://github.com/user-attachments/assets/3222b494-8687-4e97-a784-1765b179a0c5" />
-<img width="3828" height="1878" alt="image" src="https://github.com/user-attachments/assets/d847134c-bec2-4e0d-88f9-6e3cae9cec31" />
-<img width="1920" height="992" alt="image" src="https://github.com/user-attachments/assets/dc1ce875-aa92-4e29-9e69-9cf5e1c92815" />
+   - ![image-20260817142641554](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142641554.png)
+   - ![image-20260817142556031](C:\Users\admin\AppData\Roaming\Typora\typora-user-images\image-20260817142556031.png)
 
 ---
 
@@ -150,15 +148,13 @@
 
 ## 三、核心功能模块
 
-**新增AI智选推荐股票**：管理员统一配置 AI 凭证后，用户可结合个人股票偏好获取跨市场的智能选股建议，并直接加入自选列表。
-
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│                         全球基金与股票监控终端 (v1.4.8)                          │
+│                         全球基金与股票监控终端 (v1.4.7)                          │
 ├──────────────────┬──────────────────────────┬──────────────────┬─────────────────┤
 │ 1. 顶部全球大盘   │ 2. 自选看板 (Watchlist)  │ 3. 黄金行情专区  │ 7. AI 智能选股  │
-│  - A股/港股/美股 │  - 场内股票/场外基金分Tab │  - 伦敦金/国际金 │  - 管理员统一配置 AI 凭证 │
-│  - 实时涨跌与指数 │  - 支持拖拽自由排序      │  - 国内金价时段  │  - 用户独立保存股票偏好 │
+│  - A股/港股/美股 │  - 场内股票/场外基金分Tab │  - 伦敦金/国际金 │  - 4维行情增强  │
+│  - 实时涨跌与指数 │  - 支持拖拽自由排序      │  - 国内金价时段  │  - 5大策略研判  │
 ├──────────────────┴──────────────────────────┴──────────────────┴─────────────────┤
 │ 4. 详情 Drawer / PC 全屏面板 (FundDetailPanel)                                   │
 │  - 实时行情 4 大核心指标 (当前净值/实时涨跌/今日涨跌幅/昨收)                     │
@@ -206,7 +202,7 @@ services:
   fund-monitor:
     build:
       context: .
-    image: fund-monitor:1.4.9
+    image: fund-monitor:1.4.6
     container_name: fund-monitor
     restart: unless-stopped
     ports:

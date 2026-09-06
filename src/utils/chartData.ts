@@ -450,11 +450,12 @@ export function minuteResponseToFeed(response: StockMinuteResponse | null, baseA
 /**
  * 过滤实时打点/分钟 K 线中由估值方法突变引起的孤立针状毛刺（Spike Outliers）与跨量级脏数据
  */
-function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorValue?: number): ChartPoint[] {
+function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorValue?: number, isStock = false): ChartPoint[] {
   if (!points || points.length < 3) return points;
   let candidatePoints = points;
+  const maxEnvelope = isStock ? 1.5 : 0.18;
   if (anchorValue && anchorValue > 0) {
-    candidatePoints = points.filter(p => Math.abs(p.v - anchorValue) / anchorValue <= 0.18);
+    candidatePoints = points.filter(p => Math.abs(p.v - anchorValue) / anchorValue <= maxEnvelope);
     if (candidatePoints.length < 2) return [];
   }
   const result: ChartPoint[] = [];
@@ -764,7 +765,7 @@ export function buildSeries(
               }
             }
           }
-          points = filterSpikeOutliers(rawPoints, 1.5, startValue);
+          points = filterSpikeOutliers(rawPoints, 1.5, startValue, isStock);
           if (isProxyQdiiTrend) {
             points = reconcileProxyTrendToQuote(points, previous, current);
           }

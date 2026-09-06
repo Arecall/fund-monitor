@@ -1134,6 +1134,31 @@ function keepRegularSessionMinuteBars(bars, market) {
   });
 }
 
+/**
+ * QDII 美股基金的分时图依赖代理 ETF。数据库快照仅在本服务轮询期间增长，
+ * 不能因为“已有十几个点”就当作完整交易日。闭市后必须拿到接近 16:00 美东
+ * 的收盘点；盘中则要求最新点不落后当前时间太久，才可用作完整分钟源。
+ */
+function isUsMinuteSeriesCurrent(bars, now = new Date()) {
+  if (!Array.isArray(bars) || bars.length < 2) return false;
+  const timestamps = bars
+    .map(bar => Number(bar?.timestamp ?? bar?.t))
+    .filter(timestamp => Number.isFinite(timestamp) && timestamp > 0);
+  if (timestamps.length < 2) return false;
+
+  const latest = Math.max(...timestamps);
+  const session = marketTime.getUsMarketSession(now);
+  if (session === 'regular') {
+    // 上游通常会有 1–2 分钟延迟，额外保留 4 分钟容忍窗口。
+    return latest >= now.getTime() - 6 * 60 * 1000;
+  }
+
+  const eastern = marketTime.getTimeZoneParts(new Date(latest), 'America/New_York');
+  const minuteOfDay = Number(eastern.hour) * 60 + Number(eastern.minute);
+  // 闭市、盘前、盘后与周末均应展示上一完整常规盘，允许收盘价最多延迟 5 分钟。
+  return minuteOfDay >= 15 * 60 + 55 && minuteOfDay <= 16 * 60 + 5;
+}
+
 async function fetchStockMinuteData(code, market, kind = null) {
   const c = code.toUpperCase();
 
@@ -1184,9 +1209,27 @@ async function fetchStockMinuteData(code, market, kind = null) {
   const isStock = kind ? (kind === 'stock') : (detectCodeKind(targetTicker) === 'stock_a');
   let result = null;
   let snapshotFallback = null;
+  let partialSourceFallback = null;
   // 交易所股票优先使用上游完整分钟线。本地快照是订阅时才积累的增量数据，
   // 只要达到 10 个点就优先返回会让午后缺段永久遮蔽完整行情源。
-  const preferExchangeMinuteFeed = isStock && (targetMarket === 'domestic' || targetMarket === 'hk');
+  // QDII 美股基金也必须优先拉取完整代理 ETF 分时线；否则仅运行到 22:43
+  // 的 QQQ 快照会让两只基金的曲线一起在该时刻截断。
+  const needsCompleteUsProxyMinuteFeed = targetMarket === 'us' && targetTicker !== c;
+  const preferExchangeMinuteFeed = isStock || needsCompleteUsProxyMinuteFeed;
+  const acceptMinuteSource = candidate => {
+    if (!Array.isArray(candidate) || candidate.length < 2) return null;
+    const normalized = normalizeMinuteBarTimes(candidate, targetMarket);
+    if (!needsCompleteUsProxyMinuteFeed || isUsMinuteSeriesCurrent(normalized)) {
+      return normalized;
+    }
+    // 不完整上游仅作最后的故障降级候选，继续尝试腾讯/Yahoo/新浪完整源。
+    if (!partialSourceFallback || normalized.length > partialSourceFallback.length) {
+      partialSourceFallback = normalized;
+    }
+    const latest = normalized[normalized.length - 1]?.time || '未知';
+    console.warn(`[minute] ${c} proxy minute source is incomplete (last ${latest}), trying next provider`);
+    return null;
+  };
   try {
     // 1. 【优先从本地数据库获取】：读取 quote_snapshots 表保存的打点历史
     if (targetTicker === code) {
@@ -1231,7 +1274,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
             const trends = r.data?.data?.trends;
             const emPreClose = parseFloat(r.data?.data?.prePrice || r.data?.data?.preClose || r.data?.data?.preSettlement) || 0;
             if (Array.isArray(trends) && trends.length >= 2) {
-              result = trends.map(line => {
+              const candidate = trends.map(line => {
                 const parts = line.split(',');
                 if (parts.length < 3) return null;
                 const timeStr = parts[0]; // "2026-08-18 09:30"
@@ -1249,10 +1292,11 @@ async function fetchStockMinuteData(code, market, kind = null) {
                   amount: amt,
                 };
               }).filter(Boolean);
+              result = acceptMinuteSource(candidate);
               if (result && emPreClose > 0) {
                 result.preClose = emPreClose;
               }
-              break; // 成功获取到分时数据，退出循环
+              if (result) break; // 成功获取到完整分时数据，退出循环
             }
           } catch (err) {
             // 继续尝试备用 secid 前缀
@@ -1301,7 +1345,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
               let prevCumVol = 0;
               let prevCumAmt = 0;
 
-              result = rawArr.map(line => {
+              const candidate = rawArr.map(line => {
                 const [hm, priceStr, cumVolStr, cumAmtStr] = line.split(' ');
                 if (!hm || !priceStr) return null;
 
@@ -1328,6 +1372,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
                   amount: stepAmt > 0 ? stepAmt : (cumAmt > 0 ? cumAmt / rawArr.length : p * 100),
                 };
               }).filter(Boolean);
+              result = acceptMinuteSource(candidate);
             }
           } catch (err) {
             console.warn(`[minute] 腾讯 API ${tencentSym} 获取失败，准备 fallback:`, err.message);
@@ -1335,7 +1380,81 @@ async function fetchStockMinuteData(code, market, kind = null) {
         }
       }
 
-      // 2.3 Yahoo Chart API / 新浪美股 K 线兜底
+      // 2.3 新浪美股全量分时 / Yahoo Chart API 兜底
+      if (!result && targetMarket === 'us') {
+        try {
+          const sym = targetTicker.toUpperCase();
+          const url = `https://stock.finance.sina.com.cn/usstock/api/json.php/US_MinlineService.getMinline?symbol=${sym}`;
+          const r = await axios.get(url, {
+            headers: {
+              'Referer': 'https://finance.sina.com.cn',
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 4000
+          });
+          const block = r.data?.minline_1?.[0];
+          if (block && Array.isArray(block.first_min) && block.first_min.length >= 4) {
+            const dateStr = block.first_min[0];
+            const sinaPreClose = parseFloat(block.first_min[2]) || 0;
+            const firstPrice = parseFloat(block.first_min[3]);
+            const firstVol = parseFloat(block.first_min[4]) || 0;
+            const startTotalMinutes = 9 * 60 + 30; // 09:30 Eastern
+
+            const candidate = [];
+            const p0Time = marketTime.parseUsEasternDateTime(`${dateStr} 09:30:00`);
+            if (firstPrice > 0 && p0Time) {
+              candidate.push({
+                time: `${dateStr} 09:30:00`,
+                open: firstPrice,
+                high: firstPrice,
+                low: firstPrice,
+                close: firstPrice,
+                volume: firstVol,
+                amount: firstVol * firstPrice,
+                timestamp: p0Time,
+                t: p0Time,
+              });
+            }
+
+            if (Array.isArray(block.other_min)) {
+              for (let i = 0; i < block.other_min.length; i++) {
+                const item = block.other_min[i];
+                const price = parseFloat(item[0]);
+                const vol = parseFloat(item[1]) || 0;
+                if (isNaN(price) || price <= 0) continue;
+                const totalMin = startTotalMinutes + 1 + i;
+                const h = Math.floor(totalMin / 60);
+                const m = totalMin % 60;
+                const timeStr = `${dateStr} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+                const t = marketTime.parseUsEasternDateTime(timeStr);
+                if (t) {
+                  candidate.push({
+                    time: timeStr,
+                    open: price,
+                    high: price,
+                    low: price,
+                    close: price,
+                    volume: vol,
+                    amount: vol * price,
+                    timestamp: t,
+                    t,
+                  });
+                }
+              }
+            }
+
+            if (candidate.length >= 2) {
+              result = acceptMinuteSource(candidate);
+              if (result && sinaPreClose > 0) {
+                result.preClose = sinaPreClose;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[minute] 新浪美股 Minline API ${targetTicker} 获取失败:`, err.message);
+        }
+      }
+
       if (!result && targetMarket === 'us') {
         try {
           const yahooSymbol = encodeURIComponent(targetTicker);
@@ -1352,7 +1471,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
             const timestamps = chartRes.timestamp;
             const quotes = chartRes.indicators?.quote?.[0]?.close || [];
             const volumes = chartRes.indicators?.quote?.[0]?.volume || [];
-            result = timestamps.map((ts, i) => {
+            const candidate = timestamps.map((ts, i) => {
               const p = quotes[i];
               if (typeof p !== 'number' || isNaN(p)) return null;
               const d = new Date(ts * 1000);
@@ -1373,6 +1492,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
                 amount: p * vol,
               };
             }).filter(Boolean);
+            result = acceptMinuteSource(candidate);
           }
         } catch (err) {
           console.warn(`[minute] Yahoo Chart API ${targetTicker} 获取失败:`, err.message);
@@ -1393,7 +1513,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
           if (start !== -1 && end !== -1) {
             const arr = JSON.parse(text.slice(start, end + 1));
             if (Array.isArray(arr) && arr.length > 0) {
-              result = arr.map(item => {
+              const candidate = arr.map(item => {
                 const p = parseFloat(item.c);
                 if (isNaN(p) || p <= 0) return null;
                 return {
@@ -1406,6 +1526,7 @@ async function fetchStockMinuteData(code, market, kind = null) {
                   amount: (parseFloat(item.v) || 100) * p,
                 };
               }).filter(Boolean);
+              result = acceptMinuteSource(candidate);
             }
           }
         } catch (err) {
@@ -1441,16 +1562,24 @@ async function fetchStockMinuteData(code, market, kind = null) {
         }
       }
     }
-    // 完整上游分钟线不可用时才退回本地快照，确保详情页仍有基础走势可看。
+    // 完整上游分钟线不可用时才退回本地快照；所有上游都不可用时，才使用
+    // 已记录的局部上游数据作为最后故障降级。
     if ((!result || result.length < 2) && snapshotFallback?.length >= 2) {
       result = snapshotFallback;
+    }
+    if ((!result || result.length < 2) && partialSourceFallback?.length >= 2) {
+      result = partialSourceFallback;
     }
 
     // 3. 统一时间轴后再缓存/缩放。美股源时间统一转换为北京时间，避免
     //    同一张分时图因切换上游而在 09:30、13:30、21:30 之间跳动。
     if (result && result.length >= 2) {
+      const preservedPreClose = result.preClose;
       result = normalizeMinuteBarTimes(result, targetMarket);
       result = keepRegularSessionMinuteBars(result, targetMarket);
+      if (preservedPreClose) {
+        result.preClose = preservedPreClose;
+      }
     }
 
     // 4. 当获取到多于 2 个点的全量分钟 K 线时：
@@ -3987,6 +4116,169 @@ async function getGoldPrices() {
   }
 }
 
+/**
+ * 从权威上游直接抓取金价历史数据（用于冷启动回补与断档自愈）。
+ *   - range === 'intraday': 抓取全天 1 分钟分时走势
+ *   - range === '1W' || range === '1M': 抓取历史日 K 线收盘价
+ *
+ * @param {'international'|'domestic'|'london'} key 金价品种
+ * @param {'intraday'|'1W'|'1M'} range 时间跨度
+ * @returns {Promise<Array<{ t: number, v: number }>>}
+ */
+async function fetchUpstreamGoldHistory(key, range = 'intraday') {
+  const isIntraday = range === 'intraday';
+
+  // 1. 国际黄金 (COMEX GC) 与 伦敦金 (LBMA XAU)
+  if (key === 'international' || key === 'london') {
+    const symbol = key === 'international' ? 'GC' : 'XAU';
+    if (isIntraday) {
+      try {
+        const url = `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_${symbol}_min=/GlobalFuturesService.getGlobalFuturesMinLine?symbol=${symbol}`;
+        const r = await axios.get(url, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 6000,
+        });
+        const m = r.data.match(/minLine_1d":(\[[\s\S]+?\])\s*\}\);/);
+        if (!m || !m[1]) return [];
+        const arr = JSON.parse(m[1]);
+        const dateBase = arr[0] && /^\d{4}-\d{2}-\d{2}$/.test(arr[0][0]) ? arr[0][0] : '';
+        const points = [];
+        for (const item of arr) {
+          const fullTimeStr = item[item.length - 1];
+          let t = null;
+          if (typeof fullTimeStr === 'string' && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(fullTimeStr)) {
+            t = marketTime.parseBeijingDateTime(fullTimeStr);
+          } else if (dateBase && typeof item[0] === 'string' && /^\d{2}:\d{2}$/.test(item[0])) {
+            t = marketTime.parseBeijingDateTime(`${dateBase} ${item[0]}:00`);
+          }
+          const v = parseFloat(item[1]);
+          if (t && Number.isFinite(v) && v > 0) {
+            points.push({ t, v });
+          }
+        }
+        return points;
+      } catch (err) {
+        console.warn(`[gold-history] fetchUpstreamGoldHistory ${key} intraday failed:`, err.message);
+        return [];
+      }
+    } else {
+      try {
+        const url = `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_${symbol}=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=${symbol}`;
+        const r = await axios.get(url, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 6000,
+        });
+        const m = r.data.match(new RegExp(`var _${symbol}=\\(([\\s\\S]+?)\\);`));
+        if (!m || !m[1]) return [];
+        const arr = JSON.parse(m[1]);
+        const limit = range === '1W' ? 10 : 35;
+        const slice = arr.slice(-limit);
+        const points = [];
+        for (const item of slice) {
+          const t = marketTime.parseBeijingDateTime(`${item.date} 15:00:00`);
+          const v = parseFloat(item.close);
+          if (t && Number.isFinite(v) && v > 0) {
+            points.push({ t, v });
+          }
+        }
+        return points;
+      } catch (err) {
+        console.warn(`[gold-history] fetchUpstreamGoldHistory ${key} daily failed:`, err.message);
+        return [];
+      }
+    }
+  }
+
+  // 2. 国内黄金 (SGE Au99.99 / 沪金连续 AU0)
+  if (key === 'domestic') {
+    if (isIntraday) {
+      try {
+        const url = `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_AU0_min=/InnerFuturesNewService.getMinLine?symbol=AU0`;
+        const r = await axios.get(url, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 6000,
+        });
+        const m = r.data.match(/var _AU0_min=\(([\s\S]+?)\);/);
+        if (!m || !m[1]) return [];
+        const arr = JSON.parse(m[1]);
+        const tradeDate = arr[0] && /^\d{4}-\d{2}-\d{2}$/.test(arr[0][arr[0].length - 1]) ? arr[0][arr[0].length - 1] : '';
+        const points = [];
+        for (const item of arr) {
+          const hm = item[0];
+          const v = parseFloat(item[1]);
+          if (!hm || isNaN(v) || v <= 0) continue;
+          let dateStr = tradeDate;
+          if (hm >= '20:00' && tradeDate) {
+            const td = new Date(tradeDate + 'T12:00:00+08:00');
+            td.setDate(td.getDate() - 1);
+            dateStr = td.toISOString().slice(0, 10);
+          }
+          const t = marketTime.parseBeijingDateTime(`${dateStr} ${hm}:00`);
+          if (t && Number.isFinite(v)) {
+            points.push({ t, v });
+          }
+        }
+        return points;
+      } catch (err) {
+        console.warn(`[gold-history] fetchUpstreamGoldHistory domestic intraday failed:`, err.message);
+        return [];
+      }
+    } else {
+      const limit = range === '1W' ? 10 : 35;
+      // 宏观日 K：优先东财现货 118.Au9999（若可用），超时或异常退回新浪 AU0
+      try {
+        const emUrl = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=118.Au9999&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20500101&lmt=${limit}`;
+        const emRes = await axios.get(emUrl, { timeout: 3500, family: 4 });
+        const klines = emRes.data?.data?.klines;
+        if (Array.isArray(klines) && klines.length > 0) {
+          const points = [];
+          for (const line of klines) {
+            const parts = line.split(',');
+            if (parts.length >= 3) {
+              const dateStr = parts[0];
+              const closeVal = parseFloat(parts[2]);
+              const t = marketTime.parseBeijingDateTime(`${dateStr} 15:00:00`);
+              if (t && Number.isFinite(closeVal) && closeVal > 0) {
+                points.push({ t, v: closeVal });
+              }
+            }
+          }
+          if (points.length > 0) return points;
+        }
+      } catch (_err) {
+        // 东财连接异常或 hang up，无缝退回新浪内盘黄金期货
+      }
+
+      // 新浪 AU0 降级兜底
+      try {
+        const url = `https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_AU0=/InnerFuturesNewService.getDailyKLine?symbol=AU0`;
+        const r = await axios.get(url, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 6000,
+        });
+        const m = r.data.match(/var _AU0=\(([\s\S]+?)\);/);
+        if (!m || !m[1]) return [];
+        const arr = JSON.parse(m[1]);
+        const slice = arr.slice(-limit);
+        const points = [];
+        for (const item of slice) {
+          const t = marketTime.parseBeijingDateTime(`${item.d} 15:00:00`);
+          const v = parseFloat(item.c);
+          if (t && Number.isFinite(v) && v > 0) {
+            points.push({ t, v });
+          }
+        }
+        return points;
+      } catch (err) {
+        console.warn(`[gold-history] fetchUpstreamGoldHistory domestic daily failed:`, err.message);
+        return [];
+      }
+    }
+  }
+
+  return [];
+}
+
 module.exports = {
   getFundValuation,
   enrichStockValuation,
@@ -4017,6 +4309,7 @@ module.exports = {
   fetchHoldingsBasedEstimate,
   fetchStockMinuteData,
   normalizeMinuteBarTimes,
+  isUsMinuteSeriesCurrent,
   fetchSnapshotMinuteData,
   fetchEastMoneyFlowStockInfo,
   fetchEastMoneyDelayFlowStockInfo,
@@ -4024,4 +4317,5 @@ module.exports = {
   fetchStockKLineHistory,
   searchByName,
   getGoldPrices,
+  fetchUpstreamGoldHistory,
 };

@@ -24,7 +24,6 @@ email_config.json
 .agents/
 .claude/
 !.claude/skills/
-.tmp-deploy-paramiko/
 
 # Editor directories and files
 .vscode/*

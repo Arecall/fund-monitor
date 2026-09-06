@@ -7,6 +7,11 @@ export interface GoldPoint {
   v: number;     // price
 }
 
+export interface EffectiveGoldPoint extends GoldPoint {
+  /** 标识该点是否为周末/休市前值平线填充点 */
+  isClosed?: boolean;
+}
+
 export interface GoldChartProps {
   points: GoldPoint[];
   /** 上一交易日收盘价（用于基准线） */
@@ -41,6 +46,71 @@ function formatTooltipTime(t: number, range: 'intraday' | '1W' | '1M'): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * 周末与非交易日平线前值填充（Forward-Fill）：
+ * 在 1W / 1M 宏观走势图下，金融市场周末休市价格处于物理冻结状态。
+ * 沿用上一交易日收盘价填充至周六、周日及当前休市节点，
+ * 既真实反映休市事实，又使折线与渐变面积完整连贯，杜绝跨周末断层。
+ */
+function forwardFillGoldPoints(
+  rawPoints: GoldPoint[],
+  range: 'intraday' | '1W' | '1M',
+  now: number
+): EffectiveGoldPoint[] {
+  if (range === 'intraday' || !Array.isArray(rawPoints) || rawPoints.length < 2) {
+    return rawPoints;
+  }
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const result: EffectiveGoldPoint[] = [];
+
+  for (let i = 0; i < rawPoints.length; i++) {
+    const curr = rawPoints[i];
+    result.push(curr);
+
+    const next = rawPoints[i + 1];
+    if (next) {
+      const gapMs = next.t - curr.t;
+      // 若两点间隔大于 28 小时（说明跨越了周末或节假日休市），按自然日向前平铺前值
+      if (gapMs > 28 * 60 * 60 * 1000) {
+        let fillTs = curr.t + DAY_MS;
+        while (fillTs < next.t - 4 * 60 * 60 * 1000) {
+          result.push({
+            t: fillTs,
+            v: curr.v,
+            isClosed: true,
+          });
+          fillTs += DAY_MS;
+        }
+      }
+    }
+  }
+
+  // 若最新交易日记录距今大于 20 小时（如周五收盘后当前处于周末/周一开盘前休市），
+  // 持续延伸填充到当前时刻，避免图表最右侧留下空截断
+  if (result.length > 0) {
+    const last = result[result.length - 1];
+    if (now - last.t > 20 * 60 * 60 * 1000 && now - last.t < 5 * DAY_MS) {
+      let fillTs = last.t + DAY_MS;
+      while (fillTs <= now - 2 * 60 * 60 * 1000) {
+        result.push({
+          t: fillTs,
+          v: last.v,
+          isClosed: true,
+        });
+        fillTs += DAY_MS;
+      }
+      result.push({
+        t: now,
+        v: last.v,
+        isClosed: true,
+      });
+    }
+  }
+
+  return result;
+}
+
 export function GoldChart({ points, prevClose, currency, unit, emptyHint, height = 220, range: rangeProp }: GoldChartProps) {
   const prefersReducedMotion = useReducedMotion();
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -66,12 +136,18 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     return '1M';
   }, [points, rangeProp]);
 
+  // 周末及休市平线前值填充：在宏观周/月日线视图下，将休市价格物理冻结至当前，消除断层
+  const now = Date.now();
+  const effectivePoints = useMemo<EffectiveGoldPoint[]>(() => {
+    return forwardFillGoldPoints(points, range, now);
+  }, [points, range, now]);
+
   // Y 轴自适应（基于数据范围，不含 prevClose — 避免把数据挤到顶端/底端）
   const { minV, maxV, range_v } = useMemo(() => {
-    if (points.length === 0) {
+    if (effectivePoints.length === 0) {
       return { minV: 0, maxV: 1, range_v: 1 };
     }
-    const vals = points.map(p => p.v);
+    const vals = effectivePoints.map(p => p.v);
     const lo = Math.min(...vals);
     const hi = Math.max(...vals);
     const span = hi - lo;
@@ -84,10 +160,9 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
       maxV: hi + margin,
       range_v: hi - lo + margin * 2 || 1,
     };
-  }, [points]);
+  }, [effectivePoints]);
 
   // X 轴窗口：稀疏数据时自动 zoom in（避免数据挤成垂直条遮挡）
-  const now = Date.now();
   const { windowStart, windowEnd, isAutoZoomed } = useMemo<{ windowStart: number; windowEnd: number; isAutoZoomed: boolean }>(() => {
     let baseStart: number;
     let baseEnd: number;
@@ -96,7 +171,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     if (range === 'intraday') {
       const today = new Date(now);
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-      const lastTs = points[points.length - 1]?.t ?? now;
+      const lastTs = effectivePoints[effectivePoints.length - 1]?.t ?? now;
       baseStart = startOfDay;
       baseEnd = Math.max(now, lastTs);
     } else if (range === '1W') {
@@ -107,12 +182,11 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
       baseEnd = now;
     }
 
-    // 自动 zoom：避免数据挤成垂直条遮挡图表
-    //   情况 A：数据跨度 < 基础窗口的 50% → 把窗口压缩到 ~1.6× 数据跨度
-    if (points.length >= 2) {
-      const dataSpan = points[points.length - 1].t - points[0].t;
+    // 自动 zoom：仅当数据跨度 < 基础窗口的 40% 时触发（避免正常 21 个交易日因周末空隙误触发 zoom）
+    if (effectivePoints.length >= 2) {
+      const dataSpan = effectivePoints[effectivePoints.length - 1].t - effectivePoints[0].t;
       const baseSpan = baseEnd - baseStart;
-      if (baseSpan > 0 && dataSpan < baseSpan * 0.5) {
+      if (baseSpan > 0 && dataSpan < baseSpan * 0.4) {
         // 缩窗口：让数据占据图表 ~60%
         const padded = Math.max(dataSpan * 1.6, 60 * 1000); // 最少 1 分钟
         baseStart = baseEnd - padded;
@@ -121,37 +195,37 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     }
 
     return { windowStart: baseStart, windowEnd: baseEnd, isAutoZoomed: zoom };
-  }, [range, now, points]);
+  }, [range, now, effectivePoints]);
 
   const windowSpan = Math.max(1, windowEnd - windowStart);
 
   // X 坐标：按绝对时间位置（不是 index）
   const xPos = (i: number): number => {
-    if (points.length === 0) return padding.left + xAxisInset;
-    if (points.length === 1) return padding.left + xAxisInset + drawableW / 2;
-    return padding.left + xAxisInset + ((points[i].t - windowStart) / windowSpan) * drawableW;
+    if (effectivePoints.length === 0) return padding.left + xAxisInset;
+    if (effectivePoints.length === 1) return padding.left + xAxisInset + drawableW / 2;
+    return padding.left + xAxisInset + ((effectivePoints[i].t - windowStart) / windowSpan) * drawableW;
   };
   const yPos = (v: number) =>
     padding.top + (1 - (v - minV) / range_v) * innerH;
 
   // 找 timestamp 对应的最近 index
   const findNearestIdx = useCallback((t: number): number => {
-    if (points.length === 0) return -1;
+    if (effectivePoints.length === 0) return -1;
     let best = 0;
-    let bestDiff = Math.abs(points[0].t - t);
-    for (let i = 1; i < points.length; i++) {
-      const diff = Math.abs(points[i].t - t);
+    let bestDiff = Math.abs(effectivePoints[0].t - t);
+    for (let i = 1; i < effectivePoints.length; i++) {
+      const diff = Math.abs(effectivePoints[i].t - t);
       if (diff < bestDiff) {
         bestDiff = diff;
         best = i;
       }
     }
     return best;
-  }, [points]);
+  }, [effectivePoints]);
 
   // Hover：从 SVG 实际像素宽度计算对应 timestamp，找最近节点
   const onMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
-    if (points.length < 1) return;
+    if (effectivePoints.length < 1) return;
     const svg = svgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
@@ -165,7 +239,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     const t = windowStart + ratio * windowSpan;
     const idx = findNearestIdx(t);
     if (idx >= 0) setHoverIdx(idx);
-  }, [points, windowStart, windowSpan, findNearestIdx]);
+  }, [effectivePoints, windowStart, windowSpan, findNearestIdx]);
 
   const onLeave = useCallback(() => setHoverIdx(null), []);
 
@@ -183,45 +257,45 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   }, [windowStart, windowSpan, range]);
 
   // 跨数据缺口时打断折线 — 避免在长时间无新 tick 时画一条假水平线+垂直跳变
-  // 阈值：分时 > 3 min（轮询周期 60s × 3 倍），周/月 > 24 h
-  const gapThresholdMs = range === 'intraday' ? 3 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  // 阈值：分时 > 30 min（轮询周期 60s），周/月已做前值平线填充，仅在发生 > 10 天的无数据异常断档时才打断
+  const gapThresholdMs = range === 'intraday' ? 30 * 60 * 1000 : 10 * 24 * 60 * 60 * 1000;
 
   const linePath = useMemo(() => {
-    if (points.length === 0) return '';
+    if (effectivePoints.length === 0) return '';
     const parts: string[] = [];
-    let seg = `M ${xPos(0).toFixed(2)} ${yPos(points[0].v).toFixed(2)}`;
-    for (let i = 1; i < points.length; i++) {
-      if (points[i].t - points[i - 1].t > gapThresholdMs) {
+    let seg = `M ${xPos(0).toFixed(2)} ${yPos(effectivePoints[0].v).toFixed(2)}`;
+    for (let i = 1; i < effectivePoints.length; i++) {
+      if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
         parts.push(seg);
-        seg = `M ${xPos(i).toFixed(2)} ${yPos(points[i].v).toFixed(2)}`;
+        seg = `M ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
       } else {
-        seg += ` L ${xPos(i).toFixed(2)} ${yPos(points[i].v).toFixed(2)}`;
+        seg += ` L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
       }
     }
     parts.push(seg);
     return parts.join(' ');
-  }, [points, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
+  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
 
   const areaPath = useMemo(() => {
-    if (points.length === 0) return '';
+    if (effectivePoints.length === 0) return '';
     const baselineY = (padding.top + innerH).toFixed(2);
     const parts: string[] = [];
-    let seg = `M ${xPos(0).toFixed(2)} ${baselineY} L ${xPos(0).toFixed(2)} ${yPos(points[0].v).toFixed(2)}`;
-    for (let i = 1; i < points.length; i++) {
-      if (points[i].t - points[i - 1].t > gapThresholdMs) {
+    let seg = `M ${xPos(0).toFixed(2)} ${baselineY} L ${xPos(0).toFixed(2)} ${yPos(effectivePoints[0].v).toFixed(2)}`;
+    for (let i = 1; i < effectivePoints.length; i++) {
+      if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
         // 关闭当前段到基线，开新段
         seg += ` L ${xPos(i - 1).toFixed(2)} ${baselineY} Z`;
         parts.push(seg);
-        seg = `M ${xPos(i).toFixed(2)} ${baselineY} L ${xPos(i).toFixed(2)} ${yPos(points[i].v).toFixed(2)}`;
+        seg = `M ${xPos(i).toFixed(2)} ${baselineY} L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
       } else {
-        seg += ` L ${xPos(i).toFixed(2)} ${yPos(points[i].v).toFixed(2)}`;
+        seg += ` L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
       }
     }
     // 收尾
-    seg += ` L ${xPos(points.length - 1).toFixed(2)} ${baselineY} Z`;
+    seg += ` L ${xPos(effectivePoints.length - 1).toFixed(2)} ${baselineY} Z`;
     parts.push(seg);
     return parts.join(' ');
-  }, [points, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
+  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
 
   // Y 轴刻度：四等分再取"nice" step（5 的倍数优先；窄区间退到 0.5），并严格夹在 [minV, maxV] 内。
   // 0.5 步长服务于国内金价这种 span 只有 0.5 CNY 的小数据集——整数 step 会让唯一一条
@@ -249,8 +323,8 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     return ticks.map(v => ({ v, y: yPos(v) }));
   }, [maxV, minV, range_v]);
 
-  const last = points[points.length - 1]?.v ?? 0;
-  const firstPointVal = points[0]?.v ?? last;
+  const last = effectivePoints[effectivePoints.length - 1]?.v ?? 0;
+  const firstPointVal = effectivePoints[0]?.v ?? last;
   const change = last - firstPointVal;
   const changePct = firstPointVal > 0 ? (change / firstPointVal) * 100 : 0;
   const dirUp = change > 0;
@@ -258,7 +332,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   const trendColor = dirUp ? 'var(--color-up)' : dirDown ? 'var(--color-down)' : 'var(--color-flat)';
   const TrendIcon = dirUp ? TrendingUp : dirDown ? TrendingDown : Minus;
 
-  const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
+  const hoverPoint = hoverIdx != null ? effectivePoints[hoverIdx] : null;
   const hoverX = hoverIdx != null ? xPos(hoverIdx) : 0;
   const hoverY = hoverPoint ? yPos(hoverPoint.v) : 0;
 
@@ -279,7 +353,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     Math.min(height - padding.bottom - goldTooltipHeight - 4, hoverY - goldTooltipHeight / 2)
   );
 
-  if (points.length < 2) {
+  if (effectivePoints.length < 2) {
     return (
       <div className="text-xs text-slate-500 py-8 text-center bg-slate-50/40 dark:bg-white/[0.02] rounded-xl">
         {emptyHint || '暂无数据'}
@@ -293,16 +367,21 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
       <div className="flex items-center justify-between px-1 mb-2">
         <div className="text-[11px] text-slate-500">
           数据点 <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{points.length}</span>
+          {effectivePoints.length > points.length && (
+            <span className="text-[10px] text-slate-400 font-sans ml-1">
+              (含休市平线)
+            </span>
+          )}
           · 窗口 <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{formatWindow(windowStart, windowEnd, range)}</span>
           {isAutoZoomed && <span className="ml-1 text-amber-600 dark:text-amber-400">· 自动 zoom</span>}
           {hoverPoint && (
             <span className="ml-2 text-[var(--primary-accent)] dark:text-[#2997ff]">
               · {formatTick(hoverPoint.t, range)} · {hoverPoint.v.toFixed(2)}
-            </span>
-          )}
-          {hoverPoint && (
-            <span className="ml-2 text-[var(--primary-accent)] dark:text-[#2997ff]">
-              · {formatTick(hoverPoint.t, range)} · {hoverPoint.v.toFixed(2)}
+              {hoverPoint.isClosed && (
+                <span className="text-amber-600 dark:text-amber-400 text-[10px] ml-1 font-sans font-normal">
+                  (周末休市)
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -473,15 +552,9 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             }}
           />
 
-          {/* Hover crosshair — spring 进入（不是瞬变），符合 Apple "tools respond in the moment" */}
+          {/* Hover crosshair — 即时跟随指针，单实例更新，杜绝 key 切换导致的滞留重影 */}
           {hoverPoint && (
-            <motion.g
-              key={`hover-${hoverIdx}`}
-              pointerEvents="none"
-              initial={prefersReducedMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
-            >
+            <g pointerEvents="none">
               <line
                 x1={hoverX}
                 x2={hoverX}
@@ -491,30 +564,26 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 strokeOpacity="0.25"
                 strokeDasharray="3 3"
               />
-              <motion.circle
+              <circle
                 cx={hoverX}
                 cy={hoverY}
                 r="5"
                 fill="white"
                 stroke={hoverColor}
                 strokeWidth="2"
-                initial={prefersReducedMotion ? false : { scale: 0.6 }}
-                animate={{ scale: 1 }}
-                transition={{ type: 'spring' as const, bounce: 0.15, duration: 0.22 }}
-                style={{ transformOrigin: `${hoverX}px ${hoverY}px` }}
               />
               <circle cx={hoverX} cy={hoverY} r="2.5" fill={hoverColor} />
-            </motion.g>
+            </g>
           )}
 
           {/* End dot — 在 line 描完后才"降落"，spring bounce 0（不 overshoot，Apple 默认） */}
-          {points.length > 0 && (
+          {effectivePoints.length > 0 && (
             <motion.g
-              key={`dot-${points.length}-${last}`}
+              key={`dot-${effectivePoints.length}-${last}`}
               initial={prefersReducedMotion ? false : { scale: 0 }}
               animate={{
                 scale: 1,
-                opacity: hoverPoint != null && hoverIdx !== points.length - 1 ? 0.3 : 1,
+                opacity: hoverPoint != null && hoverIdx !== effectivePoints.length - 1 ? 0.3 : 1,
               }}
               transition={{
                 type: 'spring' as const,
@@ -522,13 +591,13 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 duration: 0.32,
                 delay: 0.6,           // 描线结束后 50ms
               }}
-              style={{ transformOrigin: `${xPos(points.length - 1)}px ${yPos(last)}px` }}
+              style={{ transformOrigin: `${xPos(effectivePoints.length - 1)}px ${yPos(last)}px` }}
               pointerEvents="none"
             >
               {/* 外圈轻微"呼吸" — 用 spring loop 模拟实时跳动 */}
-              {!prefersReducedMotion && hoverIdx !== points.length - 1 && (
+              {!prefersReducedMotion && hoverIdx !== effectivePoints.length - 1 && (
                 <motion.circle
-                  cx={xPos(points.length - 1)}
+                  cx={xPos(effectivePoints.length - 1)}
                   cy={yPos(last)}
                   r="4"
                   fill={trendColor}
@@ -536,27 +605,28 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                   transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
                 />
               )}
-              <circle cx={xPos(points.length - 1)} cy={yPos(last)} r="4" fill={trendColor} />
-              <circle cx={xPos(points.length - 1)} cy={yPos(last)} r="2" fill="white" />
+              <circle cx={xPos(effectivePoints.length - 1)} cy={yPos(last)} r="4" fill={trendColor} />
+              <circle cx={xPos(effectivePoints.length - 1)} cy={yPos(last)} r="2" fill="white" />
             </motion.g>
           )}
         </svg>
 
-        {/* Tooltip — spring 入场（y: +4→0, opacity 0→1）跟随十字线 */}
+        {/* Tooltip — 稳定单实例绝对定位，随坐标平滑移动，彻底消除重影 */}
         {hoverPoint && (
-          <motion.div
-            key={`tip-${hoverIdx}`}
-            className="pointer-events-none absolute z-10 px-2.5 py-1.5 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[120px]"
+          <div
+            className="pointer-events-none absolute z-10 px-2.5 py-1.5 rounded-xl bg-white/95 dark:bg-[#1d1d1f]/95 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[125px] transition-[left,top] duration-75 ease-out"
             style={{
               left: `${goldTooltipLeft}px`,
               top: `${goldTooltipTop}px`,
             }}
-            initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ type: 'spring' as const, bounce: 0, duration: 0.22 }}
           >
-            <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1">
-              {formatTooltipTime(hoverPoint.t, range)}
+            <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1 flex items-center justify-between gap-1.5">
+              <span>{formatTooltipTime(hoverPoint.t, range)}</span>
+              {hoverPoint.isClosed && (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-sans font-normal whitespace-nowrap">
+                  (周末休市)
+                </span>
+              )}
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-slate-500">价位</span>
@@ -576,7 +646,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
               </span>
             </div>
-          </motion.div>
+          </div>
         )}
       </div>
 

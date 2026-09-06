@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useId } from 'react';
 import { Spin, Tag } from 'antd';
 import { fetchStockMinute } from '../services/api';
-import { buildSeries, buildMonotoneSplinePath, minuteResponseToFeed, type MinuteFeed, type FundMarket } from '../utils/chartData';
+import { buildSeries, buildMonotoneSplinePath, getSessionTimeRatio, minuteResponseToFeed, type MinuteFeed, type FundMarket } from '../utils/chartData';
 
 interface SparklineProps {
   code: string;
@@ -10,6 +10,9 @@ interface SparklineProps {
   market?: string;
   currentPrice: number;
   prevClose: number;
+  openPrice?: number;
+  highPrice?: number;
+  lowPrice?: number;
   isUp: boolean;
   width?: number;
   height?: number;
@@ -48,6 +51,9 @@ export function Sparkline({
   market = 'domestic',
   currentPrice,
   prevClose,
+  openPrice,
+  highPrice,
+  lowPrice,
   isUp,
   width = 96,
   height = 28,
@@ -106,18 +112,18 @@ export function Sparkline({
       fundName,
       code,
       kind,
-      undefined,
-      undefined,
-      undefined,
+      openPrice,
+      highPrice,
+      lowPrice,
       feed,
       market as FundMarket
     );
-  }, [code, currentPrice, prevClose, fundName, kind, feed, market]);
+  }, [code, currentPrice, prevClose, fundName, kind, openPrice, highPrice, lowPrice, feed, market]);
 
   // 若当前标的处于盘前阶段，使用 Ant Design 待更新组件展示
   const isPreMarket = Boolean(series.preMarket);
 
-  // 坐标转换计算
+  // 坐标转换计算：与详情页 FundChart 严格对称与时间比例对齐
   const geometry = useMemo(() => {
     if (isPreMarket) return null;
     const points = series.points;
@@ -126,28 +132,43 @@ export function Sparkline({
     const values = points.map(p => p.v).filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
     if (values.length < 2) return null;
 
-    const minV = Math.min(...values);
-    const maxV = Math.max(...values);
-    const span = maxV - minV;
+    const basePrice = prevClose > 0 ? prevClose : (points[0]?.v || 1);
+    const deviations = points.map(p => Math.abs(p.v - basePrice));
+    if (highPrice && highPrice > 0) deviations.push(Math.abs(highPrice - basePrice));
+    if (lowPrice && lowPrice > 0) deviations.push(Math.abs(lowPrice - basePrice));
+    if (openPrice && openPrice > 0) deviations.push(Math.abs(openPrice - basePrice));
+    if (currentPrice && currentPrice > 0) deviations.push(Math.abs(currentPrice - basePrice));
+
+    // 默认最小波动区间为基准价的 ±0.5%，留 5% 呼吸空间，确保上下两翼对称
+    const maxDev = Math.max(...deviations, basePrice * 0.005);
+    const paddedDev = maxDev * 1.05;
+
+    const minV = basePrice - paddedDev;
+    const maxV = basePrice + paddedDev;
+    const range_v = maxV - minV || 1;
 
     const padTop = 3;
     const padBottom = 3;
     const innerH = height - padTop - padBottom;
 
-    const pts = points.map((p, i) => ({
-      x: (i / (points.length - 1)) * width,
-      y: span > 0
-        ? height - padBottom - ((p.v - minV) / span) * innerH
-        : height / 2,
-    }));
+    const fundMarket = (market || 'domestic') as FundMarket;
+    const pts = points.map((p, i) => {
+      const rawRatio = getSessionTimeRatio(p.t, fundMarket);
+      const ratio = Number.isFinite(rawRatio) ? Math.max(0, Math.min(1, rawRatio)) : (points.length > 1 ? i / (points.length - 1) : 0);
+      return {
+        x: ratio * width,
+        y: padTop + (1 - (p.v - minV) / range_v) * innerH,
+      };
+    });
 
     // 单调三次 Hermite 样条曲线（Monotone Cubic Spline）
     const lineD = buildMonotoneSplinePath(pts);
     const lastPt = pts[pts.length - 1];
-    const areaD = `${lineD} L ${lastPt.x.toFixed(1)} ${height} L 0 ${height} Z`;
+    const firstPt = pts[0];
+    const areaD = `${lineD} L ${lastPt.x.toFixed(1)} ${height} L ${firstPt.x.toFixed(1)} ${height} Z`;
 
     return { lineD, areaD, lastPt };
-  }, [isPreMarket, series, height, width]);
+  }, [isPreMarket, series, height, width, prevClose, highPrice, lowPrice, openPrice, currentPrice, market]);
 
   const strokeColor = isUp ? 'var(--color-up)' : 'var(--color-down)';
   const gradId = `sparkGrad-${gradientInstanceId}`;
