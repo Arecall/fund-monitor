@@ -6,11 +6,11 @@
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
 [![Ant%20Design](https://img.shields.io/badge/antd-6.6.0-1890ff.svg)](package.json)
 
-新增银行类投资专区
 
 一款轻量级、高颜值、支持多用户数据隔离的**全球资产轻量监控终端**。支持国内公募场外基金、A股/港股/美股股票及 ETF、QDII 跨国基金以及全球大盘指数与贵金属黄金行情的实时追踪、持仓盈亏自动计算及邮箱预警提醒。
 
 ---
+1.5.3 新增银行类投资专区
 
 ## 目录
 
