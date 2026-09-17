@@ -60,6 +60,7 @@ const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel'
 const NotificationLogModal = React.lazy(() => import('./components/NotificationLogModal').then(m => ({ default: m.NotificationLogModal })));
 const GoldTab = React.lazy(() => import('./components/GoldTab').then(m => ({ default: m.GoldTab })));
 const AiStockPickTab = React.lazy(() => import('./components/AiStockPickTab').then(m => ({ default: m.AiStockPickTab })));
+const BankStocksTab = React.lazy(() => import('./components/BankStocksTab').then(m => ({ default: m.BankStocksTab })));
 const loadFundDetailPanel = () => import('./components/FundDetailPanel').then(m => ({ default: m.FundDetailPanel }));
 const FundDetailPanel = React.lazy(loadFundDetailPanel);
 
@@ -755,11 +756,11 @@ function App() {
   const [watchlistPage, setWatchlistPage] = useState(1);
   const [watchlistPageSize, setWatchlistPageSize] = useState(10);
   const isDesktopWatchlist = useMediaQuery('(min-width: 768px)');
-  const [mainTab, setMainTab] = useState<'portfolio' | 'gold' | 'ai-stock-pick'>(() => {
+  const [mainTab, setMainTab] = useState<'portfolio' | 'gold' | 'ai-stock-pick' | 'bank-stocks'>(() => {
     // 刷新停留在哪个 tab — 从 localStorage 恢复
     try {
       const saved = localStorage.getItem('fund_main_tab');
-      if (saved === 'portfolio' || saved === 'gold' || saved === 'ai-stock-pick') return saved;
+      if (saved === 'portfolio' || saved === 'gold' || saved === 'ai-stock-pick' || saved === 'bank-stocks') return saved;
     } catch {}
     return 'portfolio';
   });
@@ -2241,12 +2242,13 @@ function App() {
             <span className="hidden md:inline">全球基金监控终端</span>
           </h1>
 
-          {/* 主 tab: 自选 (portfolio) / 金价 (gold) / 优质选股 (ai-stock-pick) */}
-          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5 shrink-0">
+          {/* 主 tab: 自选 (portfolio) / 金价 (gold) / 优质选股 (ai-stock-pick) / 银行·稳健红利 (bank-stocks) */}
+          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5 shrink-0 max-w-full overflow-x-auto no-scrollbar">
             {([
               { key: 'portfolio',     label: '自选', icon: '📋' },
               { key: 'gold',          label: '金价', icon: '💰' },
               { key: 'ai-stock-pick', label: '优质选股', icon: '✨' },
+              { key: 'bank-stocks',   label: '银行·稳健红利', icon: '🏦' },
             ] as const).map(t => {
               const active = mainTab === t.key;
               return (
@@ -2411,6 +2413,19 @@ function App() {
           }>
             <AiStockPickTab
               isAdmin={currentUser.toLowerCase() === 'admin'}
+              currentUser={currentUser}
+              onOpenDetail={handleAiOpenDetail}
+            />
+          </React.Suspense>
+        </div>
+      ) : mainTab === 'bank-stocks' ? (
+        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
+          <React.Suspense fallback={
+            <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
+              <Spin size="large" tip="正在加载银行·稳健红利专区..." />
+            </div>
+          }>
+            <BankStocksTab
               currentUser={currentUser}
               onOpenDetail={handleAiOpenDetail}
             />

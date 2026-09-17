@@ -1231,3 +1231,123 @@ export async function deleteAiReport(reportId: number): Promise<{ success: boole
   });
 }
 
+// ==========================================
+// 银行·稳健红利资产接口与类型定义
+// ==========================================
+
+export interface BankStockItem {
+  code: string;
+  symbol: string;
+  name: string;
+  market: 'domestic' | 'hk';
+  tier: 'national' | 'commercial' | 'regional' | 't0_cash' | 'etf' | 'hk';
+  tierName: string;
+  price: number;
+  prevClose: number;
+  change: number;
+  changePct: number;
+  pe: number | null;
+  pb: number | null;
+  totalCap: number | null;
+  floatCap: number | null;
+  turnoverAmount: number;
+  dividendYield: number; // 动态百分比 %（税前名义）
+  afterTaxDividendYield: number; // 实际到手股息率 %（港股扣除20%红利税，A股按满1年免税基准）
+  stabilityScore: number;
+  annualDividend?: number;
+  annualDividendHkd?: number;
+  dividendDesc?: string;
+  dividendYears?: number;
+  payoutRatio?: number;
+  reportPeriod?: string;
+  nplRatio?: number;
+  provisionCoverage?: number;
+  roe?: number;
+  nim?: number;
+  isFund?: boolean;
+  trackingIndex?: string;
+  discountRate?: number | null;
+  premiumRate?: number | null;
+  riskLevel?: string;
+  liquidityRating?: string;
+  tradeMechanism?: string;
+  taxNote?: string;
+  fundMechanism?: string;
+  cashWithdrawNotice?: string;
+  advantage?: string;
+  tags?: string[];
+}
+
+export interface BankOverview {
+  sectorAvgDividendYield: number;
+  sectorWeightedDividendYield: number;
+  sectorAvgPb: number;
+  sectorWeightedPb: number;
+  brokenNetRatio: number;
+  brokenNetCount: number;
+  totalTrackedBanks: number;
+  upCount: number;
+  downCount: number;
+  flatCount: number;
+  hkdCnyRate?: number;
+  updateTime: string;
+  riskNotice: {
+    title: string;
+    points: string[];
+  };
+}
+
+export interface BankMacroNews {
+  id: string;
+  title: string;
+  category: string;
+  time: string;
+  summary: string;
+  impact: string;
+}
+
+export interface BankAiDiagnoseResult {
+  success: boolean;
+  model: string;
+  diagnosis: string;
+  isAiGenerated: boolean;
+  generatedAt: string;
+  metricsSnapshot: {
+    price: number;
+    dividendYield: number;
+    afterTaxDividendYield?: number;
+    pb: number | null;
+    nplRatio?: number;
+    provisionCoverage?: number;
+    reportPeriod?: string;
+  };
+}
+
+export async function fetchBankStocksOverview(): Promise<{ success: boolean; data: BankOverview }> {
+  return request('/api/bank-stocks/overview');
+}
+
+export async function fetchBankStocksList(
+  tier: string = 'all',
+  sortBy: string = 'stabilityScore',
+  sortOrder: 'asc' | 'desc' = 'desc'
+): Promise<{ success: boolean; total: number; data: BankStockItem[] }> {
+  return request(`/api/bank-stocks/list?tier=${encodeURIComponent(tier)}&sortBy=${encodeURIComponent(sortBy)}&sortOrder=${encodeURIComponent(sortOrder)}`);
+}
+
+export async function fetchBankMacroNews(): Promise<{ success: boolean; data: BankMacroNews[] }> {
+  return request('/api/bank-stocks/macro-news');
+}
+
+export async function diagnoseBankStock(params: {
+  code: string;
+  name?: string;
+  market?: string;
+}): Promise<BankAiDiagnoseResult> {
+  return request('/api/bank-stocks/ai-diagnose', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+

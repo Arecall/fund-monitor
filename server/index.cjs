@@ -11,6 +11,7 @@ const { SECTORS, SECTOR_COLORS, inferStockSector, inferFundSector, classifyHoldi
 const marketTime = require('./time.cjs');
 const { createHoldingsPrefetch } = require('./holdings-prefetch.cjs');
 const aiStockPick = require('./ai-stock-pick.cjs');
+const bankStocks = require('./bank-stocks.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -110,7 +111,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.5.1' });
+  res.json({ status: 'ok', version: '1.5.2' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -1665,6 +1666,9 @@ app.get('/api/stream/stats', (_req, res) => {
 
 // 挂载 AI 优质股票筛选路由
 app.use('/api/ai', aiStockPick.router);
+
+// 挂载银行·稳健红利资产路由
+app.use('/api/bank-stocks', bankStocks.router);
 
 // ==========================================
 // 启动服务
