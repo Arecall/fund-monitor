@@ -767,16 +767,20 @@ function App() {
 
   const [detailOverrideMap, setDetailOverrideMap] = useState<Record<string, { kind: 'fund' | 'stock'; market: string }>>({});
 
-  const handleAiOpenDetail = useCallback(async (code: string, market: 'domestic' | 'hk' | 'us' | 'other') => {
-    setDetailOverrideMap(prev => ({ ...prev, [code]: { kind: 'stock', market } }));
+  const handleAiOpenDetail = useCallback(async (
+    code: string,
+    market: 'domestic' | 'hk' | 'us' | 'other',
+    kind: 'fund' | 'stock' = 'stock'
+  ) => {
+    setDetailOverrideMap(prev => ({ ...prev, [code]: { kind, market } }));
     if (!fundsData[code]) {
       try {
-        const val = await fetchFundValuation(code, 'stock', { enrich: true });
+        const val = await fetchFundValuation(code, kind, { enrich: true });
         if (val) {
           setFundsData(prev => ({ ...prev, [code]: val }));
         }
       } catch (e) {
-        console.warn('获取股票即时行情失败:', e);
+        console.warn('获取即时行情失败:', e);
       }
     }
     setSelectedFundCode(code);

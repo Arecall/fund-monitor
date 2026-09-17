@@ -473,13 +473,15 @@ const ASSETS_CATALOG = [
     isFund: true,
     annualYield: 1.82,
     yieldType: '7日年化基准',
+    feederCodes: ['000860'],
+    feederDesc: '场外原基金: 000860 (银华活钱宝/日利场外)',
     fundMechanism: '净值累加增长，每年年底集中现金分红一次除权回归100元；二级市场存在微小贴水/溢价波动',
     riskLevel: 'R1 低风险 (场内货基)',
     liquidityRating: '极高·日成交数十亿',
     tradeMechanism: 'T+0 日内回转交易（当日卖出资金实时可用）',
     cashWithdrawNotice: '重要：卖出后资金在证券账户实时可用；提现至银行卡需在交易日 9:00~16:00 通过银证转账（非交易时段不可转出）',
     advantage: '规模千亿级场内现金管家，买卖免印花税与经手费，证券账户备用金日内保本增值首选',
-    tags: ['场内货基', 'T+0回转', '日内可用', '年末分红']
+    tags: ['场内货基', 'T+0回转', '日内可用', '年末分红', '000860']
   },
   {
     code: '511990',
@@ -491,13 +493,15 @@ const ASSETS_CATALOG = [
     isFund: true,
     annualYield: 1.78,
     yieldType: '7日年化基准',
+    feederCodes: ['240006', '240007'],
+    feederDesc: '场外原基金: 240006 (A类) / 240007 (B类)',
     fundMechanism: '面值恒定 100 元，每日收益通过增加基金份额日结分配，二级市场极低折溢价',
     riskLevel: 'R1 低风险 (场内货基)',
     liquidityRating: '极高·做市商高密度铺单',
     tradeMechanism: 'T+0 日内回转交易（当日卖出资金实时可用）',
     cashWithdrawNotice: '重要：卖出后资金在证券账户实时可用；提现至银行卡需在交易日 9:00~16:00 通过银证转账（非交易时段不可转出）',
     advantage: '流动性首屈一指的场内货基，盘中买卖无滑点，零回撤曲线，替代券商活期闲置利息',
-    tags: ['千亿规模', 'T+0回转', '份额日结', '零回撤']
+    tags: ['千亿规模', 'T+0回转', '份额日结', '零回撤', '240006', '240007']
   },
   {
     code: '511660',
@@ -530,12 +534,14 @@ const ASSETS_CATALOG = [
     trackingIndex: '中证银行指数 (399986)',
     annualYield: 4.10,
     yieldType: '指数跟踪股息率',
+    feederCodes: ['240019', '001594'],
+    feederDesc: '场外联接: 240019 (A类) / 001594 (C类)',
     riskLevel: 'R3 中风险 (股票ETF)',
     liquidityRating: '极高·日成交超5亿元',
     tradeMechanism: 'T+1 交易 / 免印花税',
     taxNote: 'ETF 交易免征证券交易印花税；基金分红免征所得税',
     advantage: '一键囊括全市场 42 家上市银行，彻底杜绝单一银行坏账暴雷的非系统性风险',
-    tags: ['中证银行', '分散个股风险', '免印花税', '定期分红']
+    tags: ['中证银行', '分散个股风险', '免印花税', '定期分红', '240019', '001594', '场外联接']
   },
   {
     code: '512890',
@@ -548,12 +554,14 @@ const ASSETS_CATALOG = [
     trackingIndex: '中证红利低波动指数 (930955)',
     annualYield: 4.55,
     yieldType: '指数跟踪股息率',
+    feederCodes: ['007466', '007467'],
+    feederDesc: '场外联接: 007466 (A类) / 007467 (C类)',
     riskLevel: 'R3 中风险 (股票ETF)',
     liquidityRating: '极高·长期资金底仓首选',
     tradeMechanism: 'T+1 交易 / 免印花税',
     taxNote: 'ETF 交易免征证券交易印花税；基金分红免征所得税',
     advantage: '精选全市场高股息且波动率最低的 50 只央国企及银行龙头，熊市抗跌韧性极强',
-    tags: ['红利低波', '高分红+低波动', '抗跌防御', '底仓首选']
+    tags: ['红利低波', '高分红+低波动', '抗跌防御', '底仓首选', '007466', '007467', '场外联接']
   },
   {
     code: '510880',
@@ -566,12 +574,14 @@ const ASSETS_CATALOG = [
     trackingIndex: '上证红利指数 (000015)',
     annualYield: 4.60,
     yieldType: '指数跟踪股息率',
+    feederCodes: ['001528', '011531'],
+    feederDesc: '场外联接: 001528 (A类) / 011531 (C类)',
     riskLevel: 'R3 中风险 (股票ETF)',
     liquidityRating: '极高·规模超百亿',
     tradeMechanism: 'T+1 交易 / 免印花税',
     taxNote: 'ETF 交易免征证券交易印花税；基金分红免征所得税',
     advantage: '境内历史最悠久的高股息 ETF，成分股多为分红稳健的大型银行、能源、公用事业巨头',
-    tags: ['上证红利', '现金奶牛', '老牌红利', '分红丰厚']
+    tags: ['上证红利', '现金奶牛', '老牌红利', '分红丰厚', '001528', '011531', '场外联接']
   },
 
   // --- 6. 港股通高股息大行（AH 实时折价，需扣 20% 红利税） ---

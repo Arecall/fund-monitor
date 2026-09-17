@@ -1167,7 +1167,21 @@ async function fetchStockMinuteData(code, market, kind = null) {
   let targetTicker = c;
   let targetMarket = market;
 
-  if (/^\d{6}$/.test(c)) {
+  // 1.1 国内指数型 ETF 场外联接基金代理识别与重定向：
+  //     场外联接基金 90%+ 资产直接投资于对应场内 ETF，直接复用场内 ETF 实时分钟线并按场外基金净值高精度缩放
+  const ETF_FEEDER_MAP = {
+    '007466': '512890', // 华泰柏瑞红利低波ETF联接A -> 红利低波ETF
+    '007467': '512890', // 华泰柏瑞红利低波ETF联接C -> 红利低波ETF
+    '240019': '512800', // 华宝中证银行ETF联接A -> 银行ETF
+    '001594': '512800', // 华宝中证银行ETF联接C -> 银行ETF
+    '001528': '510880', // 华泰柏瑞上证红利ETF联接A -> 红利ETF
+    '011531': '510880', // 华泰柏瑞上证红利ETF联接C -> 红利ETF
+  };
+
+  if (/^\d{6}$/.test(c) && ETF_FEEDER_MAP[c]) {
+    targetTicker = ETF_FEEDER_MAP[c];
+    targetMarket = 'domestic';
+  } else if (/^\d{6}$/.test(c)) {
     const proxyConfig = proxyTickers.getKnownProxyConfig(c);
     if (proxyConfig && proxyConfig.regularProxy?.tencentSymbol) {
       const sym = proxyConfig.regularProxy.tencentSymbol;

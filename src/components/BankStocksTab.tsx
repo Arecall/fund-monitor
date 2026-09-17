@@ -46,7 +46,7 @@ import {
 
 interface BankStocksTabProps {
   currentUser?: string;
-  onOpenDetail?: (code: string, market: 'domestic' | 'hk' | 'us' | 'other') => void;
+  onOpenDetail?: (code: string, market: 'domestic' | 'hk' | 'us' | 'other', kind?: 'fund' | 'stock') => void;
 }
 
 const TIER_OPTIONS = [
@@ -86,7 +86,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
     try {
       const [overviewRes, listRes, newsRes] = await Promise.allSettled([
         fetchBankStocksOverview(),
-        fetchBankStocksList(selectedTier, sortBy, sortOrder),
+        fetchBankStocksList('all', sortBy, sortOrder),
         fetchBankMacroNews(),
       ]);
 
@@ -105,7 +105,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedTier, sortBy, sortOrder]);
+  }, [sortBy, sortOrder]);
 
   useEffect(() => {
     loadData();
@@ -155,20 +155,35 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
     }
   };
 
-  // 搜索过滤与排序
-  const filteredStocks = useMemo(() => {
-    let list = [...stocks];
-    if (searchText.trim()) {
-      const q = searchText.trim().toLowerCase();
-      list = list.filter(
-        s =>
-          s.name.toLowerCase().includes(q) ||
-          s.code.toLowerCase().includes(q) ||
-          (s.tags && s.tags.some(t => t.toLowerCase().includes(q)))
-      );
+  // 搜索过滤与跨分类智能联动
+  const { filteredStocks, isCrossTierMatch } = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+
+    // 如果未输入搜索词，按当前选中 Tab 过滤
+    if (!q) {
+      const list = selectedTier === 'all' ? stocks : stocks.filter(s => s.tier === selectedTier);
+      return { filteredStocks: list, isCrossTierMatch: false };
     }
-    return list;
-  }, [stocks, searchText]);
+
+    const matcher = (s: BankStockItem) =>
+      s.name.toLowerCase().includes(q) ||
+      s.code.toLowerCase().includes(q) ||
+      (s.feederCodes && s.feederCodes.some(c => c.toLowerCase().includes(q))) ||
+      (s.feederDesc && s.feederDesc.toLowerCase().includes(q)) ||
+      (s.tags && s.tags.some(t => t.toLowerCase().includes(q)));
+
+    // 1. 先在当前分类内搜索
+    const currentTierList = selectedTier === 'all' ? stocks : stocks.filter(s => s.tier === selectedTier);
+    const matchesInCurrent = currentTierList.filter(matcher);
+
+    if (matchesInCurrent.length > 0 || selectedTier === 'all') {
+      return { filteredStocks: matchesInCurrent, isCrossTierMatch: false };
+    }
+
+    // 2. 当前分类无结果时，自动跨全量分类检索
+    const matchesInAll = stocks.filter(matcher);
+    return { filteredStocks: matchesInAll, isCrossTierMatch: matchesInAll.length > 0 };
+  }, [stocks, selectedTier, searchText]);
 
   return (
     <div className="space-y-5 pb-16 max-w-7xl mx-auto px-2 sm:px-4">
@@ -357,7 +372,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
           <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <Input
-              placeholder="搜索标的（如 招行、银华日利、601398、AH折价...）"
+              placeholder="搜索标的（如 招行、银华日利、601398、007467联接、AH折价...）"
               value={searchText}
               onChange={e => setSearchText(e.target.value)}
               allowClear
@@ -390,6 +405,22 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
           </div>
         </div>
       </div>
+
+      {/* 跨分类搜索智能提示 */}
+      {isCrossTierMatch && (
+        <div className="flex items-center justify-between text-xs bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-xl px-4 py-2.5 shadow-sm">
+          <div className="flex items-center gap-1.5">
+            <span className="text-base">💡</span>
+            <span>当前分类下未找到，已自动为您检索并呈现全量资产库中的匹配标的</span>
+          </div>
+          <button
+            onClick={() => setSelectedTier('all')}
+            className="underline font-semibold cursor-pointer hover:text-indigo-900 dark:hover:text-indigo-200"
+          >
+            切换到全部分类
+          </button>
+        </div>
+      )}
 
       {/* 5. 标的资产矩阵列表 */}
       {loading ? (
@@ -560,6 +591,55 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                   {isHk && stock.taxNote && (
                     <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400/90 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1 rounded-lg">
                       ⚠️ 税负：{stock.taxNote}
+                    </div>
+                  )}
+                  {/* 场外联接基金交互区域（指数ETF支持点击直接查看场外分时图，货币基金明确无分时提示） */}
+                  {stock.feederCodes && stock.feederCodes.length > 0 && (
+                    <div className="mt-2.5 p-2.5 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-xl">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1">
+                          <span>🔗 关联场外公募基金</span>
+                        </span>
+                        <span className="text-[10px] text-indigo-500/80">
+                          {isT0 ? '每日计息·无日内分时' : '点击查看场外估算分时'}
+                        </span>
+                      </div>
+                      {isT0 ? (
+                        <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                          场外关联代码：{stock.feederCodes.join(' / ')}（收益按日结算，不随盘中价格波动）
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {stock.feederCodes.map((fCode) => {
+                              const isClassC = fCode === '007467' || fCode === '001594' || fCode === '011531';
+                              const label = isClassC
+                                ? `${fCode} (C类·波段免赎)`
+                                : `${fCode} (A类·长线首选)`;
+                              const tip = isClassC
+                                ? `${fCode} C类：0 申购费，持有满 7 天免赎回费，按日计提销售服务费，适合 1 年以内短期波段`
+                                : `${fCode} A类：前端申购费（通常 1 折），无销售服务费，持有超 1~2 年免赎回费，适合长期定投`;
+                              return (
+                                <button
+                                  key={fCode}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenDetail?.(fCode, 'domestic', 'fund');
+                                  }}
+                                  title={tip}
+                                  className="px-2 py-1 text-[11px] font-mono font-medium rounded-lg bg-white dark:bg-indigo-900/50 hover:bg-indigo-100 dark:hover:bg-indigo-800/80 text-indigo-700 dark:text-indigo-200 border border-indigo-200/80 dark:border-indigo-700/60 shadow-xs flex items-center gap-1 transition-all cursor-pointer group/btn"
+                                >
+                                  <LineChart className="w-3 h-3 text-indigo-500 group-hover/btn:scale-110 transition-transform" />
+                                  <span>{label} 分时</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-1.5 text-[10px] text-indigo-700/70 dark:text-indigo-400/70 leading-normal">
+                            💡 规则提示：场外申赎按当日 15:00 确认净值交收（未知价法），分时线为底层 ETF 盘中参考走势。
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 

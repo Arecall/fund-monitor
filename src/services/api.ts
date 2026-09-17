@@ -1274,6 +1274,8 @@ export interface BankStockItem {
   taxNote?: string;
   fundMechanism?: string;
   cashWithdrawNotice?: string;
+  feederCodes?: string[];
+  feederDesc?: string;
   advantage?: string;
   tags?: string[];
 }
