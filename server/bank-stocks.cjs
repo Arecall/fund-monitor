@@ -15,6 +15,7 @@ const express = require('express');
 const axios = require('axios');
 const iconv = require('iconv-lite');
 const dbHelper = require('./db.cjs');
+const marketHelper = require('./market.cjs');
 const { decrypt } = require('./crypto.cjs');
 
 const router = express.Router();
@@ -747,6 +748,22 @@ async function fetchAllBankQuotes() {
         const totalCap = parseFloat(parts[45]) || null; // 亿元
         const pb = parseFloat(parts[46]) || null;
 
+        // ETF / 基金专属高精度指标：IOPV 实时参考净值 (parts[78]) 与 实时折溢价率 (parts[77])
+        let iopv = null;
+        let etfPremiumRate = null;
+        if (parts.length > 78) {
+          const parsedIopv = parseFloat(parts[78]);
+          if (Number.isFinite(parsedIopv) && parsedIopv > 0) {
+            iopv = parsedIopv;
+          }
+          const parsedPrem = parseFloat(parts[77]);
+          if (Number.isFinite(parsedPrem)) {
+            etfPremiumRate = parsedPrem;
+          } else if (iopv && price > 0) {
+            etfPremiumRate = parseFloat((((price - iopv) / iopv) * 100).toFixed(2));
+          }
+        }
+
         quoteMap.set(rawSym, {
           price,
           prevClose,
@@ -756,8 +773,46 @@ async function fetchAllBankQuotes() {
           pb: Number.isFinite(pb) && pb > 0 ? pb : null,
           floatCap,
           totalCap,
-          turnoverAmount: parseFloat(parts[37]) || 0
+          turnoverAmount: parseFloat(parts[37]) || 0,
+          iopv,
+          etfPremiumRate
         });
+      }
+
+      // 并发拉取所有关联场外联接基金的盘中实时估值 (gsz/gszzl)
+      const allFeederCodes = Array.from(new Set(
+        ASSETS_CATALOG.flatMap(a => a.feederCodes || [])
+      ));
+      const feederValuationMap = new Map();
+      if (allFeederCodes.length > 0) {
+        await Promise.allSettled(
+          allFeederCodes.map(async (fCode) => {
+            try {
+              const val = await marketHelper.getFundValuation(fCode, 'fund');
+              if (val) {
+                const isClassC = fCode === '007467' || fCode === '001594' || fCode === '011531';
+                const gszNum = parseFloat(val.gsz) || parseFloat(val.dwjz) || 0;
+                const gszzlNum = parseFloat(val.gszzl) || 0;
+                feederValuationMap.set(fCode, {
+                  code: fCode,
+                  name: val.name,
+                  shareClass: isClassC ? 'C' : 'A',
+                  gsz: gszNum > 0 ? gszNum.toFixed(4) : val.dwjz,
+                  gszzl: (gszzlNum >= 0 ? '+' : '') + gszzlNum.toFixed(2) + '%',
+                  gszzlNum,
+                  dwjz: val.dwjz,
+                  gztime: val.gztime,
+                  breakevenDays: 160,
+                  breakevenAdvice: isClassC
+                    ? '持有 ≤ 160天更优 (0申购费·满7天免赎)'
+                    : '持有 > 160天更优 (无销售服务费)'
+                });
+              }
+            } catch {
+              // silent fallback
+            }
+          })
+        );
       }
 
       // 整合全量资产列表、计算实时股息率与动态 AH 折价率
@@ -771,7 +826,9 @@ async function fetchAllBankQuotes() {
           pb: null,
           floatCap: null,
           totalCap: null,
-          turnoverAmount: 0
+          turnoverAmount: 0,
+          iopv: null,
+          etfPremiumRate: null
         };
 
         let computedDividendYield = 0;
@@ -811,6 +868,50 @@ async function fetchAllBankQuotes() {
           }
         }
 
+        // ETF 折溢价率与套利决策指引
+        let finalPremiumRate = dynamicPremiumRate;
+        let arbitrageAdvice = null;
+        if (asset.tier === 'etf') {
+          finalPremiumRate = typeof q.etfPremiumRate === 'number' ? q.etfPremiumRate : null;
+          if (typeof finalPremiumRate === 'number') {
+            if (finalPremiumRate > 0.3) {
+              arbitrageAdvice = {
+                type: 'premium',
+                level: 'warning',
+                text: `场内溢价 +${finalPremiumRate.toFixed(2)}%，申购场外联接成本更优（避免买贵）`
+              };
+            } else if (finalPremiumRate < -0.3) {
+              arbitrageAdvice = {
+                type: 'discount',
+                level: 'opportunity',
+                text: `场内折价 ${finalPremiumRate.toFixed(2)}%，二级市场买入具备折价安全垫`
+              };
+            } else {
+              arbitrageAdvice = {
+                type: 'neutral',
+                level: 'normal',
+                text: `折溢价 ${finalPremiumRate >= 0 ? '+' : ''}${finalPremiumRate.toFixed(2)}%（处于合理窄幅区间，平价交易）`
+              };
+            }
+          }
+        }
+
+        // 分红周期说明
+        const defaultDivFrequency = asset.tier === 'national'
+          ? '一年双分红 (年中+年末)'
+          : asset.tier === 'hk'
+          ? '一年双分红 (港股通扣20%红利税)'
+          : asset.tier === 'etf'
+          ? '定期分红评估 (按季/按年)'
+          : asset.tier === 't0_cash'
+          ? '日结份额 / 年末除权分红'
+          : '年度分红 (部分推进中期分红)';
+
+        // 场外基金实时估值列表
+        const feederValuations = (asset.feederCodes || [])
+          .map(fCode => feederValuationMap.get(fCode))
+          .filter(Boolean);
+
         // 综合稳健度综合量化打分
         let stabilityScore = 80;
         if (asset.tier === 't0_cash') {
@@ -835,13 +936,17 @@ async function fetchAllBankQuotes() {
           changePct: q.changePct,
           pe: q.pe,
           pb: q.pb,
+          iopv: q.iopv,
           totalCap: q.totalCap,
           floatCap: q.floatCap,
           turnoverAmount: q.turnoverAmount,
           dividendYield: computedDividendYield,
           afterTaxDividendYield,
+          dividendFrequency: asset.dividendFrequency || defaultDivFrequency,
           discountRate: dynamicDiscountRate !== null ? dynamicDiscountRate : asset.discountRate,
-          premiumRate: dynamicPremiumRate,
+          premiumRate: finalPremiumRate,
+          arbitrageAdvice,
+          feederValuations,
           stabilityScore
         };
       });

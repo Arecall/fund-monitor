@@ -440,6 +440,8 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
             const isDown = stock.changePct < 0;
             const isT0 = stock.tier === 't0_cash';
             const isHk = stock.tier === 'hk';
+            const isEtf = stock.tier === 'etf';
+            const isLowPrice = isT0 || isEtf || (stock.price > 0 && stock.price < 5.0);
 
             return (
               <div
@@ -477,15 +479,20 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                             {stock.reportPeriod}
                           </span>
                         )}
+                        {stock.dividendFrequency && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50">
+                            💰 {stock.dividendFrequency}
+                          </span>
+                        )}
                       </div>
                     </div>
 
-                    {/* 右侧价格与涨跌 */}
+                    {/* 右侧价格与涨跌（自适应 3 位毫厘精度） */}
                     <div className="text-right shrink-0">
                       <div className="text-lg sm:text-xl font-bold font-mono text-slate-900 dark:text-white">
                         {stock.price > 0 ? (
                           <>
-                            {isHk ? 'HK$' : '¥'}{stock.price.toFixed(isT0 ? 3 : 2)}
+                            {isHk ? 'HK$' : '¥'}{stock.price.toFixed(isLowPrice ? 3 : 2)}
                           </>
                         ) : (
                           '--'
@@ -502,7 +509,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                     </div>
                   </div>
 
-                  {/* 核心指标矩阵（金融专业口径展示） */}
+                  {/* 核心指标矩阵（金融专业口径展示：ETF 专属实时折溢价率替换空置 PB） */}
                   <div className="mt-4 grid grid-cols-3 gap-2 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-2.5 text-center">
                     <div>
                       <div className="text-[10px] text-slate-400 dark:text-slate-400">
@@ -526,7 +533,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
 
                     <div>
                       <div className="text-[10px] text-slate-400 dark:text-slate-400">
-                        {isT0 ? '交易机制' : isHk ? 'AH实时折价' : '市净率 (PB)'}
+                        {isT0 ? '交易机制' : isHk ? 'AH实时折价' : isEtf ? '实时折溢价' : '市净率 (PB)'}
                       </div>
                       <div className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono mt-0.5">
                         {isT0 ? (
@@ -535,6 +542,20 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                           <span className="text-rose-600 dark:text-rose-400 font-mono">
                             {stock.discountRate !== null && stock.discountRate !== undefined
                               ? `${stock.discountRate}%`
+                              : '--'}
+                          </span>
+                        ) : isEtf ? (
+                          <span className={`font-mono ${
+                            stock.premiumRate != null && stock.premiumRate < 0
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : stock.premiumRate != null && stock.premiumRate > 0
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-slate-700 dark:text-slate-300'
+                          }`}>
+                            {stock.premiumRate != null
+                              ? `${stock.premiumRate >= 0 ? '+' : ''}${stock.premiumRate.toFixed(2)}%`
+                              : stock.iopv
+                              ? `¥${stock.iopv.toFixed(3)}`
                               : '--'}
                           </span>
                         ) : stock.pb ? (
@@ -546,7 +567,19 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         )}
                       </div>
                       <div className="text-[9px] text-slate-400 mt-0.5">
-                        {isT0 ? '盘中可用' : isHk ? '折算汇率动态' : stock.pb && stock.pb < 1.0 ? '深度破净' : '估值安全'}
+                        {isT0
+                          ? '盘中可用'
+                          : isHk
+                          ? '折算汇率动态'
+                          : isEtf
+                          ? stock.premiumRate != null && stock.premiumRate < -0.1
+                            ? '场内折价'
+                            : stock.premiumRate != null && stock.premiumRate > 0.1
+                            ? '场内溢价'
+                            : '平价交易'
+                          : stock.pb && stock.pb < 1.0
+                          ? '深度破净'
+                          : '估值安全'}
                       </div>
                     </div>
 
@@ -582,6 +615,19 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                     {stock.advantage || '长期稳健分红，具备较厚估值安全边际。'}
                   </div>
 
+                  {/* ETF 跨市场套利与建仓决策指引 */}
+                  {stock.arbitrageAdvice && (
+                    <div className={`mt-2 text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 ${
+                      stock.arbitrageAdvice.type === 'discount'
+                        ? 'bg-emerald-50/90 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/50'
+                        : stock.arbitrageAdvice.type === 'premium'
+                        ? 'bg-amber-50/90 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800/50'
+                        : 'bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-800'
+                    }`}>
+                      <span>💡 决策提示：{stock.arbitrageAdvice.text}</span>
+                    </div>
+                  )}
+
                   {/* 针对货基或港股的专业机制提示 */}
                   {isT0 && stock.fundMechanism && (
                     <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400/90 bg-amber-50/60 dark:bg-amber-950/20 px-2 py-1 rounded-lg">
@@ -593,12 +639,15 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                       ⚠️ 税负：{stock.taxNote}
                     </div>
                   )}
-                  {/* 场外联接基金交互区域（指数ETF支持点击直接查看场外分时图，货币基金明确无分时提示） */}
+                  {/* 场外联接基金交互区域（外显盘中实时估值净值、A/C 份额持有期精算平衡点与分时联动） */}
                   {stock.feederCodes && stock.feederCodes.length > 0 && (
-                    <div className="mt-2.5 p-2.5 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-xl">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1">
+                    <div className="mt-2.5 p-3 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1.5">
                           <span>🔗 关联场外公募基金</span>
+                          <span className="text-[10px] font-normal text-indigo-600 dark:text-indigo-400 bg-indigo-100/80 dark:bg-indigo-900/60 px-1.5 py-0.2 rounded">
+                            {isT0 ? '货币基金' : '穿透实时估值'}
+                          </span>
                         </span>
                         <span className="text-[10px] text-indigo-500/80">
                           {isT0 ? '每日计息·无日内分时' : '点击查看场外估算分时'}
@@ -610,32 +659,72 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         </div>
                       ) : (
                         <>
-                          <div className="flex flex-wrap items-center gap-1.5">
+                          <div className="space-y-1.5">
                             {stock.feederCodes.map((fCode) => {
+                              const valuation = stock.feederValuations?.find(v => v.code === fCode);
                               const isClassC = fCode === '007467' || fCode === '001594' || fCode === '011531';
-                              const label = isClassC
-                                ? `${fCode} (C类·波段免赎)`
-                                : `${fCode} (A类·长线首选)`;
-                              const tip = isClassC
-                                ? `${fCode} C类：0 申购费，持有满 7 天免赎回费，按日计提销售服务费，适合 1 年以内短期波段`
-                                : `${fCode} A类：前端申购费（通常 1 折），无销售服务费，持有超 1~2 年免赎回费，适合长期定投`;
+                              const shareClassLabel = isClassC ? 'C类·短波段' : 'A类·长定投';
+                              const isValUp = (valuation?.gszzlNum ?? 0) > 0;
+                              const isValDown = (valuation?.gszzlNum ?? 0) < 0;
+                              const breakevenTip = isClassC
+                                ? '持有 ≤ 160天更优 (0申购费·满7天免赎)'
+                                : '持有 > 160天更优 (长期无销售服务费)';
+
                               return (
-                                <button
+                                <div
                                   key={fCode}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onOpenDetail?.(fCode, 'domestic', 'fund');
                                   }}
-                                  title={tip}
-                                  className="px-2 py-1 text-[11px] font-mono font-medium rounded-lg bg-white dark:bg-indigo-900/50 hover:bg-indigo-100 dark:hover:bg-indigo-800/80 text-indigo-700 dark:text-indigo-200 border border-indigo-200/80 dark:border-indigo-700/60 shadow-xs flex items-center gap-1 transition-all cursor-pointer group/btn"
+                                  className="p-2.5 rounded-xl bg-white dark:bg-slate-900/90 border border-indigo-100 dark:border-indigo-900/60 hover:border-indigo-400 dark:hover:border-indigo-500 hover:shadow-xs transition-all cursor-pointer group flex flex-col gap-1.5"
                                 >
-                                  <LineChart className="w-3 h-3 text-indigo-500 group-hover/btn:scale-110 transition-transform" />
-                                  <span>{label} 分时</span>
-                                </button>
+                                  {/* 第一行：代码 + 标签 + 实时净值与涨跌 + 分时按钮 */}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="font-mono text-xs font-bold text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                                        {fCode}
+                                      </span>
+                                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap ${
+                                        isClassC
+                                          ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                                          : 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                                      }`}>
+                                        {shareClassLabel}
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {valuation ? (
+                                        <div className="flex items-center gap-1.5 font-mono text-xs font-semibold">
+                                          <span className="text-slate-800 dark:text-slate-200">
+                                            {valuation.gsz}
+                                          </span>
+                                          <span className={`text-[11px] ${
+                                            isValUp ? 'text-rose-500' : isValDown ? 'text-emerald-500' : 'text-slate-400'
+                                          }`}>
+                                            {valuation.gszzl}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-400">实时估值中...</span>
+                                      )}
+                                      <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300 text-[10px] font-medium flex items-center gap-0.5 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                                        分时 <ArrowUpRight className="w-2.5 h-2.5" />
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* 第二行：持有期量化平衡点建议 */}
+                                  <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1 pt-1 border-t border-slate-100 dark:border-slate-800/80">
+                                    <span>⏱️</span>
+                                    <span className="truncate">{valuation?.breakevenAdvice || breakevenTip}</span>
+                                  </div>
+                                </div>
                               );
                             })}
                           </div>
-                          <div className="mt-1.5 text-[10px] text-indigo-700/70 dark:text-indigo-400/70 leading-normal">
+                          <div className="text-[10px] text-indigo-700/70 dark:text-indigo-400/70 leading-normal">
                             💡 规则提示：场外申赎按当日 15:00 确认净值交收（未知价法），分时线为底层 ETF 盘中参考走势。
                           </div>
                         </>
@@ -692,7 +781,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                     }`}
                   >
-                    {isAdded ? '已在自选' : '+ 自选'}
+                    {isAdded ? '已在自选' : '加自选'}
                   </Button>
                 </div>
               </div>

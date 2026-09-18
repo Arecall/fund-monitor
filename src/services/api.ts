@@ -1235,6 +1235,25 @@ export async function deleteAiReport(reportId: number): Promise<{ success: boole
 // 银行·稳健红利资产接口与类型定义
 // ==========================================
 
+export interface BankFeederValuation {
+  code: string;
+  name: string;
+  shareClass: 'A' | 'C' | 'other';
+  gsz: string;
+  gszzl: string;
+  gszzlNum?: number;
+  dwjz: string;
+  gztime?: string;
+  breakevenDays?: number;
+  breakevenAdvice?: string;
+}
+
+export interface BankArbitrageAdvice {
+  type: 'premium' | 'discount' | 'neutral';
+  level: 'warning' | 'opportunity' | 'normal';
+  text: string;
+}
+
 export interface BankStockItem {
   code: string;
   symbol: string;
@@ -1248,11 +1267,13 @@ export interface BankStockItem {
   changePct: number;
   pe: number | null;
   pb: number | null;
+  iopv?: number | null;
   totalCap: number | null;
   floatCap: number | null;
   turnoverAmount: number;
   dividendYield: number; // 动态百分比 %（税前名义）
   afterTaxDividendYield: number; // 实际到手股息率 %（港股扣除20%红利税，A股按满1年免税基准）
+  dividendFrequency?: string;
   stabilityScore: number;
   annualDividend?: number;
   annualDividendHkd?: number;
@@ -1268,6 +1289,7 @@ export interface BankStockItem {
   trackingIndex?: string;
   discountRate?: number | null;
   premiumRate?: number | null;
+  arbitrageAdvice?: BankArbitrageAdvice | null;
   riskLevel?: string;
   liquidityRating?: string;
   tradeMechanism?: string;
@@ -1276,6 +1298,7 @@ export interface BankStockItem {
   cashWithdrawNotice?: string;
   feederCodes?: string[];
   feederDesc?: string;
+  feederValuations?: BankFeederValuation[];
   advantage?: string;
   tags?: string[];
 }

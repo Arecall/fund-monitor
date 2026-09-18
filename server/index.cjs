@@ -111,7 +111,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.5.3' });
+  res.json({ status: 'ok', version: '1.5.4' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
