@@ -64,9 +64,9 @@ const ETF_FEEDER_MAP = {
   '007466': '512890', // 华泰柏瑞红利低波ETF联接A -> 红利低波ETF 512890
   '007467': '512890', // 华泰柏瑞红利低波ETF联接C -> 红利低波ETF 512890
   '240019': '512800', // 华宝中证银行ETF联接A -> 银行ETF 512800
-  '001594': '512800', // 天弘中证银行ETF联接A / 华宝联接C -> 512800
-  '001528': '510880', // 华泰柏瑞上证红利ETF联接A -> 红利ETF 510880
-  '011531': '510880', // 华泰柏瑞上证红利ETF联接C -> 红利ETF 510880
+  '001594': '512800', // 天弘中证银行ETF联接A -> 银行ETF 512800
+  '012761': '510880', // 华泰柏瑞上证红利ETF联接A -> 红利ETF 510880
+  '012762': '510880', // 华泰柏瑞上证红利ETF联接C -> 红利ETF 510880
 
   // 3. 核心宽基 (沪深300 / 中证500 / 中证1000 / 科创50 / 上证50)
   '000051': '510300', // 华夏沪深300ETF联接A -> 510300
@@ -1246,6 +1246,45 @@ function isUsMinuteSeriesCurrent(bars, now = new Date()) {
   return minuteOfDay >= 15 * 60 + 55 && minuteOfDay <= 16 * 60 + 5;
 }
 
+/**
+ * A 股、港股与场内 ETF 联接基金分时时效与完整性校验：
+ * 数据库快照可能因用户关闭页面或中途离线停留在中午（例如 13:14、13:34）。
+ * 必须校验是否达到收盘时点（A股 14:55~15:00 / 港股 15:55~16:00），盘中则要求不能落后当前时间太久。
+ * 绝不能因为本地快照有十几或几十个点，就将午后半日行情直接永久截断。
+ */
+function isDomesticMinuteSeriesCurrent(bars, market = 'domestic', now = new Date()) {
+  if (!Array.isArray(bars) || bars.length < 2) return false;
+  const timestamps = bars
+    .map(bar => Number(bar?.timestamp ?? bar?.t))
+    .filter(timestamp => Number.isFinite(timestamp) && timestamp > 0);
+  if (timestamps.length < 2) return false;
+
+  const latest = Math.max(...timestamps);
+  const p = marketTime.getTimeZoneParts(new Date(latest), marketTime.BEIJING_TIME_ZONE);
+  const nowParts = marketTime.getTimeZoneParts(now, marketTime.BEIJING_TIME_ZONE);
+  const nowMinuteOfDay = Number(nowParts.hour) * 60 + Number(nowParts.minute);
+  const latestMinuteOfDay = Number(p.hour) * 60 + Number(p.minute);
+
+  const closeThreshold = market === 'hk' ? (15 * 60 + 55) : (14 * 60 + 55);
+
+  // 盘中交易时间校验：最新点不应落后当前时间超过 8 分钟
+  if (nowParts.weekday !== 'Sat' && nowParts.weekday !== 'Sun') {
+    const isMorning = nowMinuteOfDay >= 9 * 60 + 30 && nowMinuteOfDay <= (market === 'hk' ? 12 * 60 + 5 : 11 * 60 + 35);
+    const isAfternoon = nowMinuteOfDay >= 13 * 60 && nowMinuteOfDay <= (market === 'hk' ? 16 * 60 + 5 : 15 * 60 + 5);
+    if (isMorning || isAfternoon) {
+      return latest >= now.getTime() - 8 * 60 * 1000;
+    }
+  }
+
+  // 闭市后或周末：最新点必须收在收盘前 5 分钟内（A股 14:55~15:00，港股 15:55~16:00），否则判定为截断未收盘的不完整数据
+  return latestMinuteOfDay >= closeThreshold;
+}
+
+function isMinuteSeriesCurrent(bars, market, now = new Date()) {
+  if (market === 'us') return isUsMinuteSeriesCurrent(bars, now);
+  return isDomesticMinuteSeriesCurrent(bars, market, now);
+}
+
 async function fetchStockMinuteData(code, market, kind = null) {
   const c = code.toUpperCase();
 
@@ -1304,14 +1343,15 @@ async function fetchStockMinuteData(code, market, kind = null) {
   let partialSourceFallback = null;
   // 交易所股票优先使用上游完整分钟线。本地快照是订阅时才积累的增量数据，
   // 只要达到 10 个点就优先返回会让午后缺段永久遮蔽完整行情源。
-  // QDII 美股基金也必须优先拉取完整代理 ETF 分时线；否则仅运行到 22:43
-  // 的 QQQ 快照会让两只基金的曲线一起在该时刻截断。
-  const needsCompleteUsProxyMinuteFeed = targetMarket === 'us' && targetTicker !== c;
-  const preferExchangeMinuteFeed = isStock || needsCompleteUsProxyMinuteFeed;
+  // 代理标的（不管是国内 ETF 联接如 001594->512800 / 007466->512890，还是 QDII 美股基金 001668->QQQ）
+  // 也必须优先拉取交易所完整代理 ETF 分时线；否则本地仅记录到 13:14/13:34 等中途离线快照时，
+  // 会让联接基金的走势图永久截断在 13 点多而无法展示收盘走势。
+  const isProxy = targetTicker !== c;
+  const preferExchangeMinuteFeed = isStock || isProxy;
   const acceptMinuteSource = candidate => {
     if (!Array.isArray(candidate) || candidate.length < 2) return null;
     const normalized = normalizeMinuteBarTimes(candidate, targetMarket);
-    if (!needsCompleteUsProxyMinuteFeed || isUsMinuteSeriesCurrent(normalized)) {
+    if (!preferExchangeMinuteFeed || isMinuteSeriesCurrent(normalized, targetMarket)) {
       return normalized;
     }
     // 不完整上游仅作最后的故障降级候选，继续尝试腾讯/Yahoo/新浪完整源。
@@ -1326,16 +1366,22 @@ async function fetchStockMinuteData(code, market, kind = null) {
     // 1. 【优先从本地数据库获取】：读取 quote_snapshots 表保存的打点历史
     if (targetTicker === code) {
       const dbSnapshots = await fetchSnapshotMinuteData(code, targetMarket);
-      if (dbSnapshots && dbSnapshots.length >= 10) {
+      const isCurrent = isMinuteSeriesCurrent(dbSnapshots, targetMarket);
+      if (dbSnapshots && dbSnapshots.length >= 10 && isCurrent) {
         if (preferExchangeMinuteFeed) snapshotFallback = dbSnapshots;
         else result = dbSnapshots;
+      } else if (dbSnapshots && dbSnapshots.length >= 2) {
+        snapshotFallback = dbSnapshots;
       }
     } else {
-      // 代理标的（如 001668 对应 QQQ）：从数据库读取代理标的（QQQ）的原生未缩放快照，后续再结合最新 dwjz 动态缩放
+      // 代理标的（如 001668 对应 QQQ，001594 对应 512800）：从数据库读取代理标的原生未缩放快照
       const proxySnapshots = await fetchSnapshotMinuteData(targetTicker, targetMarket);
-      if (proxySnapshots && proxySnapshots.length >= 10) {
+      const isCurrent = isMinuteSeriesCurrent(proxySnapshots, targetMarket);
+      if (proxySnapshots && proxySnapshots.length >= 10 && isCurrent) {
         if (preferExchangeMinuteFeed) snapshotFallback = proxySnapshots;
         else result = proxySnapshots;
+      } else if (proxySnapshots && proxySnapshots.length >= 2) {
+        snapshotFallback = proxySnapshots;
       }
     }
 

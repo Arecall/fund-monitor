@@ -510,10 +510,33 @@ export interface MinuteFeed {
 
 export function minuteResponseToFeed(response: StockMinuteResponse | null, baseAnchor?: number): MinuteFeed | null {
   if (!response?.data?.length) return null;
+  const rawBars = response.data;
   const byMinute = new Map<number, MinuteFeed['bars'][number]>();
-  const isFundScale = typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50;
 
-  response.data.forEach((bar) => {
+  // 1. 提取传入分钟数据中所有有效正价格，计算真实分布中位数
+  const validPrices = rawBars.map(b => Number(b.close)).filter(v => Number.isFinite(v) && v > 0);
+  let effectiveAnchor = typeof baseAnchor === 'number' && baseAnchor > 0 && baseAnchor < 50 ? baseAnchor : null;
+
+  if (validPrices.length >= 2) {
+    const sorted = [...validPrices].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    // 防御占位符与冷启动断层：
+    // 若 baseAnchor 缺失，或恰好为 1.0000 默认占位值（与分钟真实数据中位数偏差 > 15%），
+    // 优先信赖分钟数据自身的中位数作为基准锚点，彻底杜绝外界临时占位导致 240 根真实分时线被误杀清空
+    if (!effectiveAnchor || (Math.abs(effectiveAnchor - 1.0) < 0.0001 && Math.abs(median - 1.0) / 1.0 > 0.15)) {
+      effectiveAnchor = median;
+    } else if (effectiveAnchor && Math.abs(median - effectiveAnchor) / effectiveAnchor > 0.20) {
+      // 若中位数与外部 anchor 偏离超过 20%，但分钟数据自身内部极差极小（波动 < 10%），说明 anchor 为未同步陈旧值，自动自愈重锚定
+      const spreadPct = (sorted[sorted.length - 1] - sorted[0]) / median * 100;
+      if (spreadPct < 10) {
+        effectiveAnchor = median;
+      }
+    }
+  }
+
+  const isFundScale = typeof effectiveAnchor === 'number' && effectiveAnchor > 0 && effectiveAnchor < 50;
+
+  rawBars.forEach((bar) => {
     // 统一优先消费后端权威计算给出的绝对毫秒时间戳 t / timestamp，避免前端解析字符串的时区/夏令时歧义
     const rawT = Number(bar.t ?? bar.timestamp);
     const t = Number.isFinite(rawT) && rawT > 0
@@ -521,8 +544,8 @@ export function minuteResponseToFeed(response: StockMinuteResponse | null, baseA
       : (bar.time ? Date.parse(bar.time.replace(' ', 'T') + '+08:00') : NaN);
     const v = Number(bar.close);
     if (!Number.isFinite(t) || !Number.isFinite(v) || v <= 0) return;
-    // 防御：若明确为基金且有基准，偏离 > 18% 的脏点跳过
-    if (isFundScale && Math.abs(v - baseAnchor) / baseAnchor > 0.18) return;
+    // 防御：若明确为基金且有基准，偏离 > 20% 的极端脏点跳过
+    if (isFundScale && effectiveAnchor && Math.abs(v - effectiveAnchor) / effectiveAnchor > 0.20) return;
     byMinute.set(Math.floor(t / 60_000) * 60_000, {
       t: Math.floor(t / 60_000) * 60_000,
       v,

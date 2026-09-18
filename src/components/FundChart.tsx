@@ -408,92 +408,168 @@ export function FundChart({
   // 动态 Key 用于在切换基金或时间范围时触发首次加载物理过渡动画（后续数据刷新不重播）
   const animKey = `${fundCode}-${range}`;
 
-  // ─── Smart Tooltip Positioning (侧边避让，避免遮挡 hover 焦点) ───
-  const tooltipWidth = 156;
-  const tooltipHeight = 110;
-  const isRightSide = hoverX > width / 2;
-  const tooltipLeft = isRightSide
-    ? Math.max(padding.left + 4, hoverX - tooltipWidth - 14)
-    : Math.min(width - padding.right - tooltipWidth - 4, hoverX + 14);
-  const tooltipTop = Math.max(
-    padding.top + 4,
-    Math.min(height - padding.bottom - tooltipHeight - 4, hoverY - tooltipHeight / 2)
-  );
+  // ─── 计算日内/区间金融关键统计指标（最高、最低、振幅、均价） ───
+  const dayStats = useMemo(() => {
+    if (!points || points.length === 0) return null;
+    let high = -Infinity;
+    let low = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const v = points[i].v;
+      if (v > high) high = v;
+      if (v < low) low = v;
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)) return null;
+    const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 1);
+    const highPct = ((high - base) / base) * 100;
+    const lowPct = ((low - base) / base) * 100;
+    const amplitude = ((high - low) / base) * 100;
+    return { high, low, highPct, lowPct, amplitude, base };
+  }, [points, baselineValue]);
+
+  // ─── 锚点动态跟手与大厂级防遮挡探针定位 (Anchor-Following Anti-Occlusion Tooltip) ───
+  // 1. 悬浮窗水平方向紧跟定位锚点 (hoverX) 实时移动，依据中轴线动态在锚点左右侧切换；
+  // 2. 绝对防遮挡机制：
+  //    - 翻转至左侧使用 translateX(calc(-100% - 12px))，向右展开使用 translateX(12px)；
+  //    - 无论浮窗内容宽度如何伸缩，面向锚点的一侧边缘永远与 hoverX 保持严格固定的 12px 安全净空；
+  //    - 十字准星、垂直虚线、水平基准与定位圆环 100% 清晰外露，绝对零遮挡；
+  // 3. 垂直方向随 hoverY 高度动态平滑跟手浮动，并通过视窗限位确保不穿顶、不压底。
+  const isRightSide = hoverX > (padding.left + innerW * 0.48);
+  const estimatedTooltipHeight = 118;
+  const rawTooltipTop = hoverY - estimatedTooltipHeight * 0.38;
+  const minTooltipTop = padding.top + 4;
+  const maxTooltipTop = Math.max(minTooltipTop, padding.top + innerH - estimatedTooltipHeight - 4);
+  const tooltipTop = Math.max(minTooltipTop, Math.min(maxTooltipTop, rawTooltipTop));
 
   return (
     <div className="w-full" ref={containerRef}>
-      {/* Header row */}
-      {/* 行1：标题 + 数据源 + 日期 badge — 移动端窄屏会自动收缩 */}
-      <div className="flex items-center justify-between gap-2 mb-1.5 px-1 min-w-0">
-        <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 min-w-0 flex-1">
-          <span className="shrink-0">分时走势</span>
-          <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
-          {isPreMarketState && (
-            <span
-              title={series.note}
-              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-sm"
-            >
-              <Clock size={10} className="text-blue-500 animate-pulse" />
-              <span className="opacity-90">{marketStatus.label} · </span>
-              <OpenCountdown market={fundMarket} showTargetTime={true} />
-            </span>
-          )}
-        </div>
-        {dataDateBadge && (
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap shrink-0 ${
-            dataDateBadge.sameDay
-              ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400'
-              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
-          }`}>
-            {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `数据 ${dataDateBadge.dataStr}`}
-          </span>
-        )}
-      </div>
-      {/* 行2：刷新状态 + 手动刷新按钮 */}
-      <div className="flex items-center justify-between gap-2 mb-3 px-1">
-        <span className="flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap min-w-0">
-          <motion.span
-            className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-              refreshing
-                ? 'bg-blue-500'
-                : isCurrentlyOpen
-                ? 'bg-emerald-500'
-                : 'bg-slate-400 dark:bg-slate-500'
-            }`}
-            animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
-            transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-          />
-          <span className="truncate">
-            {refreshing
-              ? `刷新中…`
-              : isCurrentlyOpen
-              ? `自动刷新 · ${formatTick(lastPointTime, range)}`
-              : isPreMarketState
-              ? `${marketStatus.label} · 上次收盘 ${formatTick(lastPointTime, range)}`
-              : `已休市 · ${formatTick(lastPointTime, range)}`}
-          </span>
-        </span>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {isDev && (
-            <PressableButton
-              onClick={() => setMockSecLeft(60)}
-              disabled={mockSecLeft !== null}
-              title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
-              className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
-            >
-              <Clock size={11} className={mockSecLeft !== null ? 'animate-spin' : ''} />
-              {mockSecLeft !== null ? `倒计时 ${mockSecLeft}s` : '🧪 模拟 1min 开盘倒计时'}
-            </PressableButton>
-          )}
+      {/* 顶部降噪一体化控制甲板：整合标题、状态、数据源与时间维度分段胶囊 */}
+      <div className="flex flex-col gap-2 mb-2.5 px-0.5">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          {/* 左侧：标题 + 数据源徽章 + 市场状态灵动光斑 */}
+          <div className="flex items-center gap-1.5 sm:gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 flex-wrap">
+            <span className="shrink-0">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
+            <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
 
-          <PressableButton
-            onClick={() => onRefresh?.()}
-            disabled={refreshing}
-            className="text-[10px] font-bold bg-white/70 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-50 shrink-0"
-          >
-            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-            手动刷新
-          </PressableButton>
+            {/* 市场状态胶囊 */}
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100/80 dark:bg-slate-800/60 rounded-full border border-slate-200/50 dark:border-slate-700/50">
+              <motion.span
+                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+                  refreshing
+                    ? 'bg-blue-500'
+                    : isCurrentlyOpen
+                    ? 'bg-emerald-500'
+                    : 'bg-slate-400'
+                }`}
+                animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+              />
+              <span className="truncate">
+                {refreshing
+                  ? '更新中…'
+                  : isCurrentlyOpen
+                  ? `盘中 · ${formatTick(lastPointTime, range)}`
+                  : isPreMarketState
+                  ? `${marketStatus.label}`
+                  : `已休市 · ${formatTick(lastPointTime, range)}`}
+              </span>
+            </span>
+
+            {isPreMarketState && (
+              <span
+                title={series.note}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-xs"
+              >
+                <Clock size={10} className="text-blue-500 animate-pulse" />
+                <OpenCountdown market={fundMarket} showTargetTime={true} />
+              </span>
+            )}
+          </div>
+
+          {/* 右侧：日期徽章 + 模拟开盘/刷新按钮 */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isDev && (
+              <PressableButton
+                onClick={() => setMockSecLeft(60)}
+                disabled={mockSecLeft !== null}
+                title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
+                className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
+              >
+                <Clock size={10} className={mockSecLeft !== null ? 'animate-spin' : ''} />
+                {mockSecLeft !== null ? `${mockSecLeft}s` : '🧪 模拟'}
+              </PressableButton>
+            )}
+
+            {dataDateBadge && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 ${
+                dataDateBadge.sameDay
+                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-900/40'
+                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/40'
+              }`}>
+                {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `数据 ${dataDateBadge.dataStr}`}
+              </span>
+            )}
+
+            <PressableButton
+              onClick={() => onRefresh?.()}
+              disabled={refreshing}
+              title="手动刷新行情"
+              className="p-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={refreshing ? 'animate-spin text-blue-500' : ''} />
+            </PressableButton>
+          </div>
+        </div>
+
+        {/* 维度切换胶囊栏 */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="relative inline-flex bg-slate-100 dark:bg-white/5 rounded-xl p-0.5">
+            {RANGES.map(r => {
+              const active = r.key === range;
+              return (
+                <PressableButton
+                  key={r.key}
+                  onClick={() => { setRange(r.key); setHoverIdx(null); }}
+                  className={`relative px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+                    active
+                      ? 'text-white'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="fund-chart-tab"
+                      transition={SPRING_FLIP}
+                      className="absolute inset-0 rounded-lg shadow-xs"
+                      style={{ background: 'var(--primary-accent)' }}
+                    />
+                  )}
+                  <span className="relative z-10">{r.label}</span>
+                </PressableButton>
+              );
+            })}
+          </div>
+
+          {/* 右侧微副标：展示当前定位点/最新价格与涨跌幅 */}
+          {lastPoint && (
+            <div className="flex items-baseline gap-1.5 font-mono text-xs">
+              <span className="font-bold text-slate-800 dark:text-slate-100 text-sm">
+                ¥{(hoverPoint ? hoverPoint.v : lastPoint.v).toFixed(range === 'intraday' ? 4 : 2)}
+              </span>
+              <span
+                className="font-semibold text-[11px]"
+                style={{
+                  color: (hoverPoint ? hoverChangeAmt > 0 : isUp)
+                    ? 'var(--color-up)'
+                    : (hoverPoint ? hoverChangeAmt < 0 : isDown)
+                    ? 'var(--color-down)'
+                    : 'var(--color-flat)'
+                }}
+              >
+                {(hoverPoint ? hoverChangePct : changePercent) > 0 ? '+' : ''}
+                {(hoverPoint ? hoverChangePct : changePercent).toFixed(2)}%
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -516,34 +592,6 @@ export function FundChart({
         )}
       </AnimatePresence>
 
-      {/* Tab strip */}
-      <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-1 mb-3 ml-1">
-        {RANGES.map(r => {
-          const active = r.key === range;
-          return (
-            <PressableButton
-              key={r.key}
-              onClick={() => { setRange(r.key); setHoverIdx(null); }}
-              className={`relative px-3.5 py-1.5 text-xs font-semibold rounded-full transition-colors ${
-                active
-                  ? 'text-white'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
-            >
-              {active && (
-                <motion.span
-                  layoutId="fund-chart-tab"
-                  transition={SPRING_FLIP}
-                  className="absolute inset-0 rounded-full"
-                  style={{ background: 'var(--primary-accent)' }}
-                />
-              )}
-              <span className="relative z-10">{r.label}</span>
-            </PressableButton>
-          );
-        })}
-      </div>
-
       {/* Chart */}
       <div className="relative">
         <svg
@@ -554,32 +602,36 @@ export function FundChart({
           className="block touch-none select-none"
         >
           <defs>
-            {/* 面积渐变：顶浓底淡（上面深，下面浅） */}
+            {/* 极轻微风晨雾渐变（Apple Atmospheric Gradient）：顶轻底隐，通透高呼吸感 */}
             <linearGradient id="gUp" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0" />
-              <stop offset="25%"  stopColor="var(--color-up)" stopOpacity="0.05" />
-              <stop offset="60%"  stopColor="var(--color-up)" stopOpacity="0.20" />
-              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0.45" />
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.00" />
+              <stop offset="35%"  stopColor="var(--color-up)" stopOpacity="0.03" />
+              <stop offset="70%"  stopColor="var(--color-up)" stopOpacity="0.10" />
+              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0.22" />
             </linearGradient>
             <linearGradient id="gDown" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0" />
-              <stop offset="25%"  stopColor="var(--color-down)" stopOpacity="0.05" />
-              <stop offset="60%"  stopColor="var(--color-down)" stopOpacity="0.20" />
-              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0.45" />
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.00" />
+              <stop offset="35%"  stopColor="var(--color-down)" stopOpacity="0.03" />
+              <stop offset="70%"  stopColor="var(--color-down)" stopOpacity="0.10" />
+              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0.22" />
             </linearGradient>
             <linearGradient id="gFlat" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0" />
-              <stop offset="50%"  stopColor="var(--color-flat)" stopOpacity="0.10" />
-              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0.28" />
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.00" />
+              <stop offset="50%"  stopColor="var(--color-flat)" stopOpacity="0.04" />
+              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0.14" />
             </linearGradient>
-            {/* 线条下方柔光（光晕） */}
+            {/* 线条下方柔光高斯光晕（霓虹笔触） */}
             <filter id="lineGlow" x="-5%" y="-50%" width="110%" height="200%">
-              <feGaussianBlur stdDeviation="2.4" />
+              <feGaussianBlur stdDeviation="2.2" />
             </filter>
           </defs>
 
           {/* Y-grid lines + 左轴价格标签 + 右轴 % 标签（副 Y 轴） */}
           {yTicks.map((t, i) => {
+            const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 0);
+            const pct = (!base || base <= 0) ? 0 : ((t.v - base) / base) * 100;
+            const isPctUp = pct > 0.005;
+            const isPctDown = pct < -0.005;
             return (
               <g key={i}>
                 <line
@@ -603,22 +655,17 @@ export function FundChart({
                 >
                   {t.v.toFixed(range === 'intraday' ? 4 : 2)}
                 </text>
-                {/* 右轴：相对基准价的涨跌幅 %（与左轴价格 100% 精确映射对齐） */}
+                {/* 右轴：相对基准价的涨跌幅 %（水上水下着色分界） */}
                 <text
                   x={padding.left + innerW + 8}
                   y={t.y + 3}
                   textAnchor="start"
                   fontSize="10"
-                  fill="currentColor"
-                  fillOpacity="0.45"
-                  className="font-mono tabular-nums"
+                  fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
+                  fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
+                  className="font-mono tabular-nums font-medium"
                 >
-                  {(() => {
-                    const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 0);
-                    if (!base || base <= 0) return '0.00%';
-                    const pct = ((t.v - base) / base) * 100;
-                    return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
-                  })()}
+                  {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
                 </text>
               </g>
             );
@@ -640,19 +687,40 @@ export function FundChart({
             </text>
           ))}
 
-          {/* Baseline at the open price (today's open for stocks, prev close for funds) —
-              clipped to chart so it doesn't draw outside when the reference value
-              (prev close / IPO issue price) is far outside the actual trading range. */}
+          {/* 零轴基准线 (昨收平衡线)：具备金融心理锚定仪式感 */}
           {baselineValue >= minV && baselineValue <= maxV && (
-            <line
-              x1={padding.left}
-              x2={padding.left + innerW}
-              y1={y(baselineValue)}
-              y2={y(baselineValue)}
-              stroke="currentColor"
-              strokeOpacity="0.18"
-              strokeDasharray="4 4"
-            />
+            <g>
+              <line
+                x1={padding.left}
+                x2={padding.left + innerW}
+                y1={y(baselineValue)}
+                y2={y(baselineValue)}
+                stroke="currentColor"
+                strokeOpacity="0.22"
+                strokeDasharray="4 3"
+              />
+              {/* 零轴水平线右侧微胶囊指示 */}
+              <rect
+                x={padding.left + innerW + 3}
+                y={y(baselineValue) - 7}
+                width={36}
+                height={14}
+                rx={3}
+                fill="currentColor"
+                fillOpacity="0.06"
+              />
+              <text
+                x={padding.left + innerW + 21}
+                y={y(baselineValue) + 3.5}
+                textAnchor="middle"
+                fontSize="9"
+                fill="currentColor"
+                fillOpacity="0.75"
+                className="font-mono tabular-nums font-semibold"
+              >
+                0.00%
+              </text>
+            </g>
           )}
 
           {/* 面积填充：从左至右横向流体揭示（Apple Fluid Sweep Reveal），跟随折线笔触展开 */}
@@ -1010,124 +1078,171 @@ export function FundChart({
           </div>
         )}
 
-        {/* Tooltip — spring entrance, anchored to source (hover point) */}
+        {/* Tooltip — 锚点动态跟手防遮挡浮动探针 (Anchor-Following Anti-Occlusion Tooltip) */}
         <AnimatePresence>
           {hoverPoint && (
             <motion.div
-              key="tooltip"
-              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.96 }}
-              transition={{ type: 'spring' as const, bounce: 0, duration: 0.24 }}
-              className="pointer-events-none absolute z-10 px-3 py-2 rounded-xl bg-white/90 dark:bg-[#1d1d1f]/90 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[140px]"
+              key="tooltip-wrapper"
+              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
+              transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
+              className="pointer-events-none absolute z-20"
               style={{
-                left: `${tooltipLeft}px`,
+                left: `${hoverX}px`,
                 top: `${tooltipTop}px`,
               }}
             >
-              <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1">
-                {formatTooltip(hoverPoint.t, range)}
-              </div>
-              <div className="space-y-0.5">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--primary-accent)' }} />
-                    最新净值
+              <div
+                className="px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/90 dark:border-slate-700/80 shadow-2xl text-[11px] min-w-[176px] w-max whitespace-nowrap select-none"
+                style={{
+                  transform: isRightSide ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+                  transition: prefersReducedMotion ? undefined : 'transform 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+                }}
+              >
+                <div className="flex items-center justify-between gap-3 mb-1.5 pb-1 border-b border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                  <span className="flex items-center gap-1 shrink-0">
+                    <Clock size={10} />
+                    {formatTooltip(hoverPoint.t, range)}
                   </span>
-                  <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                    {hoverPoint.v.toFixed(4)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-1.5 text-slate-500">
-                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                    涨跌
-                  </span>
-                  <span
-                    className="font-mono font-semibold tabular-nums"
-                    style={{ color: hoverChangeAmt > 0 ? 'var(--color-up)' : hoverChangeAmt < 0 ? 'var(--color-down)' : undefined }}
-                  >
-                    {hoverChangeAmt > 0 ? '+' : ''}{hoverChangeAmt.toFixed(4)}
+                  <span className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-sans text-[9px] shrink-0">
+                    {range === 'intraday' ? '分钟点位' : '日K净值'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-1.5 text-slate-500">
-                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                    涨跌幅
-                  </span>
-                  <span
-                    className="font-mono font-semibold tabular-nums"
-                    style={{ color: hoverChangePct > 0 ? 'var(--color-up)' : hoverChangePct < 0 ? 'var(--color-down)' : undefined }}
-                  >
-                    {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
-                  </span>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-baseline justify-between gap-3.5">
+                    <span className="text-slate-500 dark:text-slate-400 text-[10px] shrink-0">实时净值</span>
+                    <span className="font-mono text-sm font-bold text-slate-900 dark:text-slate-100 shrink-0">
+                      ¥{hoverPoint.v.toFixed(4)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3.5">
+                    <span className="text-slate-500 dark:text-slate-400 text-[10px] shrink-0">相对昨收</span>
+                    <div
+                      className="flex items-center gap-1 font-mono font-semibold text-[11px] shrink-0 tabular-nums"
+                      style={{ color: hoverChangeAmt > 0 ? 'var(--color-up)' : hoverChangeAmt < 0 ? 'var(--color-down)' : undefined }}
+                    >
+                      <span>{hoverChangeAmt > 0 ? '+' : ''}{hoverChangeAmt.toFixed(4)}</span>
+                      <span>({hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%)</span>
+                    </div>
+                  </div>
+                  {hoverVwap !== undefined && (
+                    <div className="flex items-center justify-between gap-3.5">
+                      <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 shrink-0 text-[10px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                        {vwapSeries.estimated ? '估算均价' : '均价'}
+                      </span>
+                      <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200 shrink-0">
+                        {hoverVwap.toFixed(4)}
+                      </span>
+                    </div>
+                  )}
+                  {hoverMa10 !== undefined && hoverMa10 !== null && (
+                    <div className="flex items-center justify-between gap-3.5">
+                      <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 shrink-0 text-[10px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                        MA10
+                      </span>
+                      <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200 shrink-0">
+                        {hoverMa10.toFixed(4)}
+                      </span>
+                    </div>
+                  )}
+                  {hoverPoint.volume !== undefined && (
+                    <div className="flex items-center justify-between gap-3.5">
+                      <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 shrink-0 text-[10px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+                        成交量
+                      </span>
+                      <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200 shrink-0">
+                        {fmtVol(hoverPoint.volume, fundMarket)}
+                      </span>
+                    </div>
+                  )}
+                  {hoverPoint.turnover !== undefined && (
+                    <div className="flex items-center justify-between gap-3.5">
+                      <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 shrink-0 text-[10px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+                        成交额
+                      </span>
+                      <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200 shrink-0">
+                        {fmtTurn(hoverPoint.turnover)}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                {hoverVwap !== undefined && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-1.5 text-slate-500">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                      {vwapSeries.estimated ? '估算均价' : '均价'}
-                    </span>
-                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {hoverVwap.toFixed(4)}
-                    </span>
-                  </div>
-                )}
-                {hoverMa10 !== undefined && hoverMa10 !== null && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-1.5 text-slate-500">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                      MA10
-                    </span>
-                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {hoverMa10.toFixed(4)}
-                    </span>
-                  </div>
-                )}
-                {hoverPoint.volume !== undefined && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-1.5 text-slate-500">
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      成交量
-                    </span>
-                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {fmtVol(hoverPoint.volume, fundMarket)}
-                    </span>
-                  </div>
-                )}
-                {hoverPoint.turnover !== undefined && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="flex items-center gap-1.5 text-slate-500">
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                      成交额
-                    </span>
-                    <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {fmtTurn(hoverPoint.turnover)}
-                    </span>
-                  </div>
-                )}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Footer — change summary for the active range */}
-      <div className="mt-2 flex items-center gap-3 text-[11px] flex-wrap">
-        <span className="flex items-center gap-1 font-semibold" style={{ color: colorVar }}>
-          {isUp ? <TrendingUp size={12} /> : isDown ? <TrendingDown size={12} /> : <Minus size={12} />}
-          {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
-        </span>
-        <span className="font-semibold" style={{ color: colorVar }}>
-          {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%
-        </span>
-        <span className="text-slate-500">
-          区间内 {points[0]?.v.toFixed(4) ?? '—'} → {lastPoint?.v.toFixed(4) ?? '—'}
-          {baselineValue > 0 && (
-            <span className="ml-2 text-slate-400">· {baselineLabel} {baselineValue.toFixed(4)}</span>
-          )}
-        </span>
-      </div>
+      {/* Footer — 日内极值与振幅金融微岛（High/Low/Amplitude Financial Ribbon） */}
+      {dayStats ? (
+        <div className="mt-2.5 grid grid-cols-4 gap-1.5 sm:gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最高</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.high.toFixed(range === 'intraday' ? 4 : 2)}
+            </div>
+            <div className="text-[9px] font-mono text-rose-500 font-semibold mt-0.5">
+              +{dayStats.highPct.toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最低</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.low.toFixed(range === 'intraday' ? 4 : 2)}
+            </div>
+            <div className="text-[9px] font-mono text-emerald-500 font-semibold mt-0.5">
+              {dayStats.lowPct.toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">日内振幅</div>
+            <div className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 mt-0.5">
+              {dayStats.amplitude.toFixed(2)}%
+            </div>
+            <div className="text-[9px] text-slate-400 mt-0.5">
+              {dayStats.amplitude < 1.0 ? '窄幅整固' : dayStats.amplitude < 2.5 ? '温和波动' : '宽幅博弈'}
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">
+              {vwapSeries.last > 0 ? (vwapSeries.estimated ? '估算均价' : '全日均价') : '昨收基准'}
+            </div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {(vwapSeries.last > 0 ? vwapSeries.last : baselineValue).toFixed(range === 'intraday' ? 4 : 2)}
+            </div>
+            <div className="text-[9px] text-slate-400 mt-0.5">
+              {vwapSeries.last > 0
+                ? (vwapSeries.last >= baselineValue ? '多头占优' : '空头占优')
+                : '平盘基线'}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex items-center gap-3 text-[11px] flex-wrap">
+          <span className="flex items-center gap-1 font-semibold" style={{ color: colorVar }}>
+            {isUp ? <TrendingUp size={12} /> : isDown ? <TrendingDown size={12} /> : <Minus size={12} />}
+            {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
+          </span>
+          <span className="font-semibold" style={{ color: colorVar }}>
+            {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%
+          </span>
+          <span className="text-slate-500">
+            区间内 {points[0]?.v.toFixed(4) ?? '—'} → {lastPoint?.v.toFixed(4) ?? '—'}
+            {baselineValue > 0 && (
+              <span className="ml-2 text-slate-400">· {baselineLabel} {baselineValue.toFixed(4)}</span>
+            )}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

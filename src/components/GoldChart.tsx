@@ -111,18 +111,45 @@ function forwardFillGoldPoints(
   return result;
 }
 
-export function GoldChart({ points, prevClose, currency, unit, emptyHint, height = 220, range: rangeProp }: GoldChartProps) {
+/**
+ * 为连续的数据点段构建平滑贝塞尔样条路径（Monotone / Catmull-Rom Spline）
+ * 消除高频锯齿与折角突变，使金价走势呈现如丝般顺滑的专业贵金属终端视觉
+ */
+function buildSmoothSplinePath(pts: { x: number; y: number }[]): string {
+  if (pts.length === 0) return '';
+  if (pts.length === 1) return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  if (pts.length === 2) {
+    return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)} L ${pts[1].x.toFixed(2)} ${pts[1].y.toFixed(2)}`;
+  }
+
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i === 0 ? 0 : i - 1];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2 >= pts.length ? pts.length - 1 : i + 2];
+
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
+}
+
+export function GoldChart({ points, prevClose, currency, unit, emptyHint, height = 230, range: rangeProp }: GoldChartProps) {
   const prefersReducedMotion = useReducedMotion();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const padding = { top: 20, right: 14, bottom: 26, left: 56 };
+  // 双 Y 轴对称边距：左轴挂绝对价格，右轴挂水上水下涨跌百分比
+  const padding = { top: 22, right: 52, bottom: 28, left: 60 };
   const width = 720;
   const innerW = width - padding.left - padding.right;
   const innerH = height - padding.top - padding.bottom;
-  // 给 Y 轴标签留视觉空间：折线和面积不从 padding.left 开始，避免"折线贴标签"
-  // 14px ≈ "4155.00" 这种标签宽 + 安全距离
-  const xAxisInset = 14;
+  const xAxisInset = 8;
   const drawableW = innerW - xAxisInset;
 
   // range：优先用父组件传入的用户选择；否则从数据跨度推断（旧 behavior）
@@ -260,55 +287,59 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   // 阈值：分时 > 30 min（轮询周期 60s），周/月已做前值平线填充，仅在发生 > 10 天的无数据异常断档时才打断
   const gapThresholdMs = range === 'intraday' ? 30 * 60 * 1000 : 10 * 24 * 60 * 60 * 1000;
 
+  // ─── 平滑连续样条折线 (Smooth Spline Line Path) ───
   const linePath = useMemo(() => {
     if (effectivePoints.length === 0) return '';
-    const parts: string[] = [];
-    let seg = `M ${xPos(0).toFixed(2)} ${yPos(effectivePoints[0].v).toFixed(2)}`;
+    const segments: { x: number; y: number }[][] = [];
+    let curSeg: { x: number; y: number }[] = [{ x: xPos(0), y: yPos(effectivePoints[0].v) }];
     for (let i = 1; i < effectivePoints.length; i++) {
       if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
-        parts.push(seg);
-        seg = `M ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
+        segments.push(curSeg);
+        curSeg = [{ x: xPos(i), y: yPos(effectivePoints[i].v) }];
       } else {
-        seg += ` L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
+        curSeg.push({ x: xPos(i), y: yPos(effectivePoints[i].v) });
       }
     }
-    parts.push(seg);
-    return parts.join(' ');
+    segments.push(curSeg);
+    return segments.map(seg => buildSmoothSplinePath(seg)).join(' ');
   }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
 
+  // ─── 轻雾晨曦羽化面积路径 (Feathered Area Path) ───
   const areaPath = useMemo(() => {
     if (effectivePoints.length === 0) return '';
-    const baselineY = (padding.top + innerH).toFixed(2);
-    const parts: string[] = [];
-    let seg = `M ${xPos(0).toFixed(2)} ${baselineY} L ${xPos(0).toFixed(2)} ${yPos(effectivePoints[0].v).toFixed(2)}`;
+    const baselineY = padding.top + innerH;
+    const segments: { x: number; y: number }[][] = [];
+    let curSeg: { x: number; y: number }[] = [{ x: xPos(0), y: yPos(effectivePoints[0].v) }];
     for (let i = 1; i < effectivePoints.length; i++) {
       if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
-        // 关闭当前段到基线，开新段
-        seg += ` L ${xPos(i - 1).toFixed(2)} ${baselineY} Z`;
-        parts.push(seg);
-        seg = `M ${xPos(i).toFixed(2)} ${baselineY} L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
+        segments.push(curSeg);
+        curSeg = [{ x: xPos(i), y: yPos(effectivePoints[i].v) }];
       } else {
-        seg += ` L ${xPos(i).toFixed(2)} ${yPos(effectivePoints[i].v).toFixed(2)}`;
+        curSeg.push({ x: xPos(i), y: yPos(effectivePoints[i].v) });
       }
     }
-    // 收尾
-    seg += ` L ${xPos(effectivePoints.length - 1).toFixed(2)} ${baselineY} Z`;
-    parts.push(seg);
-    return parts.join(' ');
-  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
+    segments.push(curSeg);
+    return segments
+      .map(seg => {
+        if (seg.length === 0) return '';
+        const spline = buildSmoothSplinePath(seg);
+        const lastPt = seg[seg.length - 1];
+        const firstPt = seg[0];
+        return `${spline} L ${lastPt.x.toFixed(2)} ${baselineY.toFixed(2)} L ${firstPt.x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
+      })
+      .join(' ');
+  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs, padding.top, innerH]);
 
   // Y 轴刻度：四等分再取"nice" step（5 的倍数优先；窄区间退到 0.5），并严格夹在 [minV, maxV] 内。
-  // 0.5 步长服务于国内金价这种 span 只有 0.5 CNY 的小数据集——整数 step 会让唯一一条
-  // 9xx.00 刻度线落在数据正中，看不出波动。
   const yTicks = useMemo(() => {
     const rawStep = range_v / 4;
     let step: number;
     if (rawStep < 1) {
-      step = Math.max(0.5, Math.round(rawStep * 2) / 2);  // round 到 0.5
+      step = Math.max(0.5, Math.round(rawStep * 2) / 2);
     } else if (rawStep < 5) {
-      step = Math.max(1, Math.round(rawStep * 2) / 2);    // 0.5 整数化
+      step = Math.max(1, Math.round(rawStep * 2) / 2);
     } else {
-      step = Math.max(1, Math.round(rawStep / 5) * 5);    // 大区间照旧 5 的倍数
+      step = Math.max(1, Math.round(rawStep / 5) * 5);
     }
     const startTick = Math.ceil(minV / step) * step;
     const endTick = Math.floor(maxV / step) * step;
@@ -317,16 +348,23 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
       ticks.push(parseFloat(v.toFixed(4)));
     }
     if (ticks.length < 3) {
-      // 数据太集中（step 比 range_v 还大）：退回 minV / 中点 / maxV，至少 3 条参考线
       return [minV, (minV + maxV) / 2, maxV].map(v => ({ v, y: yPos(v) }));
     }
     return ticks.map(v => ({ v, y: yPos(v) }));
   }, [maxV, minV, range_v]);
 
+  // ─── 金融基准锚点（Benchmark） ───
+  // 分时图（intraday）：优先以昨收价 prevClose 为基准；若缺乏则退化为第一点
+  // 历史图（1W / 1M）：以区间第一点为基准
   const last = effectivePoints[effectivePoints.length - 1]?.v ?? 0;
   const firstPointVal = effectivePoints[0]?.v ?? last;
-  const change = last - firstPointVal;
-  const changePct = firstPointVal > 0 ? (change / firstPointVal) * 100 : 0;
+  const baselineValue = (range === 'intraday' && prevClose != null && prevClose > 0)
+    ? prevClose
+    : (firstPointVal > 0 ? firstPointVal : last);
+  const baselineLabel = (range === 'intraday' && prevClose != null && prevClose > 0) ? '昨收' : '起点';
+
+  const change = last - baselineValue;
+  const changePct = baselineValue > 0 ? (change / baselineValue) * 100 : 0;
   const dirUp = change > 0;
   const dirDown = change < 0;
   const trendColor = dirUp ? 'var(--color-up)' : dirDown ? 'var(--color-down)' : 'var(--color-flat)';
@@ -336,22 +374,41 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   const hoverX = hoverIdx != null ? xPos(hoverIdx) : 0;
   const hoverY = hoverPoint ? yPos(hoverPoint.v) : 0;
 
-  // hover 节点的相对第一个点的变化
-  const hoverChange = hoverPoint && firstPointVal > 0 ? hoverPoint.v - firstPointVal : 0;
-  const hoverChangePct = hoverPoint && firstPointVal > 0 ? (hoverChange / firstPointVal) * 100 : 0;
+  // hover 节点的相对基准变化
+  const hoverChange = hoverPoint && baselineValue > 0 ? hoverPoint.v - baselineValue : 0;
+  const hoverChangePct = hoverPoint && baselineValue > 0 ? (hoverChange / baselineValue) * 100 : 0;
   const hoverColor = hoverChange > 0 ? 'var(--color-up)' : hoverChange < 0 ? 'var(--color-down)' : 'var(--color-flat)';
 
-  // ─── Smart Tooltip Positioning (侧边避让，避免遮挡 hover 焦点) ───
-  const goldTooltipWidth = 140;
-  const goldTooltipHeight = 90;
-  const isGoldRightSide = hoverX > width / 2;
-  const goldTooltipLeft = isGoldRightSide
-    ? Math.max(padding.left + 4, hoverX - goldTooltipWidth - 14)
-    : Math.min(width - padding.right - goldTooltipWidth - 4, hoverX + 14);
-  const goldTooltipTop = Math.max(
-    padding.top + 4,
-    Math.min(height - padding.bottom - goldTooltipHeight - 4, hoverY - goldTooltipHeight / 2)
-  );
+  // ─── 计算黄金日内/区间金融关键统计指标（最高、最低、振幅、基准） ───
+  const dayStats = useMemo(() => {
+    if (!effectivePoints || effectivePoints.length === 0) return null;
+    let high = -Infinity;
+    let low = Infinity;
+    for (let i = 0; i < effectivePoints.length; i++) {
+      const v = effectivePoints[i].v;
+      if (v > high) high = v;
+      if (v < low) low = v;
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)) return null;
+    const base = baselineValue > 0 ? baselineValue : (effectivePoints[0]?.v || 1);
+    const highPct = ((high - base) / base) * 100;
+    const lowPct = ((low - base) / base) * 100;
+    const amplitude = ((high - low) / base) * 100;
+    return { high, low, highPct, lowPct, amplitude, base, label: baselineLabel };
+  }, [effectivePoints, baselineValue, baselineLabel]);
+
+  // ─── 黄金大厂级锚点动态跟手与防遮挡探针定位 (Anchor-Following Anti-Occlusion Tooltip) ───
+  // 1. 水平方向紧跟锚点 hoverX 移动，以画布中轴线为界在锚点左右侧切换；
+  // 2. 绝对防遮挡：翻转至左侧 translateX(calc(-100% - 12px))，右侧展开 translateX(12px)，
+  //    面向锚点一侧严格固定 12px 净空，十字准星、垂直线与定位圆环 100% 外露；
+  // 3. 针对 viewBox 自适应缩放，采用百分比锚定 left / top，在任何视口宽度下永不漂移；
+  // 4. 垂直方向动态跟随 hoverY，并被安全限制在图表视窗内部。
+  const isRightSide = hoverX > (padding.left + innerW * 0.48);
+  const estimatedTooltipHeight = 100;
+  const rawTooltipY = hoverY - estimatedTooltipHeight * 0.38;
+  const minTooltipY = padding.top + 4;
+  const maxTooltipY = Math.max(minTooltipY, padding.top + innerH - estimatedTooltipHeight - 4);
+  const clampedTooltipY = Math.max(minTooltipY, Math.min(maxTooltipY, rawTooltipY));
 
   if (effectivePoints.length < 2) {
     return (
@@ -421,20 +478,31 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
           onPointerLeave={onLeave}
         >
           <defs>
-            <linearGradient id="gGoldUp" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-up)" stopOpacity="0.3" />
-              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0" />
+            {/* 轻雾晨曦羽化渐变（Apple Atmospheric Gradient）：顶轻底隐，高通透与呼吸感 */}
+            <linearGradient id="gGoldUp" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-up)" stopOpacity="0.00" />
+              <stop offset="35%"  stopColor="var(--color-up)" stopOpacity="0.03" />
+              <stop offset="70%"  stopColor="var(--color-up)" stopOpacity="0.10" />
+              <stop offset="100%" stopColor="var(--color-up)" stopOpacity="0.22" />
             </linearGradient>
-            <linearGradient id="gGoldDown" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-down)" stopOpacity="0.3" />
-              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0" />
+            <linearGradient id="gGoldDown" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-down)" stopOpacity="0.00" />
+              <stop offset="35%"  stopColor="var(--color-down)" stopOpacity="0.03" />
+              <stop offset="70%"  stopColor="var(--color-down)" stopOpacity="0.10" />
+              <stop offset="100%" stopColor="var(--color-down)" stopOpacity="0.22" />
             </linearGradient>
-            <linearGradient id="gGoldFlat" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-flat)" stopOpacity="0.18" />
-              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0" />
+            <linearGradient id="gGoldFlat" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%"   stopColor="var(--color-flat)" stopOpacity="0.00" />
+              <stop offset="50%"  stopColor="var(--color-flat)" stopOpacity="0.04" />
+              <stop offset="100%" stopColor="var(--color-flat)" stopOpacity="0.14" />
             </linearGradient>
 
-            {/* 严格边界 clip：折线 / 面积只在 [padding.left+xAxisInset, padding.left+innerW] × [padding.top+2, padding.top+innerH-2] 内可见，杜绝任何越界绘制 */}
+            {/* 折线下方柔光高斯光晕（霓虹笔触） */}
+            <filter id="goldLineGlow" x="-5%" y="-50%" width="110%" height="200%">
+              <feGaussianBlur stdDeviation="2.2" />
+            </filter>
+
+            {/* 严格边界 clip：折线 / 面积只在有效绘制区域内可见，杜绝越界 */}
             <clipPath id="gGoldChartBounds">
               <rect
                 x={padding.left + xAxisInset}
@@ -443,35 +511,72 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 height={innerH - 4}
               />
             </clipPath>
+
+            {/* 面积水波纹入场 clip */}
+            <clipPath id="gGoldAreaReveal">
+              <motion.rect
+                key={`reveal-${range}-${points.length}`}
+                x={padding.left}
+                y={padding.top}
+                width={innerW}
+                height={innerH}
+                initial={prefersReducedMotion ? false : { y: padding.top }}
+                animate={{ y: padding.top + innerH }}
+                transition={{
+                  type: 'spring' as const,
+                  bounce: 0,
+                  duration: 0.6,
+                  delay: 0.15,
+                }}
+              />
+            </clipPath>
           </defs>
 
-          {/* Y grid */}
-          {yTicks.map((t, i) => (
-            <g key={i}>
-              <line
-                x1={padding.left}
-                x2={padding.left + innerW}
-                y1={t.y}
-                y2={t.y}
-                stroke="currentColor"
-                strokeOpacity="0.06"
-                strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
-              />
-              <text
-                x={padding.left - 8}
-                y={t.y + 3}
-                textAnchor="end"
-                fontSize="10"
-                fill="currentColor"
-                fillOpacity="0.45"
-                className="font-mono tabular-nums"
-              >
-                {t.v.toFixed(2)}
-              </text>
-            </g>
-          ))}
+          {/* Y grid + 左轴绝对价格 + 右轴相对基准涨跌百分比（双 Y 轴水上水下着色） */}
+          {yTicks.map((t, i) => {
+            const pct = baselineValue > 0 ? ((t.v - baselineValue) / baselineValue) * 100 : 0;
+            const isPctUp = pct > 0.005;
+            const isPctDown = pct < -0.005;
+            return (
+              <g key={i}>
+                <line
+                  x1={padding.left}
+                  x2={padding.left + innerW}
+                  y1={t.y}
+                  y2={t.y}
+                  stroke="currentColor"
+                  strokeOpacity="0.06"
+                  strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
+                />
+                {/* 左轴：价格 */}
+                <text
+                  x={padding.left - 8}
+                  y={t.y + 3}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="currentColor"
+                  fillOpacity="0.45"
+                  className="font-mono tabular-nums"
+                >
+                  {t.v.toFixed(2)}
+                </text>
+                {/* 右轴：相对基准的涨跌百分比 */}
+                <text
+                  x={padding.left + innerW + 8}
+                  y={t.y + 3}
+                  textAnchor="start"
+                  fontSize="10"
+                  fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
+                  fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
+                  className="font-mono tabular-nums font-medium"
+                >
+                  {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                </text>
+              </g>
+            );
+          })}
 
-          {/* X labels — 按 window 均匀分布 */}
+          {/* X 轴刻度标签 */}
           {xTicks.map((t, i) => (
             <text
               key={i}
@@ -487,55 +592,73 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             </text>
           ))}
 
-          {/* Baseline at prev close */}
-          {prevClose != null && (
-            <line
-              x1={padding.left}
-              x2={padding.left + innerW}
-              y1={yPos(prevClose)}
-              y2={yPos(prevClose)}
-              stroke="currentColor"
-              strokeOpacity="0.14"
-              strokeDasharray="4 4"
-            />
+          {/* 零轴基准线 (昨收/开盘平衡线)：具备金融心理锚定仪式感 */}
+          {baselineValue >= minV && baselineValue <= maxV && (
+            <g>
+              <line
+                x1={padding.left}
+                x2={padding.left + innerW}
+                y1={yPos(baselineValue)}
+                y2={yPos(baselineValue)}
+                stroke="currentColor"
+                strokeOpacity="0.22"
+                strokeDasharray="4 3"
+              />
+              <rect
+                x={padding.left + innerW + 3}
+                y={yPos(baselineValue) - 7}
+                width={36}
+                height={14}
+                rx={3}
+                fill="currentColor"
+                fillOpacity="0.06"
+              />
+              <text
+                x={padding.left + innerW + 21}
+                y={yPos(baselineValue) + 3.5}
+                textAnchor="middle"
+                fontSize="9"
+                fill="currentColor"
+                fillOpacity="0.75"
+                className="font-mono tabular-nums font-semibold"
+              >
+                0.00%
+              </text>
+            </g>
           )}
 
-          {/* Area — mask-reveal: clipPath 从顶端向下 spring 展开，模拟 Apple Stocks "水波纹" 入场 */}
-          <defs>
-            <clipPath id="gGoldAreaReveal">
-              <motion.rect
-                key={`reveal-${range}-${points.length}`}
-                x={padding.left}
-                y={padding.top}
-                width={innerW}
-                height={innerH}
-                initial={prefersReducedMotion ? false : { y: padding.top }}
-                animate={{ y: padding.top + innerH }}
-                transition={{
-                  type: 'spring' as const,
-                  bounce: 0,
-                  duration: 0.6,
-                  delay: 0.15,        // 等线条先走一段
-                }}
-              />
-            </clipPath>
-          </defs>
-
-          {/* 面积先被 bounds clip 严格限制在图表区，再被 reveal clip 做"水波纹"入场 */}
+          {/* 面积图：限制在边界内并带有流体展开 */}
           <g clipPath="url(#gGoldChartBounds)">
-          <motion.path
-            d={areaPath}
-            fill={`url(#${dirUp ? 'gGoldUp' : dirDown ? 'gGoldDown' : 'gGoldFlat'})`}
-            clipPath="url(#gGoldAreaReveal)"
-            initial={prefersReducedMotion ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ type: 'spring' as const, bounce: 0, duration: 0.5, delay: 0.15 }}
-          />
+            <motion.path
+              d={areaPath}
+              fill={`url(#${dirUp ? 'gGoldUp' : dirDown ? 'gGoldDown' : 'gGoldFlat'})`}
+              clipPath="url(#gGoldAreaReveal)"
+              initial={prefersReducedMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ type: 'spring' as const, bounce: 0, duration: 0.5, delay: 0.15 }}
+            />
           </g>
 
-          {/* Line — spring pathLength，interruptible（spring 默认从当前 presentation 值继续） */}
+          {/* 折线下层的柔光光晕层（霓虹笔触） */}
           <motion.path
-            key={`line-${range}-${points.length}`}
+            key={`gold-glow-${range}-${points.length}`}
+            d={linePath}
+            fill="none"
+            stroke={trendColor}
+            strokeWidth="3.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity="0.18"
+            filter="url(#goldLineGlow)"
+            clipPath="url(#gGoldChartBounds)"
+            initial={prefersReducedMotion ? false : { pathLength: 0 }}
+            animate={{ pathLength: 1 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.6 }}
+          />
+
+          {/* 表层高保真平滑连续折线 */}
+          <motion.path
+            key={`gold-line-${range}-${points.length}`}
             d={linePath}
             fill="none"
             stroke={trendColor}
@@ -547,27 +670,114 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             animate={{ pathLength: 1, opacity: 1 }}
             transition={{
               type: 'spring' as const,
-              bounce: 0,            // critically damped — Apple default
-              duration: 0.55,       // response ~ 0.55s（描线稍慢，配合 fill delay 0.15s）
+              bounce: 0,
+              duration: 0.55,
             }}
           />
 
-          {/* Hover crosshair — 即时跟随指针，单实例更新，杜绝 key 切换导致的滞留重影 */}
+          {/* 全向十字准星 HUD (Full Crosshair HUD) */}
           {hoverPoint && (
             <g pointerEvents="none">
+              {/* 垂直虚线 */}
               <line
                 x1={hoverX}
                 x2={hoverX}
                 y1={padding.top}
                 y2={padding.top + innerH}
                 stroke="currentColor"
-                strokeOpacity="0.25"
+                strokeOpacity="0.22"
                 strokeDasharray="3 3"
               />
+              {/* 水平虚线 */}
+              <line
+                x1={padding.left}
+                x2={padding.left + innerW}
+                y1={hoverY}
+                y2={hoverY}
+                stroke="currentColor"
+                strokeOpacity="0.22"
+                strokeDasharray="3 3"
+              />
+
+              {/* 左轴价格胶囊 */}
+              <g>
+                <rect
+                  x={padding.left - 52}
+                  y={hoverY - 8}
+                  width={48}
+                  height={16}
+                  rx={3}
+                  fill={hoverColor}
+                />
+                <text
+                  x={padding.left - 6}
+                  y={hoverY + 3.5}
+                  textAnchor="end"
+                  fontSize="10"
+                  fontWeight="600"
+                  fill="white"
+                  className="font-mono tabular-nums"
+                >
+                  {hoverPoint.v.toFixed(2)}
+                </text>
+              </g>
+
+              {/* 右轴百分比胶囊 */}
+              {(() => {
+                const pct = baselineValue > 0 ? ((hoverPoint.v - baselineValue) / baselineValue) * 100 : 0;
+                return (
+                  <g>
+                    <rect
+                      x={padding.left + innerW + 4}
+                      y={hoverY - 8}
+                      width={46}
+                      height={16}
+                      rx={3}
+                      fill={hoverColor}
+                    />
+                    <text
+                      x={padding.left + innerW + 8}
+                      y={hoverY + 3.5}
+                      textAnchor="start"
+                      fontSize="10"
+                      fontWeight="600"
+                      fill="white"
+                      className="font-mono tabular-nums"
+                    >
+                      {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                    </text>
+                  </g>
+                );
+              })()}
+
+              {/* 底部时间胶囊 */}
+              <g>
+                <rect
+                  x={hoverX - 28}
+                  y={padding.top + innerH - 8}
+                  width={56}
+                  height={16}
+                  rx={3}
+                  fill={hoverColor}
+                />
+                <text
+                  x={hoverX}
+                  y={padding.top + innerH + 3.5}
+                  textAnchor="middle"
+                  fontSize="9"
+                  fontWeight="600"
+                  fill="white"
+                  className="font-mono tabular-nums"
+                >
+                  {formatTick(hoverPoint.t, range)}
+                </text>
+              </g>
+
+              {/* 锚点同心圆 */}
               <circle
                 cx={hoverX}
                 cy={hoverY}
-                r="5"
+                r="5.5"
                 fill="white"
                 stroke={hoverColor}
                 strokeWidth="2"
@@ -576,10 +786,10 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             </g>
           )}
 
-          {/* End dot — 在 line 描完后才"降落"，spring bounce 0（不 overshoot，Apple 默认） */}
+          {/* 最新收盘点呼吸脉冲 */}
           {effectivePoints.length > 0 && (
             <motion.g
-              key={`dot-${effectivePoints.length}-${last}`}
+              key={`gold-dot-${effectivePoints.length}-${last}`}
               initial={prefersReducedMotion ? false : { scale: 0 }}
               animate={{
                 scale: 1,
@@ -587,14 +797,13 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
               }}
               transition={{
                 type: 'spring' as const,
-                bounce: 0,            // critically damped — 不是弹簧 overshoot
+                bounce: 0,
                 duration: 0.32,
-                delay: 0.6,           // 描线结束后 50ms
+                delay: 0.6,
               }}
               style={{ transformOrigin: `${xPos(effectivePoints.length - 1)}px ${yPos(last)}px` }}
               pointerEvents="none"
             >
-              {/* 外圈轻微"呼吸" — 用 spring loop 模拟实时跳动 */}
               {!prefersReducedMotion && hoverIdx !== effectivePoints.length - 1 && (
                 <motion.circle
                   cx={xPos(effectivePoints.length - 1)}
@@ -611,47 +820,106 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
           )}
         </svg>
 
-        {/* Tooltip — 稳定单实例绝对定位，随坐标平滑移动，彻底消除重影 */}
+        {/* ─── Tooltip — 锚点动态跟手防遮挡探针 (Anchor-Following Anti-Occlusion Tooltip) ─── */}
         {hoverPoint && (
-          <div
-            className="pointer-events-none absolute z-10 px-2.5 py-1.5 rounded-xl bg-white/95 dark:bg-[#1d1d1f]/95 backdrop-blur-md border border-[var(--hairline-border)] shadow-lg text-[11px] min-w-[125px] transition-[left,top] duration-75 ease-out"
+          <motion.div
+            key="gold-tooltip-wrapper"
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
+            transition={{ type: 'spring' as const, bounce: 0, duration: 0.18 }}
+            className="pointer-events-none absolute z-20"
             style={{
-              left: `${goldTooltipLeft}px`,
-              top: `${goldTooltipTop}px`,
+              left: `${(hoverX / width) * 100}%`,
+              top: `${(clampedTooltipY / height) * 100}%`,
             }}
           >
-            <div className="text-slate-500 dark:text-slate-400 font-mono tabular-nums mb-1 flex items-center justify-between gap-1.5">
-              <span>{formatTooltipTime(hoverPoint.t, range)}</span>
-              {hoverPoint.isClosed && (
-                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-sans font-normal whitespace-nowrap">
-                  (周末休市)
+            <div
+              className="px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/90 dark:border-slate-700/80 shadow-2xl text-[11px] min-w-[168px] w-max whitespace-nowrap select-none"
+              style={{
+                transform: isRightSide ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+                transition: prefersReducedMotion ? undefined : 'transform 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+              }}
+            >
+              <div className="flex items-center justify-between gap-3 mb-1.5 pb-1 border-b border-slate-100 dark:border-slate-800 text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                <span className="shrink-0">{formatTooltipTime(hoverPoint.t, range)}</span>
+                <span className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-sans text-[9px] shrink-0">
+                  {hoverPoint.isClosed ? '周末休市' : range === 'intraday' ? '分钟点位' : '走势节点'}
                 </span>
-              )}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-baseline justify-between gap-3.5">
+                  <span className="text-slate-500 dark:text-slate-400 text-[10px] shrink-0">即时价位</span>
+                  <span className="font-mono text-sm font-bold text-slate-900 dark:text-slate-100 shrink-0">
+                    {hoverPoint.v.toFixed(2)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1 font-sans">{currency}/{unit}</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-3.5">
+                  <span className="text-slate-500 dark:text-slate-400 text-[10px] shrink-0">相对{baselineLabel}</span>
+                  <div
+                    className="flex items-center gap-1 font-mono font-semibold text-[11px] shrink-0 tabular-nums"
+                    style={{ color: hoverColor }}
+                  >
+                    <span>{hoverChange > 0 ? '+' : ''}{hoverChange.toFixed(2)}</span>
+                    <span>({hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%)</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-500">价位</span>
-              <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                {hoverPoint.v.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-500">涨跌</span>
-              <span className="font-mono font-semibold tabular-nums" style={{ color: hoverColor }}>
-                {hoverChange > 0 ? '+' : ''}{hoverChange.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-500">涨跌幅</span>
-              <span className="font-mono font-semibold tabular-nums" style={{ color: hoverColor }}>
-                {hoverChangePct > 0 ? '+' : ''}{hoverChangePct.toFixed(2)}%
-              </span>
-            </div>
-          </div>
+          </motion.div>
         )}
       </div>
 
-      <div className="text-[10px] text-slate-400 text-center mt-1 font-mono">
-        单位: {currency}/{unit}
+      {/* ─── 底部日内/区间金融关键指标微岛 (Financial Ribbon) ─── */}
+      {dayStats && (
+        <div className="mt-2.5 grid grid-cols-4 gap-1.5 sm:gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最高</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.high.toFixed(2)}
+            </div>
+            <div className="text-[9px] font-mono text-rose-500 font-semibold mt-0.5">
+              +{dayStats.highPct.toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最低</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.low.toFixed(2)}
+            </div>
+            <div className="text-[9px] font-mono text-emerald-500 font-semibold mt-0.5">
+              {dayStats.lowPct > 0 ? '+' : ''}{dayStats.lowPct.toFixed(2)}%
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间振幅</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.amplitude.toFixed(2)}%
+            </div>
+            <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5 font-sans">
+              极值波动率
+            </div>
+          </div>
+
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
+            <div className="text-[10px] text-slate-400 dark:text-slate-500">{dayStats.label}基准</div>
+            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+              {dayStats.base.toFixed(2)}
+            </div>
+            <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5 font-mono">
+              {currency}/{unit}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="text-[10px] text-slate-400 text-center mt-1.5 font-mono">
+        计价单位: {currency}/{unit}
       </div>
     </div>
   );

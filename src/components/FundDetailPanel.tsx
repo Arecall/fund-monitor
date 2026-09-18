@@ -236,6 +236,17 @@ export function FundDetailPanel({
     };
   }, [fund.fundcode, fund.market, kind, chartKey]);
 
+  // 当基准净值就绪或从占位值变为有效真实净值，且当前分时线尚未生成有效曲线时，自动无感触发一次基线刷新
+  const lastKnownDwjzRef = useRef(fund.dwjz);
+  useEffect(() => {
+    if (lastKnownDwjzRef.current !== fund.dwjz) {
+      lastKnownDwjzRef.current = fund.dwjz;
+      if (!minuteData || minuteData.bars.length < 2) {
+        setChartKey(k => k + 1);
+      }
+    }
+  }, [fund.dwjz, minuteData]);
+
   useEffect(() => {
     setKlinePeriod('day');
     setKlineData([]);

@@ -929,7 +929,14 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                                   key={fCode}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onOpenDetail?.(fCode, 'domestic', 'fund');
+                                    onOpenDetail?.(fCode, 'domestic', 'fund', {
+                                      name: valuation?.name || `${fCode}联接基金`,
+                                      dwjz: valuation?.dwjz || valuation?.gsz || '1.0000',
+                                      gsz: valuation?.gsz || valuation?.dwjz || '1.0000',
+                                      gszzl: valuation?.gszzl?.replace('%', '') || '0.00',
+                                      gztime: valuation?.gztime || new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                                      market: 'domestic',
+                                    });
                                   }}
                                   className="p-2.5 rounded-xl bg-white dark:bg-slate-900/90 border border-indigo-100 dark:border-indigo-900/60 hover:border-indigo-400 dark:hover:border-indigo-500 hover:shadow-xs transition-all cursor-pointer group flex flex-col gap-1.5"
                                 >
