@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   Tag,
   Button,
@@ -46,7 +47,12 @@ import {
 
 interface BankStocksTabProps {
   currentUser?: string;
-  onOpenDetail?: (code: string, market: 'domestic' | 'hk' | 'us' | 'other', kind?: 'fund' | 'stock') => void;
+  onOpenDetail?: (
+    code: string,
+    market: 'domestic' | 'hk' | 'us' | 'other',
+    kind?: 'fund' | 'stock',
+    initialData?: any
+  ) => void;
 }
 
 const TIER_OPTIONS = [
@@ -59,7 +65,237 @@ const TIER_OPTIONS = [
   { key: 'hk', label: '港股高息折价', icon: <DollarSign className="w-4 h-4 text-rose-500" />, desc: 'AH实时折价·扣税后精算' },
 ];
 
+/**
+ * 内联文本格式化：将 **重点词** 渲染为 <strong> 标签并去除生硬的星号
+ */
+function FormattedInlineText({ text }: { text: string }) {
+  if (!text) return null;
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((part, idx) => {
+        if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+          return (
+            <strong key={idx} className="font-semibold text-slate-900 dark:text-slate-100">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={idx}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+interface ParsedDiagnosisSection {
+  title: string;
+  content: string;
+  type: 'dividend' | 'credit' | 'mechanism' | 'default';
+}
+
+function parseDiagnosis(raw: string): { intro?: string; sections: ParsedDiagnosisSection[] } {
+  if (!raw) return { sections: [] };
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  let intro = '';
+  const sections: ParsedDiagnosisSection[] = [];
+  let currentSection: ParsedDiagnosisSection | null = null;
+
+  for (const line of lines) {
+    // 匹配如: **1. 【分红确定性与股息安全垫】**: 内容 或 **1. 【...】** 内容 或 1. 【...】
+    const match = line.match(/^(?:\*\*)?(?:[1-3一二三]\s*[.、\s]*)?【([^】]+)】(?:\*\*)?[:：]?\s*(.*)/);
+    if (match) {
+      if (currentSection) sections.push(currentSection);
+      const title = match[1].trim();
+      let type: ParsedDiagnosisSection['type'] = 'default';
+      if (/分红|股息|现金流/.test(title)) {
+        type = 'dividend';
+      } else if (/信贷|资产质量|抗风险|底线|不良|拨备/.test(title)) {
+        type = 'credit';
+      } else if (/交易|机制|流动性|风险提示|交收|规则|税/.test(title)) {
+        type = 'mechanism';
+      }
+      currentSection = {
+        title,
+        content: match[2]?.trim() || '',
+        type,
+      };
+    } else if (currentSection) {
+      currentSection.content = currentSection.content
+        ? `${currentSection.content}\n${line}`
+        : line;
+    } else {
+      // 导言或前置总结：剔除前后 ** 和冒号
+      const cleanLine = line.replace(/^\*\*|\*\*$/g, '').replace(/[:：]$/, '').trim();
+      if (cleanLine) {
+        intro = intro ? `${intro} · ${cleanLine}` : cleanLine;
+      }
+    }
+  }
+  if (currentSection) sections.push(currentSection);
+
+  // 如果大模型未按规范结构输出，优雅降级为单卡片渲染
+  if (sections.length === 0 && raw.trim()) {
+    sections.push({
+      title: '标的客观深度诊断研报',
+      content: raw.trim(),
+      type: 'default',
+    });
+  }
+
+  return { intro, sections };
+}
+
+const SPRING = {
+  default: { type: 'spring' as const, bounce: 0, duration: 0.32 },
+  card: { type: 'spring' as const, bounce: 0.06, duration: 0.38 },
+  stagger: 0.08,
+};
+
+const AI_STEPS = [
+  { icon: '🔍', text: '正在调取历史中报分红、股息率基准与红利税负...' },
+  { icon: '🛡️', text: '正在核算信贷资产质量、不良率与拨备安全边际...' },
+  { icon: '✨', text: '大模型多维客观严谨推演完成，正在结构化排版研报...' },
+];
+
+function AiDiagnosisSkeleton() {
+  const [stepIdx, setStepIdx] = useState(0);
+
+  useEffect(() => {
+    const t1 = setTimeout(() => setStepIdx(1), 1200);
+    const t2 = setTimeout(() => setStepIdx(2), 2600);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, []);
+
+  const currentStep = AI_STEPS[stepIdx];
+
+  return (
+    <div className="space-y-3">
+      {/* 动态步骤探针栏 */}
+      <div className="flex items-center justify-between text-xs px-3.5 py-2.5 bg-indigo-50/80 dark:bg-indigo-950/40 rounded-xl border border-indigo-100 dark:border-indigo-900/50 text-indigo-700 dark:text-indigo-300">
+        <div className="flex items-center gap-2">
+          <span className="animate-spin text-sm">⚙️</span>
+          <span className="font-medium animate-pulse">{currentStep.icon} {currentStep.text}</span>
+        </div>
+        <span className="text-[10px] font-mono text-indigo-500/80">{stepIdx + 1}/3 步</span>
+      </div>
+
+      {/* 3 张 1:1 预占位骨架卡片（高度与真实成稿 1:1 匹配，消除高度跳跃） */}
+      {[
+        { titleWidth: 'w-36', tagWidth: 'w-16', color: 'border-emerald-100/70 dark:border-emerald-950/40 bg-emerald-50/20' },
+        { titleWidth: 'w-44', tagWidth: 'w-20', color: 'border-blue-100/70 dark:border-blue-950/40 bg-blue-50/20' },
+        { titleWidth: 'w-40', tagWidth: 'w-24', color: 'border-amber-100/70 dark:border-amber-950/40 bg-amber-50/20' },
+      ].map((sk, i) => (
+        <div
+          key={i}
+          className={`p-3.5 rounded-xl border ${sk.color} space-y-2.5 animate-pulse`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-slate-200 dark:bg-slate-700" />
+              <div className={`h-4 rounded-md bg-slate-200 dark:bg-slate-700 ${sk.titleWidth}`} />
+            </div>
+            <div className={`h-4 rounded-md bg-slate-200/80 dark:bg-slate-700/80 ${sk.tagWidth}`} />
+          </div>
+          <div className="space-y-1.5 pl-1">
+            <div className="h-3.5 rounded bg-slate-200/60 dark:bg-slate-700/60 w-full" />
+            <div className="h-3.5 rounded bg-slate-200/60 dark:bg-slate-700/60 w-[92%]" />
+            <div className="h-3.5 rounded bg-slate-200/60 dark:bg-slate-700/60 w-[78%]" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AiDiagnosisView({ text }: { text: string }) {
+  const prefersReducedMotion = useReducedMotion();
+  const { intro, sections } = useMemo(() => parseDiagnosis(text), [text]);
+
+  const SECTION_THEMES = {
+    dividend: {
+      icon: <DollarSign className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />,
+      badge: '分红与股息',
+      badgeClass: 'bg-emerald-100/90 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200/80 dark:border-emerald-800/60',
+      cardClass: 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-100/80 dark:border-emerald-900/40',
+    },
+    credit: {
+      icon: <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />,
+      badge: '资产底线与风控',
+      badgeClass: 'bg-blue-100/90 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border-blue-200/80 dark:border-blue-800/60',
+      cardClass: 'bg-blue-50/50 dark:bg-blue-950/20 border-blue-100/80 dark:border-blue-900/40',
+    },
+    mechanism: {
+      icon: <Scale className="w-4 h-4 text-amber-600 dark:text-amber-400" />,
+      badge: '交易机制与流动性',
+      badgeClass: 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200/80 dark:border-amber-800/60',
+      cardClass: 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-100/80 dark:border-amber-900/40',
+    },
+    default: {
+      icon: <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />,
+      badge: '深度体检',
+      badgeClass: 'bg-indigo-100/90 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300 border-indigo-200/80 dark:border-indigo-800/60',
+      cardClass: 'bg-indigo-50/50 dark:bg-indigo-950/20 border-indigo-100/80 dark:border-indigo-900/40',
+    },
+  };
+
+  return (
+    <div className="space-y-2.5">
+      {intro && (
+        <motion.div
+          initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ ...SPRING.card, delay: 0.04 }}
+          className="text-xs font-semibold text-slate-700 dark:text-slate-300 px-3.5 py-2 bg-slate-100/80 dark:bg-slate-800/60 rounded-xl border border-slate-200/60 dark:border-slate-700/60 flex items-center gap-2"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+          <span className="leading-snug"><FormattedInlineText text={intro} /></span>
+        </motion.div>
+      )}
+
+      <div className="space-y-2.5">
+        {sections.map((sec, idx) => {
+          const theme = SECTION_THEMES[sec.type] || SECTION_THEMES.default;
+          return (
+            <motion.div
+              key={idx}
+              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                ...SPRING.card,
+                delay: prefersReducedMotion ? 0 : 0.08 + idx * SPRING.stagger,
+              }}
+              className={`p-3.5 rounded-xl border ${theme.cardClass} shadow-2xs space-y-2 transition-all`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1 rounded-lg bg-white dark:bg-slate-900 shadow-2xs shrink-0">
+                    {theme.icon}
+                  </div>
+                  <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                    <FormattedInlineText text={sec.title} />
+                  </h4>
+                </div>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border whitespace-nowrap shrink-0 ${theme.badgeClass}`}>
+                  {theme.badge}
+                </span>
+              </div>
+
+              <div className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed pl-1 whitespace-pre-line">
+                <FormattedInlineText text={sec.content} />
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
+  const prefersReducedMotion = useReducedMotion();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [overview, setOverview] = useState<BankOverview | null>(null);
@@ -451,7 +687,22 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                 <div>
                   {/* 卡片头部 */}
                   <div className="flex items-start justify-between gap-2">
-                    <div className="cursor-pointer" onClick={() => onOpenDetail?.(stock.code, stock.market)}>
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => onOpenDetail?.(
+                        stock.code,
+                        stock.market,
+                        stock.isFund ? 'fund' : 'stock',
+                        {
+                          name: stock.name,
+                          dwjz: String(stock.price),
+                          gsz: String(stock.price),
+                          gszzl: String(stock.changePct),
+                          gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                          market: stock.market,
+                        }
+                      )}
+                    >
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-base sm:text-lg text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
                           {stock.name}
@@ -662,7 +913,10 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                           <div className="space-y-1.5">
                             {stock.feederCodes.map((fCode) => {
                               const valuation = stock.feederValuations?.find(v => v.code === fCode);
-                              const isClassC = fCode === '007467' || fCode === '001594' || fCode === '011531';
+                              const isClassC = valuation?.shareClass === 'C'
+                                || /([cC]类?|联接[cC])$/i.test(valuation?.name || '')
+                                || /([cC]类?|联接[cC])/i.test(valuation?.name || '')
+                                || fCode === '007467' || fCode === '001594' || fCode === '011531';
                               const shareClassLabel = isClassC ? 'C类·短波段' : 'A类·长定投';
                               const isValUp = (valuation?.gszzlNum ?? 0) > 0;
                               const isValDown = (valuation?.gszzlNum ?? 0) < 0;
@@ -715,17 +969,23 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                                     </div>
                                   </div>
 
-                                  {/* 第二行：持有期量化平衡点建议 */}
-                                  <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1 pt-1 border-t border-slate-100 dark:border-slate-800/80">
-                                    <span>⏱️</span>
-                                    <span className="truncate">{valuation?.breakevenAdvice || breakevenTip}</span>
+                                  {/* 第二行：持有期量化平衡点建议与合规惩罚费提示 */}
+                                  <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-between gap-1 pt-1 border-t border-slate-100 dark:border-slate-800/80">
+                                    <div className="flex items-center gap-1 min-w-0 truncate">
+                                      <span>⏱️</span>
+                                      <span className="truncate">{valuation?.breakevenAdvice || breakevenTip}</span>
+                                    </div>
+                                    <span className="text-[9px] font-medium text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 px-1 py-0.2 rounded shrink-0 border border-rose-200/60 dark:border-rose-900/50">
+                                      &lt;7天惩罚费1.5%
+                                    </span>
                                   </div>
                                 </div>
                               );
                             })}
                           </div>
-                          <div className="text-[10px] text-indigo-700/70 dark:text-indigo-400/70 leading-normal">
-                            💡 规则提示：场外申赎按当日 15:00 确认净值交收（未知价法），分时线为底层 ETF 盘中参考走势。
+                          <div className="text-[10px] text-indigo-700/80 dark:text-indigo-400/80 leading-normal flex items-start gap-1">
+                            <span className="shrink-0">💡</span>
+                            <span>规则提示：场外申赎按当日 15:00 净值未知价交收；非货基持有少于 7 日强制扣除不低于 1.5% 赎回费并计入基金财产。</span>
                           </div>
                         </>
                       )}
@@ -762,7 +1022,19 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                       size="small"
                       type="default"
                       icon={<LineChart className="w-3.5 h-3.5 text-blue-500" />}
-                      onClick={() => onOpenDetail?.(stock.code, stock.market)}
+                      onClick={() => onOpenDetail?.(
+                        stock.code,
+                        stock.market,
+                        stock.isFund ? 'fund' : 'stock',
+                        {
+                          name: stock.name,
+                          dwjz: String(stock.price),
+                          gsz: String(stock.price),
+                          gszzl: String(stock.changePct),
+                          gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                          market: stock.market,
+                        }
+                      )}
                       className="rounded-lg text-xs flex items-center gap-1 dark:border-slate-700 dark:text-slate-300 hover:border-blue-500 hover:text-blue-500"
                     >
                       分时
@@ -847,77 +1119,131 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
               key="detail"
               type="primary"
               onClick={() => {
+                const stock = diagnosingStock;
+                // 1. 先启动弹窗平滑退出动画
                 setDiagnoseModalOpen(false);
-                onOpenDetail?.(diagnosingStock.code, diagnosingStock.market);
+                // 2. 延迟 90ms 触发右侧抽屉滑入，让视线与遮罩从中心自然流向右侧抽屉，
+                //    彻底消除两个重叠遮罩的瞬间抢占、页面滚动条抖动与闪黑现象！
+                setTimeout(() => {
+                  onOpenDetail?.(
+                    stock.code,
+                    stock.market,
+                    stock.isFund ? 'fund' : 'stock',
+                    {
+                      name: stock.name,
+                      dwjz: String(stock.price),
+                      gsz: String(stock.price),
+                      gszzl: String(stock.changePct),
+                      gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                      market: stock.market,
+                    }
+                  );
+                }, 90);
               }}
-              className="rounded-xl bg-emerald-600 hover:bg-emerald-500"
+              className="rounded-xl bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
             >
               查看实时分时/K线
             </Button>
           ),
         ]}
-        width={640}
+        width={680}
         className="dark-modal"
       >
         {diagnosingStock && (
-          <div className="space-y-4 py-2">
+          <div className="space-y-3.5 py-2">
             {/* 标的基本信息条 */}
-            <div className="flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-800 rounded-xl">
+            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/70 rounded-2xl shadow-2xs">
               <div>
-                <div className="text-base font-bold text-slate-900 dark:text-white">
-                  {diagnosingStock.name} ({diagnosingStock.code})
+                <div className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <span>{diagnosingStock.name}</span>
+                  <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                    {diagnosingStock.code}
+                  </span>
                 </div>
-                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  分类: {diagnosingStock.tierName} · {diagnosingStock.tradeMechanism || 'A股 T+1'}
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
+                  <Tag color="blue" className="text-[11px] m-0 rounded-md">{diagnosingStock.tierName}</Tag>
+                  <span>{diagnosingStock.tradeMechanism || 'A股 T+1'}</span>
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-base font-bold text-slate-900 dark:text-white font-mono">
-                  {diagnosingStock.market === 'hk' ? 'HK$' : '¥'}{diagnosingStock.price.toFixed(2)}
+                <div className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white font-mono">
+                  {diagnosingStock.market === 'hk' ? 'HK$' : '¥'}{diagnosingStock.price.toFixed(
+                    diagnosingStock.tier === 't0_cash' || diagnosingStock.tier === 'etf' || (diagnosingStock.price > 0 && diagnosingStock.price < 5.0) ? 3 : 2
+                  )}
                 </div>
-                <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
+                <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
                   税后实得股息率: {diagnosingStock.afterTaxDividendYield}%
                 </div>
               </div>
             </div>
 
-            {/* 诊断内容 */}
-            {diagnoseLoading ? (
-              <div className="py-12 text-center space-y-3">
-                <Spin size="large" />
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  正在调用已配置的专业大模型，从资产质量底线、分红税收实得与估值安全垫进行客观推演...
-                </p>
-              </div>
-            ) : diagnoseResult ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
-                    <span>分析引擎: <strong className="text-slate-700 dark:text-slate-300">{diagnoseResult.model}</strong></span>
-                    {diagnoseResult.isAiGenerated ? (
-                      <Tag color="purple" className="text-[10px] m-0">大模型生成</Tag>
-                    ) : (
-                      <Tag color="blue" className="text-[10px] m-0">严谨量化专家规则</Tag>
-                    )}
+            {/* 诊断内容区域：平滑 Cross-Fade 动效与防高度抖动 */}
+            <AnimatePresence mode="wait">
+              {diagnoseLoading ? (
+                <motion.div
+                  key="skeleton"
+                  initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={{ duration: 0.18 }}
+                >
+                  <AiDiagnosisSkeleton />
+                </motion.div>
+              ) : diagnoseResult ? (
+                <motion.div
+                  key="result"
+                  initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={{ duration: 0.22 }}
+                  className="space-y-3"
+                >
+                  {/* 模型与生成时间栏 */}
+                  <div className="flex items-center justify-between text-xs px-3.5 py-2 bg-slate-50/80 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      </span>
+                      <span>分析引擎: <strong className="font-semibold text-slate-700 dark:text-slate-200">{diagnoseResult.model}</strong></span>
+                      {diagnoseResult.isAiGenerated ? (
+                        <Tag color="purple" className="text-[10px] m-0 rounded-md">大模型生成</Tag>
+                      ) : (
+                        <Tag color="blue" className="text-[10px] m-0 rounded-md">严谨量化专家规则</Tag>
+                      )}
+                    </div>
+                    <span className="font-mono text-[11px]">生成时间: {diagnoseResult.generatedAt}</span>
                   </div>
-                  <span>生成时间: {diagnoseResult.generatedAt}</span>
-                </div>
 
-                <div className="bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/50 rounded-xl p-4 text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-line font-normal">
-                  {diagnoseResult.diagnosis}
-                </div>
+                  {/* 结构化与去星号 Markdown 维度研报卡片（支持阶梯微弹簧进场） */}
+                  <AiDiagnosisView text={diagnoseResult.diagnosis} />
 
-                <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 rounded-xl text-[11px] text-amber-800 dark:text-amber-400 leading-normal flex items-start gap-1.5">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
-                  <span>
-                    客观合规提示：AI 诊断基于财报客观指标与宏观规则推演，仅供投资参考，不构成任何投资咨询或保本收益承诺。二级市场投资有风险，入市须谨慎。
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <Empty description="未能生成诊断结果" />
-            )}
+                  {/* 客观合规提示 */}
+                  <motion.div
+                    initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ ...SPRING.card, delay: prefersReducedMotion ? 0 : 0.3 }}
+                    className="p-3 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-900/40 rounded-xl text-[11px] text-amber-800/90 dark:text-amber-400/90 leading-relaxed flex items-start gap-2"
+                  >
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-500 mt-0.5" />
+                    <span>
+                      客观合规提示：AI 诊断基于财报客观指标与宏观规则推演，仅供投资参考，不构成任何投资咨询或保本收益承诺。二级市场投资有风险，入市须谨慎。
+                    </span>
+                  </motion.div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="empty"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="py-12"
+                >
+                  <Empty description="未能生成诊断结果" />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         )}
       </Modal>

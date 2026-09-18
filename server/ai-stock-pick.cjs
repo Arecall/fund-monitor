@@ -17,6 +17,7 @@
 const express = require('express');
 const axios = require('axios');
 const dbHelper = require('./db.cjs');
+const marketHelper = require('./market.cjs');
 const { encrypt, decrypt } = require('./crypto.cjs');
 const aiContext = require('./ai-context.cjs');
 const marketTime = require('./time.cjs');
@@ -872,7 +873,8 @@ router.get('/reports', async (req, res) => {
 
     const rows = await dbHelper.all(
       `SELECT r.id, r.trigger_type, r.markets, r.stock_count, r.strategy, r.model, r.status, r.error,
-              r.created_at, r.completed_at, COUNT(rec.id) as rec_count
+              r.created_at, r.completed_at, COUNT(rec.id) as rec_count,
+              GROUP_CONCAT(rec.name, '、') as stock_names
        FROM ai_stock_pick_reports r
        LEFT JOIN ai_stock_pick_recs rec ON r.id = rec.report_id
        WHERE r.user_id = ?
@@ -885,6 +887,7 @@ router.get('/reports', async (req, res) => {
     const reports = rows.map(r => ({
       ...r,
       markets: JSON.parse(r.markets || '[]'),
+      stock_names: r.stock_names || '',
     }));
 
     res.json({ reports, total, page, pageSize });
@@ -907,6 +910,35 @@ router.get('/reports/:id', async (req, res) => {
       [reportId, req.userId]
     );
 
+    // 并发拉取推荐股票的最新盘中实时行情报价（enrich: false，高速无阻塞）
+    const enrichedRecs = await Promise.all(
+      recs.map(async (rec) => {
+        try {
+          const quote = await marketHelper.getFundValuation(rec.code, 'stock', { enrich: false });
+          if (quote) {
+            const price = parseFloat(quote.gsz || quote.dwjz || 0);
+            const changePct = parseFloat(quote.gszzl || 0);
+            return {
+              ...rec,
+              realtimeQuote: {
+                price: Number.isFinite(price) && price > 0 ? price : null,
+                changePct: Number.isFinite(changePct) ? changePct : 0,
+                gztime: quote.gztime || null,
+                market: quote.market || rec.market,
+                currencyPrefix: quote.market === 'us' ? '$' : quote.market === 'hk' ? 'HK$' : '¥',
+              }
+            };
+          }
+        } catch {
+          // silent fallback
+        }
+        return {
+          ...rec,
+          realtimeQuote: null
+        };
+      })
+    );
+
     let parsedSnapshot = null;
     try {
       parsedSnapshot = JSON.parse(report.context_snapshot || '{}');
@@ -918,7 +950,7 @@ router.get('/reports/:id', async (req, res) => {
         markets: JSON.parse(report.markets || '[]'),
         summary: parsedSnapshot?.summary || '',
       },
-      recommendations: recs,
+      recommendations: enrichedRecs,
     });
   } catch (err) {
     res.status(500).json({ error: '获取报告详情失败: ' + err.message });

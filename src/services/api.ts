@@ -1079,6 +1079,13 @@ export interface AiStockRecommendation {
   reason_catalyst: string;
   risk_warning: string;
   in_candidate_pool: number;
+  realtimeQuote?: {
+    price: number | null;
+    changePct: number;
+    gztime?: string | null;
+    market?: string;
+    currencyPrefix?: string;
+  } | null;
 }
 
 export interface AiStockPickReport {
@@ -1093,6 +1100,7 @@ export interface AiStockPickReport {
   error?: string | null;
   summary?: string;
   rec_count?: number;
+  stock_names?: string;
   created_at: string;
   completed_at?: string | null;
 }

@@ -790,7 +790,11 @@ async function fetchAllBankQuotes() {
             try {
               const val = await marketHelper.getFundValuation(fCode, 'fund');
               if (val) {
-                const isClassC = fCode === '007467' || fCode === '001594' || fCode === '011531';
+                const name = val.name || '';
+                // 严谨动态正则：精准识别 A/C 份额（支持 "联接C", "C类", "易方达创业板ETF联接C" 等全市场规范）
+                const isClassC = /([cC]类?|联接[cC])$/i.test(name)
+                  || /([cC]类?|联接[cC])/i.test(name)
+                  || fCode === '007467' || fCode === '001594' || fCode === '011531';
                 const gszNum = parseFloat(val.gsz) || parseFloat(val.dwjz) || 0;
                 const gszzlNum = parseFloat(val.gszzl) || 0;
                 feederValuationMap.set(fCode, {
@@ -805,7 +809,8 @@ async function fetchAllBankQuotes() {
                   breakevenDays: 160,
                   breakevenAdvice: isClassC
                     ? '持有 ≤ 160天更优 (0申购费·满7天免赎)'
-                    : '持有 > 160天更优 (无销售服务费)'
+                    : '持有 > 160天更优 (长期无销售服务费)',
+                  penaltyNotice: '持仓<7天强制扣除1.5%惩罚性赎回费'
                 });
               }
             } catch {

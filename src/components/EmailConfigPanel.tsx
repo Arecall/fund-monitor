@@ -50,10 +50,10 @@ export function EmailConfigPanel({ isAdmin, currentUser, onToast }: EmailConfigP
           onClick={() => setOpen(true)}
           whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
           transition={SPRING.snap}
-          className="p-2 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer"
+          className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer flex items-center justify-center"
           aria-label="邮件配置"
         >
-          <Mail size={15} />
+          <Mail size={14} />
         </motion.button>
       </Tooltip>
 

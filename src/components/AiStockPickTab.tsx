@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   Button,
   Modal,
@@ -35,6 +36,8 @@ import {
   Trash2,
   LineChart,
   Target,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import {
   fetchAiSystemStatus,
@@ -59,7 +62,12 @@ import {
 interface AiStockPickTabProps {
   isAdmin?: boolean;
   currentUser?: string;
-  onOpenDetail?: (code: string, market: 'domestic' | 'hk' | 'us' | 'other') => void;
+  onOpenDetail?: (
+    code: string,
+    market: 'domestic' | 'hk' | 'us' | 'other',
+    kind?: 'fund' | 'stock',
+    initialData?: any
+  ) => void;
 }
 
 const STRATEGY_OPTIONS = [
@@ -72,7 +80,9 @@ const STRATEGY_OPTIONS = [
 ];
 
 const MODEL_PRESETS = [
-  { value: 'claude-3-7-sonnet-20250219', label: 'claude-3-7-sonnet-20250219 (推荐·强推理)' },
+  { value: 'gemini-3.8-flash', label: 'gemini-3.8-flash (Google 极速强推理推荐)' },
+  { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Google 旗舰多模态思考)' },
+  { value: 'claude-3-7-sonnet-20250219', label: 'claude-3-7-sonnet-20250219 (推荐·深度思考)' },
   { value: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022 (高精度)' },
   { value: 'claude-3-5-haiku-20241022', label: 'claude-3-5-haiku-20241022 (极速轻量)' },
   { value: 'claude-opus-4-5-20250501', label: 'claude-opus-4-5-20250501 (旗舰算力)' },
@@ -82,8 +92,56 @@ const MODEL_PRESETS = [
   { value: 'gpt-4o-mini', label: 'gpt-4o-mini (OpenAI 轻量极速)' },
 ];
 
+const SPRING = {
+  default: { type: 'spring' as const, bounce: 0, duration: 0.32 },
+  card: { type: 'spring' as const, bounce: 0.06, duration: 0.36 },
+  stagger: 0.06,
+};
+
+function AiStockRecommendationsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {[1, 2, 3, 4].map(i => (
+        <div
+          key={i}
+          className="apple-card p-5 flex flex-col justify-between gap-4 border border-[var(--hairline-border)] animate-pulse"
+        >
+          <div>
+            <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-xl bg-slate-200 dark:bg-slate-700" />
+                <div className="space-y-1.5">
+                  <div className="h-4 w-28 bg-slate-200 dark:bg-slate-700 rounded" />
+                  <div className="h-3 w-20 bg-slate-200/60 dark:bg-slate-700/60 rounded" />
+                </div>
+              </div>
+              <div className="space-y-1 text-right">
+                <div className="h-5 w-16 bg-slate-200 dark:bg-slate-700 rounded ml-auto" />
+                <div className="h-3 w-12 bg-slate-200/60 dark:bg-slate-700/60 rounded ml-auto" />
+              </div>
+            </div>
+            <div className="space-y-2.5">
+              {[1, 2, 3, 4].map(k => (
+                <div key={k} className="p-2.5 rounded-xl bg-slate-100/60 dark:bg-white/[0.02] border border-[var(--hairline-border)] space-y-1.5">
+                  <div className="h-3 w-24 bg-slate-200 dark:bg-slate-700 rounded" />
+                  <div className="h-3 w-full bg-slate-200/60 dark:bg-slate-700/60 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="pt-3 border-t border-[var(--hairline-border)] flex items-center justify-between">
+            <div className="h-7 w-24 rounded-full bg-slate-200 dark:bg-slate-700" />
+            <div className="h-7 w-20 rounded-full bg-slate-200 dark:bg-slate-700" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail }: AiStockPickTabProps) {
   const isUserAdmin = isAdmin || currentUser.toLowerCase() === 'admin';
+  const prefersReducedMotion = useReducedMotion();
 
   // System AI Status & Admin Config
   const [systemStatus, setSystemStatus] = useState<AiSystemStatus | null>(null);
@@ -433,26 +491,58 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
               reports.map(report => {
                 const isSelected = selectedReportId === report.id;
                 const triggerLabel =
-                  report.trigger_type === 'pre_market' ? '盘前自动'
-                    : report.trigger_type === 'close' ? '收盘前1h' : '手动分析';
+                  report.trigger_type === 'pre_market' ? '盘前'
+                    : report.trigger_type === 'close' ? '尾盘' : '手动';
+
+                const stratObj = STRATEGY_OPTIONS.find(s => s.value === report.strategy);
+                const strategyShort = stratObj ? stratObj.label.split(' ')[1] || stratObj.label : '';
+
+                // 核心标的标题：若有推荐股票名称则展示股票名称，否则展示策略与只数
+                const displayTitle = report.stock_names && report.stock_names.trim()
+                  ? report.stock_names
+                  : strategyShort
+                  ? `【${strategyShort}】精选 ${report.rec_count || report.stock_count || 3} 只标的`
+                  : `推荐 ${report.rec_count || report.stock_count || 3} 只精选标的`;
+
+                const marketsLabel = report.markets.map(m => (m === 'us' ? '美股' : m === 'hk' ? '港股' : 'A股')).join('+');
+
                 return (
                   <div
                     key={report.id}
                     onClick={() => setSelectedReportId(report.id)}
-                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col gap-1.5 ${
+                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col gap-2 relative overflow-hidden ${
                       isSelected
-                        ? 'border-blue-500/80 bg-blue-50/70 dark:bg-blue-950/40 shadow-sm'
-                        : 'border-[var(--hairline-border)] bg-white/60 dark:bg-white/[0.02] hover:bg-slate-50 dark:hover:bg-white/5'
+                        ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/50 shadow-sm ring-1 ring-blue-500/30'
+                        : 'border-[var(--hairline-border)] bg-white/60 dark:bg-white/[0.02] hover:bg-slate-50 dark:hover:bg-white/5 hover:border-slate-300 dark:hover:border-slate-700'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <Tag
-                        color={report.trigger_type === 'manual' ? 'blue' : 'purple'}
-                        className="text-[10px] rounded-full px-2 m-0 font-medium"
-                      >
-                        {triggerLabel}
-                      </Tag>
-                      <div className="flex items-center gap-1">
+                    {/* 选中指示高亮边条 */}
+                    {isSelected && (
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 rounded-r" />
+                    )}
+
+                    {/* 卡片顶行：策略标签 + 触发方式 + 市场 + 时间与删除 */}
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {strategyShort && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100/80 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                            {strategyShort}
+                          </span>
+                        )}
+                        <Tag
+                          color={report.trigger_type === 'manual' ? 'blue' : 'purple'}
+                          className="text-[9px] rounded px-1.5 py-0 m-0 font-medium"
+                        >
+                          {triggerLabel}
+                        </Tag>
+                        {marketsLabel && (
+                          <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.2 rounded">
+                            {marketsLabel}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
                         <span className="text-[10px] text-slate-400 font-mono">
                           {report.created_at.slice(5, 16)}
                         </span>
@@ -468,15 +558,22 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                             type="text"
                             size="small"
                             onClick={(e) => e.stopPropagation()}
-                            icon={<Trash2 size={11} className="text-slate-300 hover:text-red-500" />}
+                            icon={<Trash2 size={11} className="text-slate-300 hover:text-red-500 transition-colors" />}
                             className="p-0.5 h-auto"
                           />
                         </Popconfirm>
                       </div>
                     </div>
-                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-between">
-                      <span>推荐 {report.rec_count || report.stock_count || 5} 只标的</span>
-                      <span className="text-[10px] text-slate-400 font-mono">{report.markets.join('/')}</span>
+
+                    {/* 卡片主标题：核心推荐标的名称（彻底解决标题无法区分痛点！） */}
+                    <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-snug line-clamp-1">
+                      {displayTitle}
+                    </div>
+
+                    {/* 卡片副信息：标的数量提示 */}
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800/60">
+                      <span>甄选 {report.rec_count || report.stock_count || 3} 只标的</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-medium text-[10px]">查看研报 →</span>
                     </div>
                   </div>
                 );
@@ -487,175 +584,265 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
         {/* Right Column: Recommendations Stream */}
         <div className="lg:col-span-3 flex flex-col gap-4">
-          {loadingReportDetail ? (
-            <div className="apple-card p-16 flex flex-col items-center justify-center gap-3">
-              <Spin size="large" tip="正在加载推荐研报..." />
-            </div>
-          ) : !currentReport ? (
-            <div className="apple-card p-12 text-center flex flex-col items-center justify-center gap-3">
-              <Empty description="暂未选择或生成分析报告" />
-              <Button type="primary" onClick={handleStartAnalysis} className="rounded-full text-xs font-semibold mt-2">
-                立即生成精选股票报告
-              </Button>
-            </div>
-          ) : (
-            <>
-              {/* Report Summary Card */}
-              <section className="apple-card p-5 bg-gradient-to-br from-white/90 to-slate-50/60 dark:from-[#1c1c1e] dark:to-[#161618]">
-                <div className="flex items-center justify-between flex-wrap gap-2 mb-3 pb-2 border-b border-[var(--hairline-border)]">
-                  <div className="flex items-center gap-2">
-                    <Target size={16} className="text-blue-500" />
-                    <h3 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
-                      投资策略研判与盘面综述
-                    </h3>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
-                    <span>模型: {currentReport.model}</span>
-                    <span>·</span>
-                    <span>{currentReport.created_at}</span>
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-medium bg-slate-100/50 dark:bg-white/5 p-3.5 rounded-xl border border-[var(--hairline-border)]">
-                  {currentReport.summary || 'AI 综合全网宏观大盘走势、领涨板块动向及资金偏好，已从真实候选池中甄选出如下优质标的：'}
-                </p>
-              </section>
-
-              {/* Recommendations Cards Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {recommendations.map(rec => {
-                  const isAdded = !!addedMap[rec.code];
-                  const marketLabel = rec.market === 'us' ? '美股' : rec.market === 'hk' ? '港股' : 'A股';
-                  const marketTagColor = rec.market === 'us' ? 'purple' : rec.market === 'hk' ? 'cyan' : 'blue';
-                  const capCategory = rec.cap_category || '中盘成长';
-                  const capTagColor =
-                    capCategory === '大盘蓝筹' ? 'blue'
-                    : capCategory === '中盘成长' ? 'purple'
-                    : capCategory === '小盘潜力' ? 'orange'
-                    : capCategory === '专精特新' ? 'green'
-                    : 'cyan';
-
-                  return (
-                    <div
-                      key={rec.code}
-                      className="apple-card p-5 flex flex-col justify-between gap-4 border border-[var(--hairline-border)] hover:border-blue-300/60 dark:hover:border-blue-700/60 transition-all shadow-sm group"
-                    >
-                      <div>
-                        {/* Card Header: Rank, Name, Code, Market, Cap Category, Confidence */}
-                        <div className="flex items-start justify-between gap-2 mb-3">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 font-mono font-bold text-xs flex items-center justify-center border border-blue-200/50 dark:border-blue-800/40">
-                              #{rec.rank}
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                                  {rec.name}
-                                </h4>
-                                <Tag color={marketTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
-                                  {marketLabel}
-                                </Tag>
-                                <Tag color={capTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
-                                  {capCategory}
-                                </Tag>
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                <span className="text-[11px] font-mono text-slate-400">{rec.code}</span>
-                                {rec.growth_theme && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded-md border border-[var(--hairline-border)]">
-                                    <Zap size={10} className="text-amber-500" />
-                                    {rec.growth_theme}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <Tooltip title="AI 综合技术面与基本面量化置信度评分">
-                            <div className="text-right">
-                              <span className="text-[10px] text-slate-400 block font-medium">置信度</span>
-                              <span className="text-xs font-bold font-mono text-indigo-600 dark:text-indigo-400">
-                                {rec.confidence}%
-                              </span>
-                            </div>
-                          </Tooltip>
-                        </div>
-
-                        {/* Four Dimensions Logic */}
-                        <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300">
-                          {/* 1. Fundamental */}
-                          <div className="bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)]">
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 mb-1">
-                              <Layers size={13} className="text-blue-500" /> 基本面与行业景气
-                            </div>
-                            <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
-                              {rec.reason_fundamental}
-                            </p>
-                          </div>
-
-                          {/* 2. Technical */}
-                          <div className="bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)]">
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 mb-1">
-                              <TrendingUp size={13} className="text-emerald-500" /> 技术形态与量价趋势
-                            </div>
-                            <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
-                              {rec.reason_technical}
-                            </p>
-                          </div>
-
-                          {/* 3. Catalyst */}
-                          <div className="bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)]">
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 mb-1">
-                              <Flame size={13} className="text-amber-500" /> 潜在催化剂与动向
-                            </div>
-                            <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
-                              {rec.reason_catalyst}
-                            </p>
-                          </div>
-
-                          {/* 4. Risk Warning */}
-                          <div className="bg-red-50/60 dark:bg-red-950/20 p-2.5 rounded-xl border border-red-200/50 dark:border-red-900/40 text-red-700 dark:text-red-300">
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold mb-1">
-                              <AlertTriangle size={13} className="text-red-500" /> 风险警示
-                            </div>
-                            <p className="text-[11px] leading-relaxed opacity-90">
-                              {rec.risk_warning}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Card Footer Actions */}
-                      <div className="flex items-center justify-between gap-2 pt-3 border-t border-[var(--hairline-border)]">
-                        <Button
-                          type="default"
-                          size="small"
-                          icon={<LineChart size={13} />}
-                          onClick={() => onOpenDetail?.(rec.code, rec.market)}
-                          className="rounded-full text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 cursor-pointer"
-                        >
-                          查看分时/K线
-                        </Button>
-
-                        <Button
-                          type={isAdded ? 'dashed' : 'primary'}
-                          size="small"
-                          icon={isAdded ? <CheckCircle2 size={13} /> : <Plus size={13} />}
-                          disabled={isAdded}
-                          onClick={() => handleAddToWatchlist(rec)}
-                          className={`rounded-full text-xs font-semibold cursor-pointer ${
-                            isAdded ? 'text-emerald-600' : 'bg-blue-600 hover:bg-blue-500'
-                          }`}
-                        >
-                          {isAdded ? '已在自选' : '加入自选'}
-                        </Button>
-                      </div>
+          <AnimatePresence mode="wait">
+            {loadingReportDetail ? (
+              <motion.div
+                key="skeleton"
+                initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+                transition={{ duration: 0.18 }}
+              >
+                <AiStockRecommendationsSkeleton />
+              </motion.div>
+            ) : !currentReport ? (
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                className="apple-card p-12 text-center flex flex-col items-center justify-center gap-3"
+              >
+                <Empty description="暂未选择或生成分析报告" />
+                <Button type="primary" onClick={handleStartAnalysis} className="rounded-full text-xs font-semibold mt-2">
+                  立即生成精选股票报告
+                </Button>
+              </motion.div>
+            ) : (
+              <motion.div
+                key={currentReport.id}
+                initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+                transition={{ duration: 0.22 }}
+                className="flex flex-col gap-4"
+              >
+                {/* Report Summary Card with Strategy Pills */}
+                <section className="apple-card p-5 bg-gradient-to-br from-white/95 via-slate-50/70 to-blue-50/30 dark:from-[#1c1c1e] dark:via-[#18181a] dark:to-blue-950/20 shadow-xs border border-[var(--hairline-border)]">
+                  <div className="flex items-center justify-between flex-wrap gap-2 mb-3 pb-2.5 border-b border-[var(--hairline-border)]">
+                    <div className="flex items-center gap-2">
+                      <Target size={16} className="text-blue-500" />
+                      <h3 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
+                        投资策略研判与盘面综述
+                      </h3>
                     </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+                    <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+                      <span>生成时间: {currentReport.created_at}</span>
+                    </div>
+                  </div>
+
+                  {/* 核心策略与市场特征胶囊栏（首屏外显） */}
+                  {(() => {
+                    const strategyObj = STRATEGY_OPTIONS.find(s => s.value === currentReport.strategy);
+                    const strategyText = strategyObj ? strategyObj.label.split(' ')[1] || strategyObj.label : (currentReport.strategy || '综合均衡');
+                    const triggerText = currentReport.trigger_type === 'pre_market'
+                      ? '盘前自动分析'
+                      : currentReport.trigger_type === 'close'
+                      ? '收盘前1h精选'
+                      : '即时手动选股';
+
+                    return (
+                      <div className="flex items-center gap-2 flex-wrap mb-3">
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/50 flex items-center gap-1">
+                          <span>⚖️</span>
+                          <span>策略: {strategyText}</span>
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200/60 dark:border-purple-800/50 flex items-center gap-1">
+                          <span>⚡</span>
+                          <span>{triggerText}</span>
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 font-mono">
+                          🎯 精选 {recommendations.length} 只标的
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50 font-mono flex items-center gap-1">
+                          <span>🤖</span>
+                          <span>{currentReport.model}</span>
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed font-normal bg-white/70 dark:bg-white/[0.03] p-3.5 rounded-xl border border-[var(--hairline-border)]">
+                    {currentReport.summary || 'AI 综合全网宏观大盘走势、领涨板块动向及资金偏好，已从真实候选池中甄选出如下优质标的：'}
+                  </p>
+                </section>
+
+                {/* Recommendations Cards Grid (Staggered Spring Animation) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {recommendations.map((rec, idx) => {
+                    const isAdded = !!addedMap[rec.code];
+                    const marketLabel = rec.market === 'us' ? '美股' : rec.market === 'hk' ? '港股' : 'A股';
+                    const marketTagColor = rec.market === 'us' ? 'purple' : rec.market === 'hk' ? 'cyan' : 'blue';
+                    const capCategory = rec.cap_category || '中盘成长';
+                    const capTagColor =
+                      capCategory === '大盘蓝筹' ? 'blue'
+                      : capCategory === '中盘成长' ? 'purple'
+                      : capCategory === '小盘潜力' ? 'orange'
+                      : capCategory === '专精特新' ? 'green'
+                      : 'cyan';
+
+                    const hasRealtime = rec.realtimeQuote && rec.realtimeQuote.price !== null;
+                    const isPriceUp = (rec.realtimeQuote?.changePct ?? 0) > 0;
+                    const isPriceDown = (rec.realtimeQuote?.changePct ?? 0) < 0;
+
+                    return (
+                      <motion.div
+                        key={rec.code}
+                        initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          ...SPRING.card,
+                          delay: prefersReducedMotion ? 0 : idx * SPRING.stagger,
+                        }}
+                        className="apple-card p-5 flex flex-col justify-between gap-4 border border-[var(--hairline-border)] hover:border-blue-400/60 dark:hover:border-blue-600/60 transition-all shadow-sm hover:shadow-md group"
+                      >
+                        <div>
+                          {/* Card Header: Rank, Name, Code, Market, Real-time Price & Trend */}
+                          <div className="flex items-start justify-between gap-2 mb-3.5">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 font-mono font-bold text-xs flex items-center justify-center border border-blue-200/60 dark:border-blue-800/50 shrink-0">
+                                #{rec.rank}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <h4 className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
+                                    {rec.name}
+                                  </h4>
+                                  <Tag color={marketTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
+                                    {marketLabel}
+                                  </Tag>
+                                  <Tag color={capTagColor} className="text-[10px] font-bold rounded-md px-1.5 py-0 m-0">
+                                    {capCategory}
+                                  </Tag>
+                                </div>
+                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                  <span className="text-[11px] font-mono text-slate-400">{rec.code}</span>
+                                  {rec.growth_theme && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded-md border border-[var(--hairline-border)]">
+                                      <Zap size={10} className="text-amber-500" />
+                                      {rec.growth_theme}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* 右上角：实时最新股价与涨跌幅外显（无脱节感知） */}
+                            <div className="text-right shrink-0">
+                              {hasRealtime ? (
+                                <div>
+                                  <div className="font-mono font-bold text-base sm:text-lg text-slate-900 dark:text-white leading-tight">
+                                    {rec.realtimeQuote!.currencyPrefix || (rec.market === 'us' ? '$' : rec.market === 'hk' ? 'HK$' : '¥')}
+                                    {rec.realtimeQuote!.price! < 5.0 ? rec.realtimeQuote!.price!.toFixed(3) : rec.realtimeQuote!.price!.toFixed(2)}
+                                  </div>
+                                  <div className={`font-mono text-xs font-semibold flex items-center justify-end gap-0.5 mt-0.5 ${
+                                    isPriceUp ? 'text-rose-500' : isPriceDown ? 'text-emerald-500' : 'text-slate-400'
+                                  }`}>
+                                    {isPriceUp ? <ArrowUpRight size={13} /> : isPriceDown ? <ArrowDownRight size={13} /> : null}
+                                    <span>{isPriceUp ? '+' : ''}{rec.realtimeQuote!.changePct.toFixed(2)}%</span>
+                                  </div>
+                                  <div className="text-[9px] text-slate-400 mt-0.5">
+                                    置信度 <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">{rec.confidence}%</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-xl text-center">
+                                  <span className="text-[9px] text-slate-400 block">AI置信度</span>
+                                  <span className="text-xs font-bold font-mono text-indigo-600 dark:text-indigo-400">{rec.confidence}%</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Four Dimensions Logic */}
+                          <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                            {/* 1. Fundamental */}
+                            <div className="bg-blue-50/30 dark:bg-blue-950/20 p-2.5 rounded-xl border border-blue-100/60 dark:border-blue-900/40">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 mb-1">
+                                <Layers size={13} className="text-blue-500" /> 基本面与行业景气
+                              </div>
+                              <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                                {rec.reason_fundamental}
+                              </p>
+                            </div>
+
+                            {/* 2. Technical */}
+                            <div className="bg-emerald-50/30 dark:bg-emerald-950/20 p-2.5 rounded-xl border border-emerald-100/60 dark:border-emerald-900/40">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 mb-1">
+                                <TrendingUp size={13} className="text-emerald-500" /> 技术形态与量价趋势
+                              </div>
+                              <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                                {rec.reason_technical}
+                              </p>
+                            </div>
+
+                            {/* 3. Catalyst */}
+                            <div className="bg-amber-50/30 dark:bg-amber-950/20 p-2.5 rounded-xl border border-amber-100/60 dark:border-amber-900/40">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300 mb-1">
+                                <Flame size={13} className="text-amber-500" /> 潜在催化剂与动向
+                              </div>
+                              <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                                {rec.reason_catalyst}
+                              </p>
+                            </div>
+
+                            {/* 4. Risk Warning */}
+                            <div className="bg-red-50/50 dark:bg-red-950/25 p-2.5 rounded-xl border border-red-200/60 dark:border-red-900/40 text-red-700 dark:text-red-300">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold mb-1">
+                                <AlertTriangle size={13} className="text-red-500" /> 风险警示
+                              </div>
+                              <p className="text-[11px] leading-relaxed opacity-90">
+                                {rec.risk_warning}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Card Footer Actions (带 0ms 乐观行情顺滑呼出抽屉) */}
+                        <div className="flex items-center justify-between gap-2 pt-3 border-t border-[var(--hairline-border)]">
+                          <Button
+                            type="default"
+                            size="small"
+                            icon={<LineChart size={13} className="text-blue-500" />}
+                            onClick={() => onOpenDetail?.(
+                              rec.code,
+                              rec.market,
+                              'stock',
+                              {
+                                name: rec.name,
+                                dwjz: String(rec.realtimeQuote?.price || '10.00'),
+                                gsz: String(rec.realtimeQuote?.price || '10.00'),
+                                gszzl: String(rec.realtimeQuote?.changePct || '0.00'),
+                                market: rec.market,
+                                gztime: rec.realtimeQuote?.gztime || new Date().toLocaleTimeString('zh-CN', { hour12: false })
+                              }
+                            )}
+                            className="rounded-full text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                          >
+                            查看分时/K线
+                          </Button>
+
+                          <Button
+                            type={isAdded ? 'dashed' : 'primary'}
+                            size="small"
+                            icon={isAdded ? <CheckCircle2 size={13} /> : <Plus size={13} />}
+                            disabled={isAdded}
+                            onClick={() => handleAddToWatchlist(rec)}
+                            className={`rounded-full text-xs font-semibold cursor-pointer ${
+                              isAdded ? 'text-emerald-600' : 'bg-blue-600 hover:bg-blue-500'
+                            }`}
+                          >
+                            {isAdded ? '已在自选' : '加入自选'}
+                          </Button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

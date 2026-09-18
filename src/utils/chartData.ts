@@ -79,25 +79,112 @@ function hashCode(s: string) {
  * 场外基金分时专用：无真实分钟 K 线，用真实锚点（昨收/今开 → 当前实时估值）
  * 生成等时间间隔的直线。不做随机游走插值——中间值只有线性趋势，
  * 避免把伪造的随机抖动误读为真实盘中走势。
+ *
+ * 核心设计（遵循金融交易时钟与视觉单调性原则）：
+ * 1. 严格按照各市场真实交易时间（Trading Minutes）步进，跳过午间休市（A股 11:30~13:00 / 港股 12:00~13:00）；
+ * 2. 避免在休市期间堆积虚拟价格点，彻底消除 X=50% 午休轴线处垂直跳变形成的“直角断崖与分叉多边形”；
+ * 3. 保证 X 坐标与走势单调递增，平滑衔接。
  */
 function buildFundIntradayLine(
   startValue: number,
   endValue: number,
   startTs: number,
-  endTs: number
+  endTs: number,
+  market: FundMarket = 'domestic'
 ): ChartPoint[] {
-  const minutes = Math.max(2, Math.round((endTs - startTs) / 60_000));
-  const n = Math.min(minutes, 480);
+  // 1. 无午休市场（美股 us）或开盘前/时间极短异常情况
+  if (market === 'us' || endTs <= startTs) {
+    const minutes = Math.max(2, Math.round((endTs - startTs) / 60_000));
+    const n = Math.min(minutes, 390);
+    const pts: ChartPoint[] = [];
+    for (let i = 0; i < n; i++) {
+      const ratio = i / (n - 1);
+      pts.push({
+        t: startTs + ratio * (endTs - startTs),
+        v: startValue + (endValue - startValue) * ratio,
+        real: i === 0,
+      });
+    }
+    pts[0] = { t: startTs, v: startValue, real: true };
+    pts[pts.length - 1] = { t: endTs, v: endValue, real: false };
+    return pts;
+  }
+
+  // 2. 存在午休的市场（A 股 domestic / other: 11:30~13:00，港股 hk: 12:00~13:00）
+  const startDate = new Date(startTs);
+  const y = startDate.getFullYear();
+  const m = startDate.getMonth();
+  const d = startDate.getDate();
+
+  const isHk = market === 'hk';
+  const morningEndTs = new Date(y, m, d, isHk ? 12 : 11, isHk ? 0 : 30, 0).getTime();
+  const afternoonStartTs = new Date(y, m, d, 13, 0, 0).getTime();
+
+  // 若时段完全在上午休市前结束
+  if (endTs <= morningEndTs) {
+    const minutes = Math.max(2, Math.round((endTs - startTs) / 60_000));
+    const pts: ChartPoint[] = [];
+    for (let i = 0; i < minutes; i++) {
+      const r = i / (minutes - 1);
+      pts.push({
+        t: startTs + r * (endTs - startTs),
+        v: startValue + (endValue - startValue) * r,
+        real: i === 0,
+      });
+    }
+    pts[0] = { t: startTs, v: startValue, real: true };
+    pts[pts.length - 1] = { t: endTs, v: endValue, real: false };
+    return pts;
+  }
+
+  // 若时段完全在下午开市后开始
+  if (startTs >= afternoonStartTs) {
+    const minutes = Math.max(2, Math.round((endTs - startTs) / 60_000));
+    const pts: ChartPoint[] = [];
+    for (let i = 0; i < minutes; i++) {
+      const r = i / (minutes - 1);
+      pts.push({
+        t: startTs + r * (endTs - startTs),
+        v: startValue + (endValue - startValue) * r,
+        real: i === 0,
+      });
+    }
+    pts[0] = { t: startTs, v: startValue, real: true };
+    pts[pts.length - 1] = { t: endTs, v: endValue, real: false };
+    return pts;
+  }
+
+  // 跨越午休时段（如 09:30 至下午 14:07）：
+  // 计算上午已交易分钟数与下午已交易分钟数
+  const morningMinutes = Math.max(1, Math.round((morningEndTs - startTs) / 60_000));
+  const effectiveEndTs = Math.max(afternoonStartTs, endTs);
+  const afternoonMinutes = Math.max(1, Math.round((effectiveEndTs - afternoonStartTs) / 60_000));
+  const totalTradingMinutes = morningMinutes + afternoonMinutes;
+
   const pts: ChartPoint[] = [];
-  for (let i = 0; i < n; i++) {
-    const ratio = i / (n - 1);
+  // 上午收盘时对应的线性价格比例
+  const midValue = startValue + (endValue - startValue) * (morningMinutes / totalTradingMinutes);
+
+  // 1. 生成上午交易点（09:30 -> 11:30）
+  for (let i = 0; i <= morningMinutes; i++) {
+    const r = i / morningMinutes;
     pts.push({
-      t: startTs + ratio * (endTs - startTs),
-      v: startValue + (endValue - startValue) * ratio,
+      t: startTs + i * 60_000,
+      v: startValue + (midValue - startValue) * r,
       real: i === 0,
     });
   }
-  // 起点为真实昨收/今开；终点为当前实时估值（real:false → 触发右侧脉冲动画）
+
+  // 2. 生成下午交易点（13:00 -> 14:07，跳过 11:30~13:00 休市空档）
+  for (let i = 1; i <= afternoonMinutes; i++) {
+    const r = i / afternoonMinutes;
+    pts.push({
+      t: afternoonStartTs + i * 60_000,
+      v: midValue + (endValue - midValue) * r,
+      real: false,
+    });
+  }
+
   pts[0] = { t: startTs, v: startValue, real: true };
   pts[pts.length - 1] = { t: endTs, v: endValue, real: false };
   return pts;
@@ -450,10 +537,10 @@ export function minuteResponseToFeed(response: StockMinuteResponse | null, baseA
 /**
  * 过滤实时打点/分钟 K 线中由估值方法突变引起的孤立针状毛刺（Spike Outliers）与跨量级脏数据
  */
-function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorValue?: number, isStock = false): ChartPoint[] {
+function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 2.5, anchorValue?: number, isStock = false): ChartPoint[] {
   if (!points || points.length < 3) return points;
   let candidatePoints = points;
-  const maxEnvelope = isStock ? 1.5 : 0.18;
+  const maxEnvelope = isStock ? 1.5 : 0.30;
   if (anchorValue && anchorValue > 0) {
     candidatePoints = points.filter(p => Math.abs(p.v - anchorValue) / anchorValue <= maxEnvelope);
     if (candidatePoints.length < 2) return [];
@@ -486,10 +573,10 @@ function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorVal
         continue; // 过滤中间孤立针状 Spike
       }
     } else if (prev && !next) {
-      // 尾部针状毛刺检测：末点相比倒数第二点发生 > 1.5% 的离群突变
+      // 尾部针状毛刺检测：末点相比倒数第二点发生极端离群突变时过滤（尾部容差放宽至 1.5 倍）
       const prevDiff = Math.abs((curr.v - prev.v) / prev.v) * 100;
-      if (prevDiff > thresholdPct) {
-        continue; // 过滤末尾突变点
+      if (prevDiff > thresholdPct * 1.5) {
+        continue; // 过滤末尾极端突变点
       }
     }
 
@@ -506,7 +593,27 @@ function filterSpikeOutliers(points: ChartPoint[], thresholdPct = 1.5, anchorVal
  * 2. 保证一阶导数 C1 连续，呈现如富途牛牛、雪球、同花顺般丝滑自然的高级流体曲线形态；
  * 3. 完美兼容非均匀采样点与稀疏快照打点，无任何锯齿或伪震荡。
  */
-export function buildMonotoneSplinePath(pts: { x: number; y: number }[]): string {
+export function buildMonotoneSplinePath(rawPts: { x: number; y: number }[]): string {
+  if (!rawPts || rawPts.length < 2) return '';
+
+  // 0. 严格 X 轴单调去重防护：仅过滤合并水平增量 dx <= 0.001 的垂直重叠点与时间回退点，
+  //    彻底根除切线斜率无穷大导致的样条曲线自交回折、分叉重叠与垂直断层，同时确保高密度点完整保留
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 0; i < rawPts.length; i++) {
+    const cur = rawPts[i];
+    if (!Number.isFinite(cur.x) || !Number.isFinite(cur.y)) continue;
+    if (pts.length === 0) {
+      pts.push(cur);
+      continue;
+    }
+    const last = pts[pts.length - 1];
+    if (cur.x <= last.x + 0.001) {
+      pts[pts.length - 1] = cur;
+    } else {
+      pts.push(cur);
+    }
+  }
+
   if (pts.length < 2) return '';
   if (pts.length === 2) {
     return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)} L ${pts[1].x.toFixed(2)} ${pts[1].y.toFixed(2)}`;
@@ -754,18 +861,26 @@ export function buildSeries(
           if (rawPoints.length >= 2) {
             isRealSnapshot = !isProxyQdiiTrend;
           }
-          // 末尾追加"当前实时 tick"（仅在实时盘中且当前估值与末点无暴涨暴跌异动离群时追加）
+          // 根据金融品种（股票主板/双创/港美股 vs 基金/ETF）动态确定容差阈值，杜绝真实尾盘异动被误杀
+          const spikeThreshold = isStock
+            ? (market === 'us' || market === 'hk' ? 10.0 : 6.0)
+            : (market === 'us' || market === 'hk' ? 4.0 : 2.5);
+          const maxAppendDevPct = isStock
+            ? (market === 'us' || market === 'hk' ? 12.0 : 8.0)
+            : (market === 'us' || market === 'hk' ? 5.0 : 3.0);
+
+          // 末尾追加"当前实时 tick"（仅在实时盘中且当前估值在合理波动容差内时追加）
           if (rawPoints.length > 0) {
             const last = rawPoints[rawPoints.length - 1];
             if (last.t < endTs && current > 0 && current !== last.v) {
               const devPct = Math.abs((current - last.v) / last.v) * 100;
-              // 盘中实时更新且偏离不超过 1.5% 时追加；闭市或白天占位估值跳跃时跳过
-              if (now < endTs && devPct <= 1.5) {
+              // 盘中实时更新且偏离不超过自适应阈值时追加；闭市或白天占位估值跳跃时跳过
+              if (now < endTs && devPct <= maxAppendDevPct) {
                 rawPoints.push({ t: endTs, v: current, volume: 0, turnover: 0, real: false });
               }
             }
           }
-          points = filterSpikeOutliers(rawPoints, 1.5, startValue, isStock);
+          points = filterSpikeOutliers(rawPoints, spikeThreshold, startValue, isStock);
           if (isProxyQdiiTrend) {
             points = reconcileProxyTrendToQuote(points, previous, current);
           }
@@ -776,7 +891,7 @@ export function buildSeries(
         // 过滤后为空（快照时间在 session 窗口外，如 QDII 基金白天估值 vs 美股夜间 session，或被安全网拦截的污染数据）
         // 无法重建真实走势，降级为诚实直线
         if (points.length === 0) {
-          points = buildFundIntradayLine(startValue, current, startTs, endTs);
+          points = buildFundIntradayLine(startValue, current, startTs, endTs, market);
         }
       } else {
         // 无真实分钟数据时的兜底：
@@ -797,7 +912,7 @@ export function buildSeries(
             points[points.length - 1] = { t: endTs, v: current, real: true };
           }
         } else {
-          points = buildFundIntradayLine(startValue, current, startTs, endTs);
+          points = buildFundIntradayLine(startValue, current, startTs, endTs, market);
         }
       }
     }

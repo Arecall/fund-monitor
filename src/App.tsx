@@ -54,6 +54,7 @@ import {
 import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
 import { QuoteSourceBadge } from './components/QuoteSourceBadge';
 import { Sparkline } from './components/Sparkline';
+import { QuantLogo } from './components/QuantLogo';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
@@ -767,25 +768,6 @@ function App() {
 
   const [detailOverrideMap, setDetailOverrideMap] = useState<Record<string, { kind: 'fund' | 'stock'; market: string }>>({});
 
-  const handleAiOpenDetail = useCallback(async (
-    code: string,
-    market: 'domestic' | 'hk' | 'us' | 'other',
-    kind: 'fund' | 'stock' = 'stock'
-  ) => {
-    setDetailOverrideMap(prev => ({ ...prev, [code]: { kind, market } }));
-    if (!fundsData[code]) {
-      try {
-        const val = await fetchFundValuation(code, kind, { enrich: true });
-        if (val) {
-          setFundsData(prev => ({ ...prev, [code]: val }));
-        }
-      } catch (e) {
-        console.warn('获取即时行情失败:', e);
-      }
-    }
-    setSelectedFundCode(code);
-  }, [fundsData]);
-
   /* ---------- UI state ---------- */
   const [newCode, setNewCode] = useState('');
   const [listedEtfPrompt, setListedEtfPrompt] = useState<{ code: string; message: string } | null>(null);
@@ -878,6 +860,51 @@ function App() {
       capturedAt: capturedAt ?? incoming.capturedAt ?? Date.now(),
     } as FundValuation;
   }, []);
+
+  const handleAiOpenDetail = useCallback(async (
+    code: string,
+    market: 'domestic' | 'hk' | 'us' | 'other',
+    kind: 'fund' | 'stock' = 'stock',
+    initialData?: any
+  ) => {
+    setDetailOverrideMap(prev => ({ ...prev, [code]: { kind, market } }));
+
+    // 1. 若本地尚无该标的行情缓存，立即基于传入的基础信息写入乐观占位，
+    //    确保右侧抽屉能够在 0ms 瞬间启动丝滑滑入动画，彻底消除等待网络请求期间的空档停滞
+    if (!fundsDataRef.current[code]) {
+      const fallbackVal: FundValuation = {
+        fundcode: code,
+        name: initialData?.name || code,
+        jzrq: new Date().toISOString().slice(0, 10),
+        dwjz: String(initialData?.price || initialData?.dwjz || '1.0000'),
+        gsz: String(initialData?.price || initialData?.gsz || '1.0000'),
+        gszzl: String(initialData?.changePct || initialData?.gszzl || '0.00'),
+        gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        market,
+        ...(initialData || {}),
+      } as FundValuation;
+      fundsDataRef.current = { ...fundsDataRef.current, [code]: fallbackVal };
+      setFundsData(prev => ({ ...prev, [code]: fallbackVal }));
+    }
+
+    // 2. 0ms 瞬间激活 selectedFundCode，启动抽屉展开动效
+    setSelectedFundCode(code);
+    setIsDetailExpanded(false);
+
+    // 3. 异步并发拉取完整扩展行情（enrich: true），拉取成功后静默无缝更新
+    try {
+      const val = await fetchFundValuation(code, kind, { enrich: true });
+      if (val) {
+        setFundsData(prev => {
+          const merged = mergeValuation(prev[code], val);
+          fundsDataRef.current = { ...fundsDataRef.current, [code]: merged };
+          return { ...prev, [code]: merged };
+        });
+      }
+    } catch (e) {
+      console.warn('获取即时行情失败:', e);
+    }
+  }, [mergeValuation]);
 
   // 详情的实时价格由 SSE、股票分钟线由 FundDetailPanel 自己的 10s 定时器负责。
   // 历史净值/基金资料/重仓属于低频数据，仅在首次打开或客户端 TTL 到期后刷新。
@@ -2241,9 +2268,11 @@ function App() {
       {/* Top navigation — Frosted Glass material */}
       <nav className="apple-navbar sticky top-0 z-40 px-3 py-2.5 md:px-6 md:py-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 md:gap-6 shrink-0">
-          <h1 className="text-base md:text-lg font-semibold tracking-tight apple-display-heading flex items-center gap-1.5 whitespace-nowrap shrink-0">
-            <span aria-hidden className="text-lg">📊</span>
-            <span className="hidden md:inline">全球基金监控终端</span>
+          <h1 className="text-base md:text-lg font-bold tracking-tight apple-display-heading flex items-center gap-2.5 whitespace-nowrap shrink-0">
+            <QuantLogo size={28} className="shadow-xs" />
+            <span className="hidden md:inline bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 dark:from-white dark:via-slate-100 dark:to-slate-300 bg-clip-text text-transparent">
+              全球量化基金平台
+            </span>
           </h1>
 
           {/* 主 tab: 自选 (portfolio) / 金价 (gold) / 优质选股 (ai-stock-pick) / 银行·稳健红利 (bank-stocks) */}
@@ -2284,63 +2313,85 @@ function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 md:gap-3 shrink-0">
-          {/* User pill */}
+        <div className="flex items-center gap-1 md:gap-2.5 shrink-0">
+          {/* User pill — 磨砂渐变身份胶囊 */}
           <motion.div
             whileHover={prefersReducedMotion ? undefined : { scale: 1.02 }}
             transition={SPRING.default}
-            className="flex items-center gap-1 md:gap-2 bg-[#f5f5f7] dark:bg-black/40 px-2 md:px-3 py-1 md:py-1.5 rounded-full border border-[var(--hairline-border)] shrink-0"
+            className="flex items-center gap-1.5 md:gap-2 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/60 dark:hover:bg-white/10 px-2 md:px-2.5 py-1 rounded-full border border-[var(--hairline-border)] shadow-2xs transition-colors shrink-0"
           >
-            <div className="w-5 h-5 md:w-6 md:h-6 rounded-full bg-[#0066cc] dark:bg-[#2997ff] text-white flex items-center justify-center font-bold text-[9px] md:text-[10px] shrink-0">
+            <div className="w-5 h-5 md:w-5.5 md:h-5.5 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold font-mono text-[9px] md:text-[10px] shadow-2xs shrink-0">
               {currentUser.substring(0, 2).toUpperCase()}
             </div>
-            <span className="hidden md:inline text-xs font-semibold text-slate-700 dark:text-slate-300 max-w-[100px] truncate">
+            <span className="hidden md:inline text-xs font-semibold text-slate-800 dark:text-slate-200 max-w-[90px] truncate">
               {currentUser}
             </span>
-            <PressableIconButton
-              onClick={handleLogout}
-              aria-label="切换/登出用户"
-              className="p-0.5 md:p-1 rounded-full text-slate-400 hover:text-red-500 ml-0.5 shrink-0"
-            >
-              <LogOut size={12} />
-            </PressableIconButton>
+            <Tooltip title="切换 / 登出当前账号" placement="bottom">
+              <PressableIconButton
+                onClick={handleLogout}
+                aria-label="切换/登出用户"
+                className="p-1 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 ml-0.5 shrink-0 transition-colors"
+              >
+                <LogOut size={12} />
+              </PressableIconButton>
+            </Tooltip>
           </motion.div>
 
-          <span className="hidden md:inline h-4 w-px bg-[var(--divider)] shrink-0" />
+          <span className="hidden md:inline h-4 w-px bg-[var(--divider)] shrink-0 opacity-60" />
 
-          {/* 桌面端常驻设置按钮 */}
-          <div className="hidden md:flex items-center gap-1.5">
-            <Tooltip title={unreadAlertCount > 0 ? `预警订阅与推送日志 (${unreadAlertCount} 条未读)` : '预警订阅与推送日志'} placement="bottom">
-              <PressableIconButton
-                onClick={handleOpenNotificationLogs}
-                aria-label="预警订阅与推送日志"
-                className="p-2 rounded-full hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400"
-              >
-                <Badge count={unreadAlertCount} size="small" offset={[2, -2]} overflowCount={99}>
-                  <Bell size={15} />
-                </Badge>
-              </PressableIconButton>
-            </Tooltip>
-            <EmailConfigPanel
-              isAdmin={currentUser.toLowerCase() === 'admin'}
-              currentUser={currentUser}
-              onToast={showToast}
-            />
-            <Tooltip title={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'} placement="bottom">
-              <PressableIconButton
-                onClick={toggleDarkMode}
-                aria-label={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'}
-                className="p-2 rounded-full hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                {isDarkMode ? <Sun size={15} /> : <Moon size={15} />}
-              </PressableIconButton>
-            </Tooltip>
-            <Tooltip title="切换红绿涨跌色彩规则 (中国/国际标准)" placement="bottom">
+          {/* 桌面端常驻设置按钮组 — 统一的轻质感集成工具岛 (Utility Island) */}
+          <div className="hidden md:flex items-center gap-2">
+            <div className="flex items-center bg-slate-100/70 dark:bg-white/5 p-0.5 rounded-full border border-[var(--hairline-border)] shadow-2xs">
+              <Tooltip title={unreadAlertCount > 0 ? `预警订阅与推送日志 (${unreadAlertCount} 条未读)` : '预警订阅与推送日志'} placement="bottom">
+                <PressableIconButton
+                  onClick={handleOpenNotificationLogs}
+                  aria-label="预警订阅与推送日志"
+                  className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer"
+                >
+                  <Badge count={unreadAlertCount} size="small" offset={[2, -2]} overflowCount={99}>
+                    <Bell size={14} />
+                  </Badge>
+                </PressableIconButton>
+              </Tooltip>
+
+              <EmailConfigPanel
+                isAdmin={currentUser.toLowerCase() === 'admin'}
+                currentUser={currentUser}
+                onToast={showToast}
+              />
+
+              <Tooltip title={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'} placement="bottom">
+                <PressableIconButton
+                  onClick={toggleDarkMode}
+                  aria-label={isDarkMode ? '切换到亮色模式' : '切换到暗黑模式'}
+                  className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-all cursor-pointer"
+                >
+                  {isDarkMode ? <Sun size={14} className="text-amber-500" /> : <Moon size={14} className="text-indigo-400" />}
+                </PressableIconButton>
+              </Tooltip>
+            </div>
+
+            {/* 涨跌配色切换胶囊 — 彻底摒弃直角框，采用 Apple 风格圆角微光双色胶囊 */}
+            <Tooltip title="切换涨跌配色规则 (国内习惯: 红涨绿跌 / 国际标准: 绿涨红跌)" placement="bottom">
               <PressableButton
                 onClick={toggleColorRule}
-                className="text-[10px] font-bold bg-[#f5f5f7] dark:bg-[#1d1d1f] hover:bg-slate-200/50 dark:hover:bg-slate-800/50 border border-[var(--hairline-border)] px-2.5 py-1.5 ml-0.5"
+                className="rounded-full text-[11px] font-medium bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/70 dark:hover:bg-white/10 border border-[var(--hairline-border)] px-2.5 py-1 flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs group"
               >
-                {isIntlColor ? '🟢涨🔴跌' : '🔴涨🟢跌'}
+                <span className="flex items-center gap-1 shrink-0">
+                  <span className={`w-2 h-2 rounded-full transition-all ${
+                    isIntlColor
+                      ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]'
+                      : 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
+                  }`} />
+                  <span className={`w-2 h-2 rounded-full transition-all ${
+                    isIntlColor
+                      ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]'
+                      : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]'
+                  }`} />
+                </span>
+                <span className="text-slate-700 dark:text-slate-300 font-semibold tracking-tight text-[11px]">
+                  {isIntlColor ? '绿涨红跌' : '红涨绿跌'}
+                </span>
               </PressableButton>
             </Tooltip>
           </div>

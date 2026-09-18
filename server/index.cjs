@@ -41,6 +41,21 @@ app.use('/api', (_req, res, next) => {
 });
 
 const DIST_DIR = path.resolve(__dirname, '../dist');
+
+// 针对 Favicon 的直通响应与缓存穿透（防止浏览器强缓存旧图标，且支持 /favicon.ico 自动回落）
+app.get(['/favicon.ico', '/favicon.svg'], (_req, res) => {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  return res.sendFile(path.join(DIST_DIR, 'favicon.svg'));
+});
+app.head(['/favicon.ico', '/favicon.svg'], (_req, res) => {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  return res.end();
+});
+
 app.use(express.static(DIST_DIR, {
   etag: true,
   setHeaders(res, filePath) {
@@ -111,7 +126,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.5.4' });
+  res.json({ status: 'ok', version: '1.5.5' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};

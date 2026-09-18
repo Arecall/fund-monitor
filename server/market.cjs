@@ -52,6 +52,93 @@ const PROXY_TICKER_TTL = 60 * 1000;       // QDII 代理标的腾讯行情缓存
 const FX_CACHE_TTL = 60 * 60 * 1000;       // 汇率缓存 1 小时
 const GENERIC_QDII_REALTIME_FRESH_MS = 2 * 60 * 1000; // 泛源实时估值最多允许滞后 2 分钟
 
+// 国内全市场主流指数 ETF 场外联接基金与其对应场内 ETF 的权威穿透映射表
+const ETF_FEEDER_MAP = {
+  // 1. 创业板系列 (易方达创业板 ETF 159915 / 华安创业板50 ETF 159949)
+  '004744': '159915', // 易方达创业板ETF联接C -> 创业板 159915
+  '110026': '159915', // 易方达创业板ETF联接A -> 创业板 159915
+  '000152': '159949', // 华安创业板50ETF联接A -> 创业板50 159949
+  '160420': '159949', // 华安创业板50ETF联接C -> 创业板50 159949
+
+  // 2. 银行与红利系列
+  '007466': '512890', // 华泰柏瑞红利低波ETF联接A -> 红利低波ETF 512890
+  '007467': '512890', // 华泰柏瑞红利低波ETF联接C -> 红利低波ETF 512890
+  '240019': '512800', // 华宝中证银行ETF联接A -> 银行ETF 512800
+  '001594': '512800', // 天弘中证银行ETF联接A / 华宝联接C -> 512800
+  '001528': '510880', // 华泰柏瑞上证红利ETF联接A -> 红利ETF 510880
+  '011531': '510880', // 华泰柏瑞上证红利ETF联接C -> 红利ETF 510880
+
+  // 3. 核心宽基 (沪深300 / 中证500 / 中证1000 / 科创50 / 上证50)
+  '000051': '510300', // 华夏沪深300ETF联接A -> 510300
+  '000311': '510300', // 华夏沪深300ETF联接C -> 510300
+  '007028': '510500', // 南方中证500ETF联接A -> 510500
+  '007029': '510500', // 南方中证500ETF联接C -> 510500
+  '011612': '588000', // 华夏科创50ETF联接A -> 588000
+  '011613': '588000', // 华夏科创50ETF联接C -> 588000
+  '001051': '510050', // 华夏上证50ETF联接A -> 510050
+  '001052': '510050', // 华夏上证50ETF联接C -> 510050
+  '017161': '512100', // 南方中证1000ETF联接A -> 512100
+  '017162': '512100', // 南方中证1000ETF联接C -> 512100
+
+  // 4. 核心行业主题
+  '008281': '512760', // 国泰半导体芯片ETF联接A -> 512760
+  '008282': '512760', // 国泰半导体芯片ETF联接C -> 512760
+  '013402': '513130', // 华泰柏瑞恒生科技ETF联接A -> 513130
+  '013403': '513130', // 华泰柏瑞恒生科技ETF联接C -> 513130
+  '162412': '512170', // 华宝中证医疗ETF联接A -> 512170
+  '012323': '512170', // 华宝中证医疗ETF联接C -> 512170
+};
+
+/**
+ * 针对国内指数型 ETF 场外联接基金，当通用接口缺失或处于假平盘死数据时，
+ * 自动联动底层场内 ETF 的高频实时撮合行情进行穿透精确推算。
+ */
+async function fetchEtfFeederValuation(feederCode, fallbackName = null, fallbackNav = null) {
+  const targetEtf = ETF_FEEDER_MAP[feederCode];
+  if (!targetEtf) return null;
+
+  try {
+    const etfQuote = await fetchASHareStockValuation(targetEtf);
+    if (!etfQuote) return null;
+
+    const etfChangePct = parseFloat(etfQuote.gszzl);
+    if (!Number.isFinite(etfChangePct)) return null;
+
+    let dwjz = typeof fallbackNav === 'number' && fallbackNav > 0 ? fallbackNav : null;
+    let name = fallbackName || '';
+    let jzrq = '';
+
+    if (!dwjz) {
+      try {
+        const lsjz = await fetchEastMoneyLSJZ(feederCode);
+        if (lsjz && lsjz.dwjz) {
+          dwjz = parseFloat(lsjz.dwjz);
+          name = lsjz.name || name;
+          jzrq = lsjz.jzrq || '';
+        }
+      } catch {}
+    }
+
+    if (!dwjz || isNaN(dwjz) || dwjz <= 0) return null;
+
+    const gszNum = dwjz * (1 + etfChangePct / 100);
+    return {
+      fundcode: feederCode,
+      name: name || `${etfQuote.name}联接基金`,
+      jzrq: jzrq || new Date().toISOString().slice(0, 10),
+      dwjz: dwjz.toFixed(4),
+      gsz: gszNum.toFixed(4),
+      gszzl: (etfChangePct >= 0 ? '+' : '') + etfChangePct.toFixed(2),
+      gztime: etfQuote.gztime || new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      market: 'domestic',
+      quoteSource: 'etf-proxy'
+    };
+  } catch (e) {
+    console.warn(`[etf-feeder] ${feederCode} -> ${targetEtf} proxy failed:`, e.message);
+    return null;
+  }
+}
+
 /**
  * 转换 JSONP 为 JSON 对象
  */
@@ -1169,15 +1256,6 @@ async function fetchStockMinuteData(code, market, kind = null) {
 
   // 1.1 国内指数型 ETF 场外联接基金代理识别与重定向：
   //     场外联接基金 90%+ 资产直接投资于对应场内 ETF，直接复用场内 ETF 实时分钟线并按场外基金净值高精度缩放
-  const ETF_FEEDER_MAP = {
-    '007466': '512890', // 华泰柏瑞红利低波ETF联接A -> 红利低波ETF
-    '007467': '512890', // 华泰柏瑞红利低波ETF联接C -> 红利低波ETF
-    '240019': '512800', // 华宝中证银行ETF联接A -> 银行ETF
-    '001594': '512800', // 华宝中证银行ETF联接C -> 银行ETF
-    '001528': '510880', // 华泰柏瑞上证红利ETF联接A -> 红利ETF
-    '011531': '510880', // 华泰柏瑞上证红利ETF联接C -> 红利ETF
-  };
-
   if (/^\d{6}$/.test(c) && ETF_FEEDER_MAP[c]) {
     targetTicker = ETF_FEEDER_MAP[c];
     targetMarket = 'domestic';
@@ -1633,8 +1711,25 @@ async function fetchStockMinuteData(code, market, kind = null) {
           } catch {}
         }
 
-        // 只使用同一批分钟行情的首个有效价格作为缩放基准，绝不混用上游
-        // preClose（该字段可能属于不同交易日或复权口径）。
+        // 优先获取代理标的或底层 ETF 的真实昨收基准价 (preClose)。
+        // 金融时序定理：分时线 Y 轴基准必须为昨收价；若将首分钟价格 result[0].close 设为分母，
+        // 将把真实的早盘跳空高开/低开缺口强行抹平为 0.00%，并在全天均匀拉伸出伪造的慢牛/慢熊斜率。
+        let targetPreClose = Number(result.preClose || 0);
+        if (!targetPreClose || targetPreClose <= 0) {
+          try {
+            if (targetMarket === 'domestic' || targetMarket === 'other') {
+              const q = await fetchASHareStockValuation(targetTicker).catch(() => null);
+              if (q && q.dwjz) targetPreClose = parseFloat(q.dwjz);
+            } else if (targetMarket === 'hk') {
+              const q = await fetchHKStockValuation(targetTicker).catch(() => null);
+              if (q && q.dwjz) targetPreClose = parseFloat(q.dwjz);
+            } else if (targetMarket === 'us') {
+              const q = await fetchUSStockValuation(targetTicker).catch(() => null);
+              if (q && q.dwjz) targetPreClose = parseFloat(q.dwjz);
+            }
+          } catch {}
+        }
+
         let basePrice = Number(result[0]?.close || result[0]?.open || 0);
         // 若代理标的为美股 ETF，原生价格应 > 50；若 < 50 说明存在异常污染点，取点集中的中位数作为基准
         if (targetMarket === 'us' && basePrice < 50) {
@@ -1642,6 +1737,12 @@ async function fetchStockMinuteData(code, market, kind = null) {
           if (validProxyPrices.length > 0) {
             basePrice = validProxyPrices[Math.floor(validProxyPrices.length / 2)];
           }
+        }
+
+        // 严谨校验：若 targetPreClose 有效且与首根价格偏离在合理交易区间（≤25%，排除极端除权除息），
+        // 严格以 targetPreClose 为日内涨跌缩放基准，完整还原早盘跳空缺口
+        if (targetPreClose > 0 && Math.abs(basePrice - targetPreClose) / targetPreClose <= 0.25) {
+          basePrice = targetPreClose;
         }
 
         if (lastNav > 0 && lastNav < 50 && basePrice > 0) {
@@ -1842,7 +1943,14 @@ async function fetchSnapshotMinuteData(code, market = null) {
       }
     }
 
-    const points = sanitizeSnapshotSpikes(rawPoints);
+    // 关键隔离防护：A 股/港股单一交易日 session 隔离，严禁将昨天与今天的打点混入同一个分时序列
+    let sessionPoints = rawPoints;
+    if (market !== 'us' && sessionPoints.length > 0) {
+      const latestDateStr = sessionPoints[sessionPoints.length - 1].time.slice(0, 10);
+      sessionPoints = sessionPoints.filter(p => p.time.startsWith(latestDateStr));
+    }
+
+    const points = sanitizeSnapshotSpikes(sessionPoints);
     return points.length > 0 ? points : null;
   } catch (e) {
     console.warn(`[snapshotMinute] ${code} fetch failed:`, e.message);
@@ -2617,6 +2725,21 @@ async function getFundValuationBase(code, kindOverride, { now, cacheKey, cached 
           result = null;
         }
       }
+      // 针对国内指数型 ETF 场外联接基金专属检测：
+      // 若命中 ETF_FEEDER_MAP，且通用源缺失或新浪数据处于僵死伪平盘 (涨跌幅 < 0.01% 且微涨微跌 0.0001)，
+      // 优先穿透联动底层场内对应 ETF 实时撮合行情进行高精度等比缩放估值
+      if (ETF_FEEDER_MAP[code]) {
+        const isSinaDeadQuote = result && result.quoteSource === 'sina-fu'
+          && Math.abs(parseFloat(result.gszzl || '0')) < 0.01;
+        if (!result || result.navOnly || isSinaDeadQuote) {
+          console.log(`[fund] ${code} (ETF联接) 通用源${!result ? '缺失' : isSinaDeadQuote ? '僵死伪平盘' : '仅官方净值'}, 启动底层ETF穿透估值 -> ${ETF_FEEDER_MAP[code]}`);
+          const feederVal = await fetchEtfFeederValuation(code, result?.name, parseFloat(result?.dwjz || '0'));
+          if (feederVal) {
+            result = feederVal;
+          }
+        }
+      }
+
       // 第 3 级 fallback：东方财富官方净值
       if (!result) {
         console.log(`[fund] Sina fu_ miss/stale for ${code}, fallback to EastMoney f10/lsjz`);
