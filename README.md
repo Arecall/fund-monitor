@@ -6,9 +6,11 @@
 [![React](https://img.shields.io/badge/react-19.2.7-61dafb.svg)](package.json)
 [![Ant%20Design](https://img.shields.io/badge/antd-6.6.0-1890ff.svg)](package.json)
 
+
 一款轻量级、高颜值、支持多用户数据隔离的**全球资产轻量监控终端**。支持国内公募场外基金、A股/港股/美股股票及 ETF、QDII 跨国基金以及全球大盘指数与贵金属黄金行情的实时追踪、持仓盈亏自动计算及邮箱预警提醒。
 
 ---
+1.5.3 新增银行类投资专区
 
 ## 目录
 
@@ -55,6 +57,8 @@
 <img width="3840" height="1878" alt="全球基金与股票监控终端截图 2" src="https://github.com/user-attachments/assets/3222b494-8687-4e97-a784-1765b179a0c5" />
 <img width="3828" height="1878" alt="全球基金与股票监控终端截图 3" src="https://github.com/user-attachments/assets/d847134c-bec2-4e0d-88f9-6e3cae9cec31" />
 <img width="1920" height="992" alt="全球基金与股票监控终端截图 4" src="https://github.com/user-attachments/assets/dc1ce875-aa92-4e29-9e69-9cf5e1c92815" />
+<img width="1440" height="812" alt="image" src="https://github.com/user-attachments/assets/d236fd98-e2d2-4a34-b5b7-d313829232c5" />
+
 
 ---
 
