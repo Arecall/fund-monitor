@@ -13,7 +13,7 @@ import {
   type DataSource
 } from '../utils/chartData';
 import { detectFundMarket, isMarketOpen, type FundMarket } from '../utils/fundMarket';
-import { isUsEasternDst } from '../utils/time';
+import { isUsEasternDst, getBeijingParts } from '../utils/time';
 import { OpenCountdown, deriveMarketStatus } from './RelativeTime';
 import { useAppEnv } from '../utils/env';
 import { formatVolume as fmtVol, formatTurnover as fmtTurn } from '../utils/format';
@@ -384,7 +384,7 @@ export function FundChart({
     if (!refreshing) return;
   }, [refreshing]);
 
-  // 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天"
+  // 数据日期徽章 — 跟曲线数据所属日期，便于一眼看出"今天 vs 昨天/上一交易日"
   // 盘前不展示：平台线右端点落在今日收盘时刻，会被误读为"今日"。
   // 提前 memoize，避免每次 render 重新分配 Date 对象和字符串
   const dataDateBadge = useMemo(() => {
@@ -395,8 +395,13 @@ export function FundChart({
     const dayEnd = dayStart + 24 * 60 * 60 * 1000;
     const sameDay = lastTs >= dayStart && lastTs < dayEnd;
     const d = new Date(lastTs);
-    const dataStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
-    return { sameDay, dataStr };
+    const bjtParts = getBeijingParts(d);
+    const dataStr = `${bjtParts.month}/${bjtParts.day}`;
+    const weekdayMap: Record<string, string> = {
+      Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五', Sat: '周六', Sun: '周日'
+    };
+    const weekdayStr = weekdayMap[bjtParts.weekday] || '';
+    return { sameDay, dataStr, weekdayStr };
   }, [series.points, series.preMarket]);
 
   // 是否在盘前等待阶段（处于开盘前的 preMarket 状态且未开盘时启用待开盘遮罩）
@@ -505,7 +510,7 @@ export function FundChart({
                   ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-900/40'
                   : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/40'
               }`}>
-                {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `数据 ${dataDateBadge.dataStr}`}
+                {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `${dataDateBadge.dataStr} (${dataDateBadge.weekdayStr}) 收盘`}
               </span>
             )}
 

@@ -370,6 +370,11 @@ class ValuationBroker {
   async _persistSnapshot(code, val) {
     if (!val || val.navOnly || val.isPlaceholder) return;
     const capturedAt = Date.now();
+    const m = val.market || 'domestic';
+    // 仅在真实交易时段内持久化快照，休市/周末/节假日绝不写入静态重复打点
+    if (!marketHelper.isInTradingTime(code, new Date(capturedAt), m)) {
+      return;
+    }
     const current = parseFloat(val.gsz);
     if (!Number.isFinite(current) || current <= 0) return;
     const c = String(code).toUpperCase();

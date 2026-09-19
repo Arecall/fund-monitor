@@ -12,7 +12,7 @@
  *      也应该按其跟踪的标的（纳斯达克/标普）分类为美股。
  */
 
-import { beijingWallTimeToTimestamp, getBeijingParts, isUsEasternDst } from './time';
+import { beijingWallTimeToTimestamp, getBeijingParts, isUsEasternDst, isMarketTradingDay } from './time';
 
 export type FundMarket = 'domestic' | 'hk' | 'us' | 'other';
 
@@ -47,6 +47,11 @@ export function marketLabel(market: FundMarket): string {
  * 用于前端判断全局休市状态，休市时停止自动轮询打扰后端
  */
 export function isMarketOpen(market: FundMarket, date = new Date()): boolean {
+  // 法定节假日或周末直接判定休市
+  if (!isMarketTradingDay(market, date)) {
+    return false;
+  }
+
   // 用 Intl 取各目标时区的 weekday 与 hour/minute
   let tz = 'Asia/Shanghai';
   let sessions = [
@@ -105,6 +110,24 @@ function isTradingSession(date: Date, tz: string, sessions: number[][]): boolean
 }
 
 /**
+ * 步进找到下一个有效交易日（跳过双休与法定节假日）
+ */
+function advanceToNextTradingDay(market: FundMarket, target: Date): void {
+  target.setUTCDate(target.getUTCDate() + 1);
+  for (let i = 0; i < 30; i++) {
+    const bjtParts = getBeijingParts(target.getTime());
+    const y = Number(bjtParts.year);
+    const m = Number(bjtParts.month) - 1;
+    const d = Number(bjtParts.day);
+    const checkTs = beijingWallTimeToTimestamp(y, m, d, 10, 0);
+    if (isMarketTradingDay(market, checkTs)) {
+      break;
+    }
+    target.setUTCDate(target.getUTCDate() + 1);
+  }
+}
+
+/**
  * 计算指定市场下一个常规盘中开盘的 Date 对象（北京时间）
  */
 export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
@@ -112,16 +135,15 @@ export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
   // UTC date is used only as a timezone-neutral calendar container; wall times are
   // converted to Beijing timestamps explicitly before returning.
   const target = new Date(Date.UTC(Number(bjt.year), Number(bjt.month) - 1, Number(bjt.day)));
-  const day = target.getUTCDay(); // 北京时间的 0=Sun, 1=Mon, ..., 6=Sat
   const min = Number(bjt.hour) * 60 + Number(bjt.minute);
+  const isTodayTradingDay = isMarketTradingDay(market, date);
 
   if (market === 'us') {
-    // 先确定下一北京交易日，再按该日纽约 DST 规则计算北京时间开盘时刻。
     const todayOpenHour = isUsEasternDst(date) ? 21 : 22;
     const todayOpenMin = todayOpenHour * 60 + 30;
-    if (day === 6) target.setUTCDate(target.getUTCDate() + 2);
-    else if (day === 0) target.setUTCDate(target.getUTCDate() + 1);
-    else if (min >= todayOpenMin) target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+    if (!isTodayTradingDay || min >= todayOpenMin) {
+      advanceToNextTradingDay(market, target);
+    }
 
     const openHour = isUsEasternDst(target) ? 21 : 22;
     return new Date(beijingWallTimeToTimestamp(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate(), openHour, 30));
@@ -134,16 +156,17 @@ export function getNextOpenTime(market: FundMarket, date = new Date()): Date {
 
   let targetHour = 9;
   let targetMinute = 30;
-  if (day === 6) target.setUTCDate(target.getUTCDate() + 2);
-  else if (day === 0) target.setUTCDate(target.getUTCDate() + 1);
-  else if (min >= 11 * 60 + 30 && min < afternoonOpenMin) {
+
+  if (!isTodayTradingDay) {
+    advanceToNextTradingDay(market, target);
+  } else if (min >= 11 * 60 + 30 && min < afternoonOpenMin) {
     targetHour = 13;
   } else if (min >= morningOpenMin && min < closeMin) {
     // 盘中时下一个节点为午盘 13:00 或下一交易日开盘。
     if (min < 11 * 60 + 30) targetHour = 13;
-    else target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+    else advanceToNextTradingDay(market, target);
   } else if (min >= closeMin) {
-    target.setUTCDate(target.getUTCDate() + (day === 5 ? 3 : 1));
+    advanceToNextTradingDay(market, target);
   }
 
   return new Date(beijingWallTimeToTimestamp(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate(), targetHour, targetMinute));

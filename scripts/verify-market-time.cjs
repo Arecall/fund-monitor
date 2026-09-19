@@ -156,7 +156,37 @@ function verifyTimezoneNormalization() {
   assert(market.isUsMinuteSeriesCurrent(completeProxyBars, usClosedNow) === true, 'QDII 代理完整分钟数据未通过收盘覆盖校验');
 }
 
+// 13. 周末与法定节假日交易日历及上一个交易日分时数据有效性校验
+function verifyHolidaysAndLastTradingDay() {
+  // 国庆节 2026-10-01 (周四) 判定
+  const nationalDay = new Date('2026-10-01T10:00:00+08:00');
+  assert(marketTime.isMarketHoliday('domestic', nationalDay) === true, '2026年国庆节未识别为A股法定休市日');
+  assert(marketTime.isMarketTradingDay('domestic', nationalDay) === false, '2026年国庆节被错误判定为A股交易日');
+  assert(market.isInTradingTime('600519', nationalDay, 'domestic') === false, '2026年国庆节盘中时间未正确拦截为休市');
+
+  // 国庆长假期间 (2026-10-04 周日) 回溯上一个交易日，应精确命中节前最后一个交易日 2026-09-30 (周三)
+  const holidaySunday = new Date('2026-10-04T14:00:00+08:00');
+  const lastTradingDay = marketTime.getLastTradingDay('domestic', holidaySunday);
+  const lastYmd = marketTime.formatBeijingYmd(lastTradingDay);
+  assert(lastYmd === '2026-09-30', `长假回溯上一个交易日错误: 预期 2026-09-30，实际 ${lastYmd}`);
+
+  // 节假日期间上游返回上一个交易日完整 15:00 收盘数据，系统必须予以采纳放行
+  const closedSessionBars = market.normalizeMinuteBarTimes([
+    { time: '2026-09-30 09:30:00', close: 100 },
+    { time: '2026-09-30 15:00:00', close: 102 },
+  ], 'domestic');
+  assert(market.isDomesticMinuteSeriesCurrent(closedSessionBars, 'domestic', nationalDay) === true, '节假日期间上一个交易日完整收盘数据被错误拦截');
+
+  // 节假日期间若为未收盘的残缺数据（如仅记录到 11:15），系统必须严格拦截
+  const incompleteHolidayBars = market.normalizeMinuteBarTimes([
+    { time: '2026-09-30 09:30:00', close: 100 },
+    { time: '2026-09-30 11:15:00', close: 101 },
+  ], 'domestic');
+  assert(market.isDomesticMinuteSeriesCurrent(incompleteHolidayBars, 'domestic', nationalDay) === false, '节假日期间残缺分时数据未被拦截');
+}
+
 verifyTimezoneNormalization();
+verifyHolidaysAndLastTradingDay();
 
 verifyHoldingsFallbackRules().then(() => {
   console.log('✅ 市场交易时间与规则校验全部通过！');

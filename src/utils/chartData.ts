@@ -16,8 +16,10 @@
 
 import type { FundHistoryPoint, StockMinuteResponse } from '../services/api';
 import { detectFundMarket, type FundMarket } from './fundMarket';
-import { beijingWallTimeToTimestamp, getBeijingParts as getSharedBeijingParts, isUsEasternDst } from './time';
+import { beijingWallTimeToTimestamp, getBeijingParts as getSharedBeijingParts, isUsEasternDst, getLastTradingDay, isMarketTradingDay } from './time';
 export type { FundMarket } from './fundMarket';
+
+const DAY = 24 * 3600 * 1000;
 
 export type RangeKey = 'intraday' | '1D' | '1W' | '1M';
 
@@ -111,14 +113,14 @@ function buildFundIntradayLine(
   }
 
   // 2. 存在午休的市场（A 股 domestic / other: 11:30~13:00，港股 hk: 12:00~13:00）
-  const startDate = new Date(startTs);
-  const y = startDate.getFullYear();
-  const m = startDate.getMonth();
-  const d = startDate.getDate();
+  const parts = getSharedBeijingParts(new Date(startTs));
+  const y = Number(parts.year);
+  const m = Number(parts.month) - 1;
+  const d = Number(parts.day);
 
   const isHk = market === 'hk';
-  const morningEndTs = new Date(y, m, d, isHk ? 12 : 11, isHk ? 0 : 30, 0).getTime();
-  const afternoonStartTs = new Date(y, m, d, 13, 0, 0).getTime();
+  const morningEndTs = beijingWallTimeToTimestamp(y, m, d, isHk ? 12 : 11, isHk ? 0 : 30);
+  const afternoonStartTs = beijingWallTimeToTimestamp(y, m, d, 13, 0);
 
   // 若时段完全在上午休市前结束
   if (endTs <= morningEndTs) {
@@ -252,10 +254,9 @@ function getIntradayWindow(
   const month = Number(bjt.month) - 1;
   const day = Number(bjt.day);
   const weekday = bjt.weekday; // 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'
-  const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
   const today = (y: number, m: number, date: number, h: number, min: number) =>
     beijingWallTimeToTimestamp(y, m, date, h, min);
-  const DAY = 24 * 3600 * 1000;
+  const isTradingDay = isMarketTradingDay(market, d);
 
   if (market === 'us') {
     // US session 跨日：今天 21:30 → 明天 04:00（夏令）/ 05:00（冬令）
@@ -273,33 +274,46 @@ function getIntradayWindow(
     let endTs: number;
     let preMarket = false;
 
-    if (weekday === 'Sat') {
-      if (now < todayClose) {
-        // 周六凌晨 00:00–04:00：周五夜间 US session 正在进行收尾
+    // 若当前是非交易日（周末或美股法定节假日）
+    if (!isTradingDay) {
+      // 周六凌晨 00:00–04:00/05:00：若周五夜间 US session 仍在进行收尾
+      if (weekday === 'Sat' && now < todayClose) {
         startTs = todayStart - DAY;
         endTs = todayClose;
         preMarket = false;
       } else {
-        // 周六 04:00 之后（已收盘）：展示周五 21:30 → 周六 04:00 的完整走势
-        startTs = todayStart - DAY;
-        endTs = todayClose;
+        // 回溯至上一个美股常规交易日
+        const lastTrade = getLastTradingDay('us', d);
+        const lastDst = isUsEasternDst(lastTrade);
+        const lastParts = getSharedBeijingParts(lastTrade);
+        const ltY = Number(lastParts.year);
+        const ltM = Number(lastParts.month) - 1;
+        const ltD = Number(lastParts.day);
+        const ltStartH = lastDst ? 21 : 22;
+        const ltCloseH = lastDst ? 4 : 5;
+        startTs = today(ltY, ltM, ltD, ltStartH, 30);
+        endTs = today(ltY, ltM, ltD, ltCloseH, 0) + DAY;
         preMarket = false;
       }
-    } else if (weekday === 'Sun') {
-      // 周日全天：展示周五 21:30 → 周六 04:00 的完整走势
-      startTs = todayStart - 2 * DAY;
-      endTs = todayClose - DAY;
-      preMarket = false;
-    } else if (weekday === 'Mon') {
+      return { startTs, endTs, xLabelMode: 'ny', preMarket };
+    }
+
+    if (weekday === 'Mon') {
       if (now < todayClose) {
         // 周一凌晨 00:00–04:00：周日无常规盘，展示上周五走势
-        startTs = todayStart - 3 * DAY;
-        endTs = todayClose - 2 * DAY;
+        const lastTrade = getLastTradingDay('us', d);
+        const lastDst = isUsEasternDst(lastTrade);
+        const lastParts = getSharedBeijingParts(lastTrade);
+        startTs = today(Number(lastParts.year), Number(lastParts.month) - 1, Number(lastParts.day), lastDst ? 21 : 22, 30);
+        endTs = today(Number(lastParts.year), Number(lastParts.month) - 1, Number(lastParts.day), lastDst ? 4 : 5, 0) + DAY;
         preMarket = false;
       } else if (now < preMarketStart) {
         // 周一白天 04:00–16:00：展示上周五完整走势
-        startTs = todayStart - 3 * DAY;
-        endTs = todayClose - 2 * DAY;
+        const lastTrade = getLastTradingDay('us', d);
+        const lastDst = isUsEasternDst(lastTrade);
+        const lastParts = getSharedBeijingParts(lastTrade);
+        startTs = today(Number(lastParts.year), Number(lastParts.month) - 1, Number(lastParts.day), lastDst ? 21 : 22, 30);
+        endTs = today(Number(lastParts.year), Number(lastParts.month) - 1, Number(lastParts.day), lastDst ? 4 : 5, 0) + DAY;
         preMarket = false;
       } else if (now < todayStart) {
         // 周一下午 16:00–21:30：进入美股【盘前倒计时】阶段
@@ -313,7 +327,7 @@ function getIntradayWindow(
         preMarket = false;
       }
     } else {
-      // 周二至周五常规工作日
+      // 周二至周五常规工作交易日
       if (now < todayClose) {
         // 凌晨 00:00–04:00：昨夜 21:30 开始的 session 进行中
         startTs = todayStart - DAY;
@@ -341,24 +355,10 @@ function getIntradayWindow(
   }
 
   if (market === 'hk') {
-    const startTs = today(year, month, day, 9, 30);
-    const endTs = today(year, month, day, 16, 0);
-
-    // 确定是否处于开市前/盘前阶段 (工作日 09:30 之前)
-    const preMarket = isWeekday && now < startTs;
-
-    if (preMarket) {
-      return { startTs, endTs, xLabelMode: 'local', preMarket: true };
-    }
-
-    // 若处于周末非交易时段，回溯到最近一个交易日（周五）的走势窗口
-    if (!isWeekday) {
-      let offsetDays = 1;
-      if (weekday === 'Sat') offsetDays = 1;
-      else if (weekday === 'Sun') offsetDays = 2;
-
-      const tradeDayTs = now - offsetDays * DAY;
-      const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
+    // 若处于周末或法定节假日休市时段，精准回溯到最近一个有效交易日的完整走势窗口
+    if (!isTradingDay) {
+      const lastTrade = getLastTradingDay('hk', d);
+      const tradeParts = getSharedBeijingParts(lastTrade);
       const tY = Number(tradeParts.year);
       const tM = Number(tradeParts.month) - 1;
       const tD = Number(tradeParts.day);
@@ -370,28 +370,32 @@ function getIntradayWindow(
       };
     }
 
-    return { startTs, endTs, xLabelMode: 'local', preMarket: false };
+    const startTs = today(year, month, day, 9, 30);
+    const endTs = today(year, month, day, 16, 0);
+
+    // 只有在真正的交易日且临近开盘时（9:00 - 9:30）才呈现开市前/盘前倒计时；
+    // 凌晨 0:00 - 9:00 回溯展示上一交易日收盘走势供复盘
+    const preMarketWindowStart = today(year, month, day, 9, 0);
+    if (now < preMarketWindowStart) {
+      const lastTrade = getLastTradingDay('hk', d);
+      const tradeParts = getSharedBeijingParts(lastTrade);
+      return {
+        startTs: today(Number(tradeParts.year), Number(tradeParts.month) - 1, Number(tradeParts.day), 9, 30),
+        endTs: today(Number(tradeParts.year), Number(tradeParts.month) - 1, Number(tradeParts.day), 16, 0),
+        xLabelMode: 'local',
+        preMarket: false,
+      };
+    }
+
+    const preMarket = now < startTs;
+    return { startTs, endTs, xLabelMode: 'local', preMarket };
   }
 
   // A 股 / other (国内市场 / 北交所)
-  const startTs = today(year, month, day, 9, 30);
-  const endTs = today(year, month, day, 15, 0);
-
-  // 确定是否处于盘前阶段 (工作日 09:30 之前)
-  const preMarket = isWeekday && now < startTs;
-
-  if (preMarket) {
-    return { startTs, endTs, xLabelMode: 'local', preMarket: true };
-  }
-
-  // 若处于周末非交易时段，回溯到最近一个有效交易日（周五）的时段窗口
-  if (!isWeekday) {
-    let offsetDays = 1;
-    if (weekday === 'Sat') offsetDays = 1;
-    else if (weekday === 'Sun') offsetDays = 2;
-
-    const tradeDayTs = now - offsetDays * DAY;
-    const tradeParts = getSharedBeijingParts(new Date(tradeDayTs));
+  // 若处于周末或法定节假日休市时段，精准回溯到最近一个有效交易日的时段窗口
+  if (!isTradingDay) {
+    const lastTrade = getLastTradingDay('domestic', d);
+    const tradeParts = getSharedBeijingParts(lastTrade);
     const tY = Number(tradeParts.year);
     const tM = Number(tradeParts.month) - 1;
     const tD = Number(tradeParts.day);
@@ -403,7 +407,25 @@ function getIntradayWindow(
     };
   }
 
-  return { startTs, endTs, xLabelMode: 'local', preMarket: false };
+  const startTs = today(year, month, day, 9, 30);
+  const endTs = today(year, month, day, 15, 0);
+
+  // 只有在交易日且临近开盘时（9:00 - 9:30）才呈现盘前倒计时；
+  // 早晨 9:00 之前依然展示上一交易日完整走势供复盘
+  const preMarketWindowStart = today(year, month, day, 9, 0);
+  if (now < preMarketWindowStart) {
+    const lastTrade = getLastTradingDay('domestic', d);
+    const tradeParts = getSharedBeijingParts(lastTrade);
+    return {
+      startTs: today(Number(tradeParts.year), Number(tradeParts.month) - 1, Number(tradeParts.day), 9, 30),
+      endTs: today(Number(tradeParts.year), Number(tradeParts.month) - 1, Number(tradeParts.day), 15, 0),
+      xLabelMode: 'local',
+      preMarket: false,
+    };
+  }
+
+  const preMarket = now < startTs;
+  return { startTs, endTs, xLabelMode: 'local', preMarket };
 }
 
 /**
@@ -842,11 +864,30 @@ export function buildSeries(
         // 把真实分钟数据/打点轨迹映射到 [startTs, endTs] 窗口；当前时间之后的数据截掉
         let candidateBars = realBars.filter(b => b.t >= startTs && b.t <= endTs);
         // 如果严格按 startTs/endTs 过滤为空，但 realBars 本身是上游提供的有效最近交易日分钟数据，
-        // 则以 realBars 首尾时间作为真实 session 窗口，防止因节假日或跨天偏差误杀整段真实走势
+        // 则以 realBars 首尾时间所在交易日重构权威 session 窗口，防止因节假日或跨天偏差误杀整段真实走势
         if (candidateBars.length === 0 && realBars.length >= 2) {
-          candidateBars = realBars;
-          startTs = realBars[0].t;
-          endTs = realBars[realBars.length - 1].t;
+          const firstT = realBars[0].t;
+          const p = getSharedBeijingParts(new Date(firstT));
+          const y = Number(p.year);
+          const m = Number(p.month) - 1;
+          const d = Number(p.day);
+          if (market === 'us') {
+            const dst = isUsEasternDst(new Date(firstT));
+            startTs = beijingWallTimeToTimestamp(y, m, d, dst ? 21 : 22, 30);
+            endTs = beijingWallTimeToTimestamp(y, m, d, dst ? 4 : 5, 0) + DAY;
+          } else if (market === 'hk') {
+            startTs = beijingWallTimeToTimestamp(y, m, d, 9, 30);
+            endTs = beijingWallTimeToTimestamp(y, m, d, 16, 0);
+          } else {
+            startTs = beijingWallTimeToTimestamp(y, m, d, 9, 30);
+            endTs = beijingWallTimeToTimestamp(y, m, d, 15, 0);
+          }
+          candidateBars = realBars.filter(b => b.t >= startTs && b.t <= endTs);
+          if (candidateBars.length === 0) {
+            candidateBars = realBars;
+            startTs = realBars[0].t;
+            endTs = realBars[realBars.length - 1].t;
+          }
         }
 
         // 基准净值强校验与安全包络网（Fund NAV Sanity Gate）

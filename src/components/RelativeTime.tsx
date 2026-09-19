@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { isUsEasternDst, parseGzTime } from '../utils/time';
+import { isUsEasternDst, parseGzTime, isMarketHoliday } from '../utils/time';
 
 /**
  * Returns a live "X 秒前" / "X 分钟前" string relative to a given timestamp.
@@ -238,6 +238,9 @@ export function deriveMarketStatus(
     if (nyWeekday === 'Sat' || nyWeekday === 'Sun') {
       return { key: 'offday', label: '美股休市', color: 'text-slate-500', pulse: false, detail: '美股周末休市' };
     }
+    if (isMarketHoliday('us', d)) {
+      return { key: 'offday', label: '美股休市', color: 'text-slate-500', pulse: false, detail: '美股法定节假日休市' };
+    }
     const dst = isUsEasternDst(d);
     // 夏令时: 盘前 16:00-21:30 | 盘中 21:30-04:00(次) | 盘后 04:00-08:00(次) | 夜盘 08:00-16:00
     // 冬令时: 盘前 17:00-22:30 | 盘中 22:30-05:00(次) | 盘后 05:00-09:00(次) | 夜盘 09:00-17:00
@@ -278,7 +281,7 @@ export function deriveMarketStatus(
     }
   }
 
-  // 周末
+  // 周末与法定节假日休市判定
   if (isWeekend) {
     return {
       key: 'offday',
@@ -286,6 +289,16 @@ export function deriveMarketStatus(
       color: 'text-slate-500',
       pulse: false,
       detail: market === 'hk' ? '港股周末休市' : 'A 股周末休市'
+    };
+  }
+
+  if (isMarketHoliday(market, d)) {
+    return {
+      key: 'offday',
+      label: market === 'hk' ? '港股休市' : '休市',
+      color: 'text-slate-500',
+      pulse: false,
+      detail: market === 'hk' ? '港股法定节假日休市' : 'A 股法定节假日休市'
     };
   }
 

@@ -83,6 +83,7 @@ const ETF_FEEDER_MAP = {
   // 4. 核心行业主题
   '008281': '512760', // 国泰半导体芯片ETF联接A -> 512760
   '008282': '512760', // 国泰半导体芯片ETF联接C -> 512760
+  '025687': '512760', // 国泰半导体制造精选混合发起C -> 512760 (代理标的)
   '013402': '513130', // 华泰柏瑞恒生科技ETF联接A -> 513130
   '013403': '513130', // 华泰柏瑞恒生科技ETF联接C -> 513130
   '162412': '512170', // 华宝中证医疗ETF联接A -> 512170
@@ -297,6 +298,12 @@ function isInTradingTime(code, now, market) {
 
   if (kind === 'unknown') return true;
 
+  const targetMarket = kind === 'fund_us' ? 'us' : (kind === 'fund_hk' ? 'hk' : 'domestic');
+  const date = now || new Date();
+  if (marketTime.isMarketTradingDay && !marketTime.isMarketTradingDay(targetMarket, date)) {
+    return false;
+  }
+
   let tz, sessions;
   if (kind === 'stock_a' || kind === 'fund_a') {
     tz = 'Asia/Shanghai';
@@ -319,7 +326,6 @@ function isInTradingTime(code, now, market) {
     return true;
   }
 
-  const date = now || new Date();
   // 用 Intl 取目标时区的 weekday + hour/minute；hourCycle h23 保证 00-23 而非 "24:00"
   let weekday, hourStr, minuteStr;
   try {
@@ -1235,14 +1241,17 @@ function isUsMinuteSeriesCurrent(bars, now = new Date()) {
 
   const latest = Math.max(...timestamps);
   const session = marketTime.getUsMarketSession(now);
-  if (session === 'regular') {
+  const isTradingDay = marketTime.isMarketTradingDay ? marketTime.isMarketTradingDay('us', now) : true;
+
+  if (session === 'regular' && isTradingDay) {
+    // 只有在常规盘交易时间且真正属于交易日时，才校验是否紧跟当前时间
     // 上游通常会有 1–2 分钟延迟，额外保留 4 分钟容忍窗口。
     return latest >= now.getTime() - 6 * 60 * 1000;
   }
 
   const eastern = marketTime.getTimeZoneParts(new Date(latest), 'America/New_York');
   const minuteOfDay = Number(eastern.hour) * 60 + Number(eastern.minute);
-  // 闭市、盘前、盘后与周末均应展示上一完整常规盘，允许收盘价最多延迟 5 分钟。
+  // 闭市、盘前、盘后、节假日与周末均应展示上一完整常规盘，允许收盘价最多延迟 5 分钟。
   return minuteOfDay >= 15 * 60 + 55 && minuteOfDay <= 16 * 60 + 5;
 }
 
@@ -1266,17 +1275,24 @@ function isDomesticMinuteSeriesCurrent(bars, market = 'domestic', now = new Date
   const latestMinuteOfDay = Number(p.hour) * 60 + Number(p.minute);
 
   const closeThreshold = market === 'hk' ? (15 * 60 + 55) : (14 * 60 + 55);
+  const isSameDay = p.year === nowParts.year && p.month === nowParts.month && p.day === nowParts.day;
+  const isTradingDay = marketTime.isMarketTradingDay ? marketTime.isMarketTradingDay(market, now) : (nowParts.weekday !== 'Sat' && nowParts.weekday !== 'Sun');
 
-  // 盘中交易时间校验：最新点不应落后当前时间超过 8 分钟
-  if (nowParts.weekday !== 'Sat' && nowParts.weekday !== 'Sun') {
+  // 当日盘中交易时间校验：只有在当前为交易日、且数据为今日数据时，最新点才必须紧跟当前时间（<= 8分钟）
+  if (isSameDay && isTradingDay) {
     const isMorning = nowMinuteOfDay >= 9 * 60 + 30 && nowMinuteOfDay <= (market === 'hk' ? 12 * 60 + 5 : 11 * 60 + 35);
     const isAfternoon = nowMinuteOfDay >= 13 * 60 && nowMinuteOfDay <= (market === 'hk' ? 16 * 60 + 5 : 15 * 60 + 5);
     if (isMorning || isAfternoon) {
       return latest >= now.getTime() - 8 * 60 * 1000;
     }
+    // 午休期间 (A股 11:35-13:00 / 港股 12:05-13:00)，要求早盘已完整收盘
+    if (nowMinuteOfDay > (market === 'hk' ? 12 * 60 + 5 : 11 * 60 + 35) && nowMinuteOfDay < 13 * 60) {
+      return latestMinuteOfDay >= (market === 'hk' ? 11 * 60 + 55 : 11 * 60 + 25);
+    }
   }
 
-  // 闭市后或周末：最新点必须收在收盘前 5 分钟内（A股 14:55~15:00，港股 15:55~16:00），否则判定为截断未收盘的不完整数据
+  // 闭市后、周末、法定假日或非今日数据（上一交易日分时回溯）：
+  // 最新点必须收在收盘前 5 分钟内（A股 14:55~15:00，港股 15:55~16:00），否则判定为截断未收盘的不完整数据
   return latestMinuteOfDay >= closeThreshold;
 }
 
@@ -1324,6 +1340,48 @@ async function fetchStockMinuteData(code, market, kind = null) {
       } else if (/全球|科技|互联网/i.test(fundName)) {
         targetTicker = 'QQQ';
         targetMarket = 'us';
+      }
+    } else if (market === 'domestic' || !market) {
+      // 1.2 国内主题/行业/宽基公募基金代理识别：
+      //     对于没有自身场内撮合分钟线的场外公募基金，根据其基金名称自动匹配主流代表性 ETF 代理标的，
+      //     杜绝分时图退化成虚假直线，完整还原日内真实板块波动轨迹
+      const fundName = cache.fundBasic[c]?.data?.name || cache.fund[c]?.data?.name || '';
+      if (/芯片|半导体/i.test(fundName)) {
+        targetTicker = '512760'; // 国泰中证全指半导体芯片ETF
+        targetMarket = 'domestic';
+      } else if (/创业板/i.test(fundName)) {
+        targetTicker = '159915'; // 创业板ETF
+        targetMarket = 'domestic';
+      } else if (/科创50|科创板/i.test(fundName)) {
+        targetTicker = '588000'; // 科创50ETF
+        targetMarket = 'domestic';
+      } else if (/沪深300|300/i.test(fundName)) {
+        targetTicker = '510300'; // 沪深300ETF
+        targetMarket = 'domestic';
+      } else if (/中证500|500/i.test(fundName)) {
+        targetTicker = '510500'; // 中证500ETF
+        targetMarket = 'domestic';
+      } else if (/中证1000|1000/i.test(fundName)) {
+        targetTicker = '512100'; // 中证1000ETF
+        targetMarket = 'domestic';
+      } else if (/银行/i.test(fundName)) {
+        targetTicker = '512800'; // 银行ETF
+        targetMarket = 'domestic';
+      } else if (/证券|券商/i.test(fundName)) {
+        targetTicker = '512880'; // 证券ETF
+        targetMarket = 'domestic';
+      } else if (/白酒|消费|酒/i.test(fundName)) {
+        targetTicker = '512690'; // 酒ETF
+        targetMarket = 'domestic';
+      } else if (/医疗|医药/i.test(fundName)) {
+        targetTicker = '512010'; // 医药ETF
+        targetMarket = 'domestic';
+      } else if (/光伏/i.test(fundName)) {
+        targetTicker = '515790'; // 光伏ETF
+        targetMarket = 'domestic';
+      } else if (/新能源|电池/i.test(fundName)) {
+        targetTicker = '516160'; // 新能源ETF
+        targetMarket = 'domestic';
       }
     }
   }
@@ -1940,12 +1998,30 @@ async function fetchSnapshotMinuteData(code, market = null) {
     // 前端 buildSeries 会按各自 session 窗口（startTs/endTs）做精确过滤。
     // 72h 足以跨过美股周末空档（周五收盘 → 周一白天），避免周一盘中分时图丢失周五 session。
     const since = Date.now() - 72 * 3600 * 1000;
-    const rows = await dbHelper.all(
+    let rows = await dbHelper.all(
       `SELECT captured_at, gztime, current, pct FROM quote_snapshots
        WHERE (code = ? OR code = ?) AND captured_at >= ?
        ORDER BY captured_at ASC`,
       [code, c, since]
     );
+
+    // 若遇长假（如五一、国庆、春节超过 72 小时），72h 内无新数据，自动向后回溯获取最新一个交易日的快照序列
+    if (!rows || rows.length === 0) {
+      const latestRow = await dbHelper.get(
+        `SELECT captured_at FROM quote_snapshots WHERE (code = ? OR code = ?) ORDER BY captured_at DESC LIMIT 1`,
+        [code, c]
+      );
+      if (latestRow && latestRow.captured_at) {
+        const latestTs = Number(latestRow.captured_at);
+        const fallbackSince = latestTs - 24 * 3600 * 1000;
+        rows = await dbHelper.all(
+          `SELECT captured_at, gztime, current, pct FROM quote_snapshots
+           WHERE (code = ? OR code = ?) AND captured_at >= ? AND captured_at <= ?
+           ORDER BY captured_at ASC`,
+          [code, c, fallbackSince, latestTs + 3600 * 1000]
+        );
+      }
+    }
 
     if (!rows || rows.length === 0) return null;
 
@@ -1989,11 +2065,31 @@ async function fetchSnapshotMinuteData(code, market = null) {
       }
     }
 
-    // 关键隔离防护：A 股/港股单一交易日 session 隔离，严禁将昨天与今天的打点混入同一个分时序列
+    // 关键隔离防护：A 股/港股单一交易日 session 隔离，严禁将不同日期的打点混入同一个分时序列。
+    // 在周末或节假日休市期间，应回溯提取最新一个有效交易日（如周五）的打点序列，
+    // 绝不能因为周末记录了极少量的静态占位打点而覆盖掉真实交易日完整的盘中采样点。
     let sessionPoints = rawPoints;
     if (market !== 'us' && sessionPoints.length > 0) {
-      const latestDateStr = sessionPoints[sessionPoints.length - 1].time.slice(0, 10);
-      sessionPoints = sessionPoints.filter(p => p.time.startsWith(latestDateStr));
+      const dateGroups = new Map();
+      for (const p of sessionPoints) {
+        const dateStr = p.time.slice(0, 10);
+        if (!dateGroups.has(dateStr)) dateGroups.set(dateStr, []);
+        dateGroups.get(dateStr).push(p);
+      }
+      const dates = Array.from(dateGroups.keys()).sort();
+      let bestDate = dates[dates.length - 1];
+      // 从最新的日期往前查找：优先选择处于交易日且打点充足（>= 5）的交易日
+      for (let i = dates.length - 1; i >= 0; i--) {
+        const dStr = dates[i];
+        const group = dateGroups.get(dStr);
+        const dDate = new Date(dStr + 'T12:00:00+08:00');
+        const isTradeDay = marketTime.isMarketTradingDay ? marketTime.isMarketTradingDay(market, dDate) : (dDate.getDay() !== 0 && dDate.getDay() !== 6);
+        if (isTradeDay && group.length >= 5) {
+          bestDate = dStr;
+          break;
+        }
+      }
+      sessionPoints = dateGroups.get(bestDate) || [];
     }
 
     const points = sanitizeSnapshotSpikes(sessionPoints);
@@ -2010,15 +2106,25 @@ async function fetchSnapshotMinuteData(code, market = null) {
  */
 async function getLastUsSessionSnapshotFromDb(code) {
   try {
-    // 72h 跨周末覆盖：周一白天需回读到周五美股常规盘收盘（约 59h 前），36h 会漏掉。
+    // 72h 跨周末覆盖：周一白天需回读到周五美股常规盘收盘（约 59h 前）。
+    // 若遇长假，自动放宽至 15 天内最近的常规盘快照
     const since = Date.now() - 72 * 3600 * 1000;
     const c = String(code).toUpperCase();
-    const rows = await dbHelper.all(
+    let rows = await dbHelper.all(
       `SELECT raw, captured_at FROM quote_snapshots
        WHERE (code = ? OR code = ?) AND captured_at >= ?
        ORDER BY captured_at DESC`,
       [code, c, since]
     );
+    if (!rows || rows.length === 0) {
+      const longSince = Date.now() - 15 * 24 * 3600 * 1000;
+      rows = await dbHelper.all(
+        `SELECT raw, captured_at FROM quote_snapshots
+         WHERE (code = ? OR code = ?) AND captured_at >= ?
+         ORDER BY captured_at DESC LIMIT 100`,
+        [code, c, longSince]
+      );
+    }
     if (!rows || rows.length === 0) return null;
     for (const r of rows) {
       const d = new Date(r.captured_at);
@@ -2836,11 +2942,15 @@ async function getFundValuationBase(code, kindOverride, { now, cacheKey, cached 
         const cur = parseFloat(result.gsz);
         const p = parseFloat(result.gszzl);
         if (Number.isFinite(cur) && cur > 0) {
-          dbHelper.run(
-            `INSERT OR REPLACE INTO quote_snapshots (code, captured_at, gztime, current, pct, raw)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [code, now, result.gztime || '', cur, Number.isFinite(p) ? p : null, JSON.stringify(result)]
-          ).catch(() => {});
+          const m = result.market || 'domestic';
+          // 仅在真实交易时段内持久化快照，休市/周末/节假日绝不写入静态重复打点，防止污染历史分时
+          if (isInTradingTime(code, new Date(now), m)) {
+            dbHelper.run(
+              `INSERT OR REPLACE INTO quote_snapshots (code, captured_at, gztime, current, pct, raw)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [code, now, result.gztime || '', cur, Number.isFinite(p) ? p : null, JSON.stringify(result)]
+            ).catch(() => {});
+          }
         }
       }
 
@@ -4493,6 +4603,7 @@ module.exports = {
   fetchStockMinuteData,
   normalizeMinuteBarTimes,
   isUsMinuteSeriesCurrent,
+  isDomesticMinuteSeriesCurrent,
   fetchSnapshotMinuteData,
   fetchEastMoneyFlowStockInfo,
   fetchEastMoneyDelayFlowStockInfo,
