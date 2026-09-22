@@ -410,6 +410,10 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
   const maxTooltipY = Math.max(minTooltipY, padding.top + innerH - estimatedTooltipHeight - 4);
   const clampedTooltipY = Math.max(minTooltipY, Math.min(maxTooltipY, rawTooltipY));
 
+  // 零轴基准线几何参数（用于网格线去重与副 Y 轴防重影碰撞）
+  const hasBaseline = baselineValue >= minV && baselineValue <= maxV;
+  const baselineY = hasBaseline ? yPos(baselineValue) : null;
+
   if (effectivePoints.length < 2) {
     return (
       <div className="text-xs text-slate-500 py-8 text-center bg-slate-50/40 dark:bg-white/[0.02] rounded-xl">
@@ -537,17 +541,21 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
             const pct = baselineValue > 0 ? ((t.v - baselineValue) / baselineValue) * 100 : 0;
             const isPctUp = pct > 0.005;
             const isPctDown = pct < -0.005;
+            const isAtBaseline = hasBaseline && baselineY !== null && Math.abs(t.y - baselineY) < 6;
+            const isCloseToBaseline = hasBaseline && baselineY !== null && Math.abs(t.y - baselineY) < 12;
             return (
               <g key={i}>
-                <line
-                  x1={padding.left}
-                  x2={padding.left + innerW}
-                  y1={t.y}
-                  y2={t.y}
-                  stroke="currentColor"
-                  strokeOpacity="0.06"
-                  strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
-                />
+                {!isAtBaseline && (
+                  <line
+                    x1={padding.left}
+                    x2={padding.left + innerW}
+                    y1={t.y}
+                    y2={t.y}
+                    stroke="currentColor"
+                    strokeOpacity="0.06"
+                    strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
+                  />
+                )}
                 {/* 左轴：价格 */}
                 <text
                   x={padding.left - 8}
@@ -560,18 +568,20 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
                 >
                   {t.v.toFixed(2)}
                 </text>
-                {/* 右轴：相对基准的涨跌百分比 */}
-                <text
-                  x={padding.left + innerW + 8}
-                  y={t.y + 3}
-                  textAnchor="start"
-                  fontSize="10"
-                  fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
-                  fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
-                  className="font-mono tabular-nums font-medium"
-                >
-                  {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
-                </text>
+                {/* 右轴：相对基准的涨跌百分比（基准线重合处由专用微胶囊承接，杜绝重影） */}
+                {!isCloseToBaseline && (
+                  <text
+                    x={padding.left + innerW + 8}
+                    y={t.y + 3}
+                    textAnchor="start"
+                    fontSize="10"
+                    fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
+                    fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
+                    className="font-mono tabular-nums font-medium"
+                  >
+                    {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -593,20 +603,20 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
           ))}
 
           {/* 零轴基准线 (昨收/开盘平衡线)：具备金融心理锚定仪式感 */}
-          {baselineValue >= minV && baselineValue <= maxV && (
+          {hasBaseline && baselineY !== null && (
             <g>
               <line
                 x1={padding.left}
                 x2={padding.left + innerW}
-                y1={yPos(baselineValue)}
-                y2={yPos(baselineValue)}
+                y1={baselineY}
+                y2={baselineY}
                 stroke="currentColor"
                 strokeOpacity="0.22"
                 strokeDasharray="4 3"
               />
               <rect
                 x={padding.left + innerW + 3}
-                y={yPos(baselineValue) - 7}
+                y={baselineY - 7}
                 width={36}
                 height={14}
                 rx={3}
@@ -615,7 +625,7 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
               />
               <text
                 x={padding.left + innerW + 21}
-                y={yPos(baselineValue) + 3.5}
+                y={baselineY + 3.5}
                 textAnchor="middle"
                 fontSize="9"
                 fill="currentColor"

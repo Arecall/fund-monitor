@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Card, Tag, Button, Badge, BorderBeam, Statistic, Row, Col, Divider, Spin } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { Card, Tag, Button, BorderBeam, Divider, Spin } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
   ReceiptText,
@@ -10,9 +9,7 @@ import {
   User,
   TrendingUp,
   TrendingDown,
-  Briefcase,
-  Maximize2,
-  Minimize2
+  Briefcase
 } from 'lucide-react';
 import type {
   FundValuation,
@@ -118,7 +115,7 @@ export function FundDetailPanel({
   kind = 'fund',
   capitalFlowState,
   isExpanded = false,
-  onToggleExpand,
+  onToggleExpand: _onToggleExpand,
   onEditPosition,
   onToast,
   onOpenNotificationLogs
@@ -331,12 +328,74 @@ export function FundDetailPanel({
 
   const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
   const previous = parseFloat(fund.dwjz);
-  const changeAmt = current - previous;
-  const changePct = previous > 0 ? (changeAmt / previous) * 100 : 0;
-  const isUp = changeAmt > 0;
-  const isDown = changeAmt < 0;
+
+  // 针对股票 Tick Size 消除 JavaScript 裸浮点运算误差（如 59.11 - 56.88 = 2.229999999999997）
+  const cleanChangeAmt = kind === 'stock'
+    ? Math.round((current - previous) * 100) / 100
+    : Number((current - previous).toFixed(4));
+  const cleanChangePct = previous > 0 ? (cleanChangeAmt / previous) * 100 : 0;
+
+  const isUp = cleanChangeAmt > 0;
+  const isDown = cleanChangeAmt < 0;
   const dirColor = isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-slate-500';
-  const currencyPrefix = fund.market === 'us' ? '$' : fund.market === 'hk' ? 'HK$' : '¥';
+
+  // 严格金融计价币种推导：股票按上市市场，场外公募基金按份额币种（国内公募QDII绝大部分为人民币份额，仅外币特定份额为$或HK$）
+  const currencyPrefix = kind === 'stock'
+    ? (fund.market === 'us' ? '$' : fund.market === 'hk' ? 'HK$' : '¥')
+    : (() => {
+        const lowerName = (fund.name || '').toLowerCase();
+        if (lowerName.includes('美元') || lowerName.includes('usd')) return '$';
+        if (lowerName.includes('港元') || lowerName.includes('港币') || lowerName.includes('hkd')) return 'HK$';
+        return '¥';
+      })();
+
+  const openPrice = (fund.open ? parseFloat(fund.open) : undefined) ?? (
+    typeof (fund as any).stockSpecific?.open === 'number' && (fund as any).stockSpecific.open > 0
+      ? (fund as any).stockSpecific.open
+      : undefined
+  );
+  const highPrice = typeof (fund as any).stockSpecific?.high === 'number' && (fund as any).stockSpecific.high > 0
+    ? (fund as any).stockSpecific.high
+    : undefined;
+  const lowPrice = typeof (fund as any).stockSpecific?.low === 'number' && (fund as any).stockSpecific.low > 0
+    ? (fund as any).stockSpecific.low
+    : undefined;
+  const amplitude = previous > 0 && highPrice != null && lowPrice != null
+    ? ((highPrice - lowPrice) / previous) * 100
+    : null;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const prevCloseDate = fund.jzrq && fund.jzrq !== todayStr ? fund.jzrq : null;
+
+  const formatAssetPrice = (v: number | undefined | null, targetKind?: 'fund' | 'stock', decimals?: number) => {
+    if (v == null || !Number.isFinite(v)) return '—';
+    if (decimals !== undefined) return v.toFixed(decimals);
+    if (targetKind === 'stock') {
+      return v < 1 ? v.toFixed(3) : v.toFixed(2);
+    }
+    return v.toFixed(4);
+  };
+
+  // 权威业绩基准 / 底层跟踪指数推导（杜绝海外 QDII 盲目降级为沪深 300 的坏味道）
+  const getFundBenchmark = (targetFund: FundValuation) => {
+    if (targetFund.proxyTicker) return `穿透 ${targetFund.proxyTicker}`;
+    if (targetFund.proxyIndexName) return targetFund.proxyIndexName;
+    const name = targetFund.name || '';
+    if (name.includes('纳斯达克') || name.includes('纳指')) return '纳斯达克100 (QQQ)';
+    if (name.includes('标普500')) return '标普500 (SPY)';
+    if (name.includes('恒生科技')) return '恒生科技指数';
+    if (name.includes('恒生互联网')) return '恒生互联网科技';
+    if (name.includes('恒生指数')) return '恒生指数';
+    if (name.includes('半导体') || name.includes('芯片')) return '中证芯片/半导体';
+    if (name.includes('沪深300')) return '沪深300';
+    if (name.includes('中证500')) return '中证500';
+    if (name.includes('中证1000')) return '中证1000';
+    if (name.includes('创业板')) return '创业板指';
+    if (name.includes('科创')) return '科创50';
+    if (targetFund.market === 'us') return '主动管理 (海外权益)';
+    if (targetFund.market === 'hk') return '主动管理 (港股权益)';
+    return '主动管理 (公募混合)';
+  };
 
   const fundMarket: FundMarket = (fund.market as FundMarket) || detectFundMarket(fund.name, fund.fundcode);
   const isTrading = isMarketOpen(fundMarket);
@@ -385,18 +444,6 @@ export function FundDetailPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {onToggleExpand && (
-            <Button
-              type="default"
-              size="small"
-              shape="round"
-              icon={isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-              onClick={onToggleExpand}
-              className="hidden md:flex items-center text-xs border-[var(--hairline-border)] shadow-none"
-            >
-              {isExpanded ? '收起弹窗' : '全屏展开'}
-            </Button>
-          )}
           <Button
             type="default"
             size="small"
@@ -410,235 +457,268 @@ export function FundDetailPanel({
         </div>
       </div>
 
-      {/* ── Financial Terminal Metric Banner ──────────────────────────── */}
-      <Card
-        size="small"
-        className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-slate-50/50 dark:bg-white/[0.03] overflow-hidden"
-        styles={{
-          body: { padding: '16px 20px' }
-        }}
-      >
-        <Row gutter={[16, 16]}>
-          <Col span={6} xs={12} sm={6}>
-            <Statistic
-              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前净值</span>}
-              value={current}
-              precision={4}
-              valueStyle={{
-                color: 'var(--color-text-main, inherit)',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                fontWeight: 700,
-                fontSize: '1.25rem'
-              }}
-            />
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            <Statistic
-              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">实时涨跌</span>}
-              value={Math.abs(changeAmt)}
-              precision={4}
-              prefix={isUp ? <ArrowUpOutlined style={{ fontSize: 16 }} /> : isDown ? <ArrowDownOutlined style={{ fontSize: 16 }} /> : null}
-              valueStyle={{
-                color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'inherit',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                fontWeight: 700,
-                fontSize: '1.25rem'
-              }}
-            />
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            <Statistic
-              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">今日涨跌幅</span>}
-              value={Math.abs(changePct)}
-              precision={2}
-              prefix={isUp ? <ArrowUpOutlined style={{ fontSize: 16 }} /> : isDown ? <ArrowDownOutlined style={{ fontSize: 16 }} /> : null}
-              suffix="%"
-              valueStyle={{
-                color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'inherit',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                fontWeight: 700,
-                fontSize: '1.25rem'
-              }}
-            />
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            <Statistic
-              title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">昨收</span>}
-              value={previous > 0 ? previous : 0}
-              precision={4}
-              valueStyle={{
-                color: 'var(--color-text-main, inherit)',
-                fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                fontWeight: 700,
-                fontSize: '1.25rem'
-              }}
-            />
-            {fund.jzrq && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{fund.jzrq}</div>}
-          </Col>
-        </Row>
-
-        <Divider className="my-3 border-slate-200/60 dark:border-white/10" />
-
-        <Row gutter={[16, 16]}>
-          <Col span={6} xs={12} sm={6}>
-            <div className="flex flex-col justify-between h-full">
-              <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">更新时间</span>
-              <div className="mt-1">
-                <div className="text-base sm:text-lg font-bold font-sans text-slate-800 dark:text-slate-100 leading-tight">
-                  {new Date(gzTs).toLocaleTimeString('zh-CN', { hour12: false })}
-                </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  {new Date(gzTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
-                </div>
-              </div>
-            </div>
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            {kind === 'stock' && (fund as any).stockSpecific?.totalMarketCap ? (
-              <Statistic
-                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">总市值</span>}
-                value={formatMarketCap((fund as any).stockSpecific.totalMarketCap, fund.market)}
-                valueStyle={{
-                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  fontWeight: 700,
-                  fontSize: '1.125rem'
-                }}
-              />
-            ) : basic?.scale?.size != null ? (
-              <Statistic
-                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前规模</span>}
-                value={basic.scale.size}
-                precision={2}
-                suffix="亿"
-                valueStyle={{
-                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  fontWeight: 700,
-                  fontSize: '1.125rem'
-                }}
-              />
-            ) : (
-              <div className="flex flex-col justify-between h-full">
-                <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">当前规模</span>
-                <div className="text-sm text-slate-400 font-medium mt-1">—</div>
-              </div>
-            )}
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            <div className="flex flex-col justify-between h-full cursor-pointer group" onClick={onEditPosition}>
-              <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                持有金额 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
-              </span>
-              <div className="mt-1">
-                {position ? (
-                  <>
-                    <div className="text-base sm:text-lg font-bold font-sans text-slate-800 dark:text-slate-100 leading-tight">
-                      {currencyPrefix}{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-                    <div className="text-[10px] text-slate-400 mt-0.5 truncate">
-                      {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-sm text-slate-400 font-medium">未持仓</div>
-                )}
-              </div>
-            </div>
-          </Col>
-
-          <Col span={6} xs={12} sm={6}>
-            {position ? (
-              <Statistic
-                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">估算收益</span>}
-                value={Math.abs(holdingProfit)}
-                precision={2}
-                prefix={holdingProfit > 0 ? '+' : holdingProfit < 0 ? '-' : ''}
-                suffix={`${currencyPrefix} (${holdingProfitPct >= 0 ? '+' : ''}${holdingProfitPct.toFixed(2)}%)`}
-                valueStyle={{
-                  color: holdingProfit > 0 ? 'var(--color-up)' : holdingProfit < 0 ? 'var(--color-down)' : 'inherit',
-                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  fontWeight: 700,
-                  fontSize: '1.125rem'
-                }}
-              />
-            ) : kind === 'stock' && (fund as any).stockSpecific?.turnoverRate != null ? (
-              <Statistic
-                title={<span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">换手率</span>}
-                value={(fund as any).stockSpecific.turnoverRate}
-                precision={2}
-                suffix="%"
-                valueStyle={{
-                  fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  fontWeight: 700,
-                  fontSize: '1.125rem'
-                }}
-              />
-            ) : (
-              <div className="flex flex-col justify-between h-full">
-                <span className="text-[11px] font-medium text-slate-400 dark:text-slate-400 uppercase tracking-wider">持仓收益</span>
-                <div className="text-sm text-slate-400 font-medium mt-1">—</div>
-              </div>
-            )}
-          </Col>
-        </Row>
-      </Card>
-
-      {/* ── Real-time change banner ──────────────────────────── */}
+      {/* ── Professional Trading Terminal Matrix Banner (方案 B：富途/雪球多维矩阵流) ── */}
       {(() => {
-        const bannerCard = (
+        const unifiedTradingCard = (
           <Card
             size="small"
-            className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-2xl"
+            className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-2xl overflow-hidden"
             styles={{
-              body: { padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }
+              body: { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }
             }}
           >
-            {/* 上层：主标与实时涨跌数值 */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-2.5">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                  <Badge status={fund.navOnly || fund.quoteFreshness === 'stale' ? 'warning' : 'processing'} />
-                  {fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '延迟行情' : '实时行情'}
-                </span>
-                <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
-                <QuoteSourceBadge fund={fund} />
+            {/* 上部：核心行情主报价区 */}
+            <div className="flex items-start justify-between gap-4 flex-wrap sm:flex-nowrap">
+              {/* 左侧：现价 / 净值 与 涨跌幅 */}
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="font-sans text-xs font-semibold text-slate-400 dark:text-slate-500">
+                    {currencyPrefix}
+                  </span>
+                  <span className="font-mono font-black text-3xl sm:text-4xl tracking-tight text-slate-900 dark:text-slate-50 tabular-nums">
+                    {formatAssetPrice(current, kind)}
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 ml-1">
+                    {kind === 'stock' ? '现价' : (fund.navOnly ? '官方净值' : fund.proxyTicker ? '代理估值' : '估算净值')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className={`font-mono font-bold text-lg sm:text-xl tabular-nums ${dirColor}`}>
+                    {cleanChangeAmt > 0 ? '+' : ''}{formatAssetPrice(cleanChangeAmt, kind, kind === 'stock' ? 2 : 4)}
+                  </span>
+                  <span className={`font-mono font-bold text-base sm:text-lg tabular-nums ${dirColor}`}>
+                    ({cleanChangePct > 0 ? '+' : ''}{cleanChangePct.toFixed(2)}%)
+                  </span>
+                  <span className="text-[11px] text-slate-400 dark:text-slate-500 ml-1 font-medium">
+                    {kind === 'stock'
+                      ? (isTrading ? '盘中撮合成交' : '已收盘')
+                      : (fund.navOnly ? '官方披露净值' : isTrading ? '盘中实时估值' : '收盘估值')}
+                  </span>
+                </div>
               </div>
 
-              <div className="flex items-baseline gap-3">
-                <span className={`font-mono font-bold text-2xl tabular-nums ${dirColor}`}>
-                  {changeAmt > 0 ? '+' : ''}{changeAmt.toFixed(4)}
-                </span>
-                <span className={`font-mono font-bold text-lg tabular-nums ${dirColor}`}>
-                  {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
-                </span>
+              {/* 右侧：市场交易状态与更新时间微岛（消除双圆点冲突与折行） */}
+              <div className="flex flex-col items-start sm:items-end gap-1.5 shrink-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <MarketStatusBadge gzTs={gzTs} fundName={fund.name} fundCode={fund.fundcode} market={fund.market} className="text-xs" />
+                  <QuoteSourceBadge fund={fund} />
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono">
+                  <RelativeTime timestamp={gzTs} prefix="更新于 " />
+                  <span className="opacity-40">·</span>
+                  <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
+                  {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
+                </div>
               </div>
             </div>
 
-            {/* 下层：元数据对齐栏 */}
-            <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span>{fund.navOnly ? '官方净值' : fund.proxyTicker ? '代理估值' : '最新净值'}</span>
-                <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
-                  {currencyPrefix}{current.toFixed(4)}
-                </span>
-                {fund.officialNavDate && <span className="text-[10px] text-slate-400">基准净值 {fund.officialNavDate}</span>}
-              </div>
+            {/* 分割线 */}
+            <Divider className="my-0 border-slate-100 dark:border-white/10" />
 
-              <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                <RelativeTime timestamp={gzTs} prefix="最近更新 " />
-                <span className="opacity-40">·</span>
-                <span>{new Date(gzTs).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
-                {fund.quoteTime && <><span className="opacity-40">·</span><span title="上游行情时间">上游 {fund.quoteTime}</span></>}
-              </div>
+            {/* 下部：多维指标矩阵网格 (2行4列 / 响应式 2~4 列) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3">
+              {kind === 'stock' ? (
+                <>
+                  {/* 格子 1：昨收 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">昨收</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {previous > 0 ? formatAssetPrice(previous, kind, 2) : '—'}
+                    </div>
+                    {prevCloseDate && <span className="text-[10px] text-slate-400 font-mono">{prevCloseDate}</span>}
+                  </div>
+
+                  {/* 格子 2：今开 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">今开</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+                      openPrice && previous
+                        ? (openPrice > previous ? 'text-[var(--color-up)]' : openPrice < previous ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                        : 'text-slate-800 dark:text-slate-100'
+                    }`}>
+                      {openPrice != null && openPrice > 0 ? formatAssetPrice(openPrice, kind, 2) : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 3：最高 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">最高</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+                      highPrice && previous && highPrice > previous ? 'text-[var(--color-up)]' : 'text-slate-800 dark:text-slate-100'
+                    }`}>
+                      {highPrice != null && highPrice > 0 ? formatAssetPrice(highPrice, kind, 2) : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 4：最低 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">最低</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+                      lowPrice && previous && lowPrice < previous ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100'
+                    }`}>
+                      {lowPrice != null && lowPrice > 0 ? formatAssetPrice(lowPrice, kind, 2) : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 5：换手率 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">换手率</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {(fund as any).stockSpecific?.turnoverRate != null ? `${(fund as any).stockSpecific.turnoverRate.toFixed(2)}%` : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 6：振幅 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">日内振幅</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {amplitude != null ? `${amplitude.toFixed(2)}%` : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 7：总市值 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">总市值</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {(fund as any).stockSpecific?.totalMarketCap ? formatMarketCap((fund as any).stockSpecific.totalMarketCap, fund.market) : '—'}
+                    </div>
+                  </div>
+
+                  {/* 格子 8：持有资产 (可点击编辑持仓) */}
+                  <div className="flex flex-col min-w-0 cursor-pointer group" onClick={onEditPosition}>
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider flex items-center justify-between">
+                      持有资产 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+                      {position ? `${currencyPrefix}${holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '未持仓'}
+                    </div>
+                    {position ? (
+                      <span className={`text-[10px] font-mono truncate ${holdingProfit > 0 ? 'text-[var(--color-up)]' : holdingProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}`}>
+                        {position.shares}股 · 盈亏 {holdingProfit >= 0 ? '+' : ''}{currencyPrefix}{holdingProfit.toFixed(2)}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-mono opacity-60">点击录入</span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* 基金格子 1：官方基准净值（权威披露） */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">官方净值</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {fund.dwjz ? parseFloat(fund.dwjz).toFixed(4) : (previous > 0 ? previous.toFixed(4) : '—')}
+                    </div>
+                    {(fund.officialNavDate || fund.jzrq) && (
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {fund.officialNavDate || fund.jzrq} 披露
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 2：今日估算变动（消除同义重复，呈现盘中变动点位与幅度） */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">估算变动</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${dirColor}`}>
+                      {cleanChangeAmt >= 0 ? '+' : ''}{formatAssetPrice(cleanChangeAmt, kind, 4)}
+                    </div>
+                    <span className={`text-[10px] font-mono ${dirColor}`}>
+                      {cleanChangePct >= 0 ? '+' : ''}{cleanChangePct.toFixed(2)}%
+                    </span>
+                  </div>
+
+                  {/* 基金格子 3：基金规模 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">基金规模</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+                      {basic?.scale?.size != null ? `${basic.scale.size}亿` : '—'}
+                    </div>
+                    {basic?.scale?.reportDate && (
+                      <span className="text-[10px] text-slate-400 font-mono">{basic.scale.reportDate}</span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 4：基金经理 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">基金经理</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+                      {basic?.manager?.name || '—'}
+                    </div>
+                    {basic?.manager?.workTime && (
+                      <span className="text-[10px] text-slate-400 font-mono truncate">{basic.manager.workTime}</span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 5：持有金额 */}
+                  <div className="flex flex-col min-w-0 cursor-pointer group" onClick={onEditPosition}>
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider flex items-center justify-between">
+                      持有资产 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+                      {position ? `${currencyPrefix}${holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '未持仓'}
+                    </div>
+                    {position ? (
+                      <span className="text-[10px] text-slate-400 font-mono truncate">
+                        {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-mono opacity-60">点击录入</span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 6：估算收益 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">估算收益</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums truncate ${
+                      position
+                        ? (holdingProfit > 0 ? 'text-[var(--color-up)]' : holdingProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                        : 'text-slate-800 dark:text-slate-100'
+                    }`}>
+                      {position ? `${holdingProfit >= 0 ? '+' : ''}${currencyPrefix}${Math.abs(holdingProfit).toFixed(2)}` : '—'}
+                    </div>
+                    {position ? (
+                      <span className={`text-[10px] font-mono ${holdingProfitPct >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {holdingProfitPct >= 0 ? '+' : ''}{holdingProfitPct.toFixed(2)}%
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 font-mono opacity-60">无持仓数据</span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 7：近1月表现 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">近1月表现</span>
+                    <div className={`font-mono font-bold text-sm sm:text-base tabular-nums truncate ${
+                      basic?.returns?.m1 != null
+                        ? (basic.returns.m1 > 0 ? 'text-[var(--color-up)]' : basic.returns.m1 < 0 ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                        : 'text-slate-800 dark:text-slate-100'
+                    }`}>
+                      {basic?.returns?.m1 != null ? `${basic.returns.m1 >= 0 ? '+' : ''}${basic.returns.m1.toFixed(2)}%` : '—'}
+                    </div>
+                    {basic?.returns?.y1 != null && (
+                      <span className="text-[10px] text-slate-400 font-mono truncate">
+                        近1年 {basic.returns.y1 >= 0 ? '+' : ''}{basic.returns.y1.toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 基金格子 8：业绩基准/底层跟踪 */}
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">业绩基准</span>
+                    <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate" title={getFundBenchmark(fund)}>
+                      {getFundBenchmark(fund)}
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono truncate">
+                      {fund.proxyTicker ? '底层ETF穿透' : (fund.market === 'us' ? '全球海外权益' : fund.market === 'hk' ? '港股互联' : '标的指数')}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </Card>
         );
 
-        return isTrading ? <BorderBeam>{bannerCard}</BorderBeam> : bannerCard;
+        return isTrading ? <BorderBeam size={80} duration={8}>{unifiedTradingCard}</BorderBeam> : unifiedTradingCard;
       })()}
 
       {/* ── Chart card ───────────────────────────────────────── */}
@@ -661,18 +741,9 @@ export function FundDetailPanel({
           kind={kind}
           current={current}
           previous={previous}
-          openPrice={(fund.open ? parseFloat(fund.open) : undefined) ?? (() => {
-            const ssOpen = (fund as any).stockSpecific?.open;
-            return typeof ssOpen === 'number' && ssOpen > 0 ? ssOpen : undefined;
-          })()}
-          highPrice={(() => {
-            const v = (fund as any).stockSpecific?.high;
-            return typeof v === 'number' && v > 0 ? v : undefined;
-          })()}
-          lowPrice={(() => {
-            const v = (fund as any).stockSpecific?.low;
-            return typeof v === 'number' && v > 0 ? v : undefined;
-          })()}
+          openPrice={openPrice}
+          highPrice={highPrice}
+          lowPrice={lowPrice}
           minuteFeed={minuteData}
           height={isExpanded ? 400 : 300}
           history={history}

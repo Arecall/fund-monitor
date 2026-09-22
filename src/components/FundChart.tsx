@@ -445,6 +445,10 @@ export function FundChart({
   const maxTooltipTop = Math.max(minTooltipTop, padding.top + innerH - estimatedTooltipHeight - 4);
   const tooltipTop = Math.max(minTooltipTop, Math.min(maxTooltipTop, rawTooltipTop));
 
+  // 零轴基准线几何参数（用于网格线去重与副 Y 轴防重影碰撞）
+  const hasBaseline = baselineValue >= minV && baselineValue <= maxV;
+  const baselineY = hasBaseline ? y(baselineValue) : null;
+
   return (
     <div className="w-full" ref={containerRef}>
       {/* 顶部降噪一体化控制甲板：整合标题、状态、数据源与时间维度分段胶囊 */}
@@ -637,17 +641,21 @@ export function FundChart({
             const pct = (!base || base <= 0) ? 0 : ((t.v - base) / base) * 100;
             const isPctUp = pct > 0.005;
             const isPctDown = pct < -0.005;
+            const isAtBaseline = hasBaseline && baselineY !== null && Math.abs(t.y - baselineY) < 6;
+            const isCloseToBaseline = hasBaseline && baselineY !== null && Math.abs(t.y - baselineY) < 12;
             return (
               <g key={i}>
-                <line
-                  x1={padding.left}
-                  x2={padding.left + innerW}
-                  y1={t.y}
-                  y2={t.y}
-                  stroke="currentColor"
-                  strokeOpacity="0.06"
-                  strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
-                />
+                {!isAtBaseline && (
+                  <line
+                    x1={padding.left}
+                    x2={padding.left + innerW}
+                    y1={t.y}
+                    y2={t.y}
+                    stroke="currentColor"
+                    strokeOpacity="0.06"
+                    strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
+                  />
+                )}
                 {/* 左轴：价格 */}
                 <text
                   x={padding.left - 8}
@@ -660,18 +668,20 @@ export function FundChart({
                 >
                   {t.v.toFixed(range === 'intraday' ? 4 : 2)}
                 </text>
-                {/* 右轴：相对基准价的涨跌幅 %（水上水下着色分界） */}
-                <text
-                  x={padding.left + innerW + 8}
-                  y={t.y + 3}
-                  textAnchor="start"
-                  fontSize="10"
-                  fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
-                  fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
-                  className="font-mono tabular-nums font-medium"
-                >
-                  {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
-                </text>
+                {/* 右轴：相对基准价的涨跌幅 %（水上水下着色分界；基准线重合处由专用微胶囊承接，杜绝重影） */}
+                {!isCloseToBaseline && (
+                  <text
+                    x={padding.left + innerW + 8}
+                    y={t.y + 3}
+                    textAnchor="start"
+                    fontSize="10"
+                    fill={isPctUp ? 'var(--color-up)' : isPctDown ? 'var(--color-down)' : 'currentColor'}
+                    fillOpacity={isPctUp || isPctDown ? '0.85' : '0.45'}
+                    className="font-mono tabular-nums font-medium"
+                  >
+                    {`${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -693,13 +703,13 @@ export function FundChart({
           ))}
 
           {/* 零轴基准线 (昨收平衡线)：具备金融心理锚定仪式感 */}
-          {baselineValue >= minV && baselineValue <= maxV && (
+          {hasBaseline && baselineY !== null && (
             <g>
               <line
                 x1={padding.left}
                 x2={padding.left + innerW}
-                y1={y(baselineValue)}
-                y2={y(baselineValue)}
+                y1={baselineY}
+                y2={baselineY}
                 stroke="currentColor"
                 strokeOpacity="0.22"
                 strokeDasharray="4 3"
@@ -707,7 +717,7 @@ export function FundChart({
               {/* 零轴水平线右侧微胶囊指示 */}
               <rect
                 x={padding.left + innerW + 3}
-                y={y(baselineValue) - 7}
+                y={baselineY - 7}
                 width={36}
                 height={14}
                 rx={3}
@@ -716,7 +726,7 @@ export function FundChart({
               />
               <text
                 x={padding.left + innerW + 21}
-                y={y(baselineValue) + 3.5}
+                y={baselineY + 3.5}
                 textAnchor="middle"
                 fontSize="9"
                 fill="currentColor"
