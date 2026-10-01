@@ -82,10 +82,18 @@ export function EmailConfigPanel({
       {trigger ? (
         trigger(handleOpen)
       ) : isControlled ? null : (
-        <Tooltip title="邮件服务配置 (Admin)" placement="bottom">
+        <Tooltip
+          title="邮件服务配置 (Admin)"
+          placement="bottom"
+          open={isOpen ? false : undefined}
+          destroyTooltipOnHide
+        >
           <motion.button
             type="button"
-            onClick={handleOpen}
+            onClick={(e) => {
+              (e.currentTarget as HTMLElement)?.blur();
+              handleOpen();
+            }}
             whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
             transition={SPRING.snap}
             className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer flex items-center justify-center"

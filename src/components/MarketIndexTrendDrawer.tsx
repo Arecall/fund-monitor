@@ -15,6 +15,7 @@ import {
   type MarketIndexTrendResponse,
   type IndexTimelinePoint
 } from '../services/api';
+import { useModalHistory } from '../utils/modalHistory';
 
 export interface MarketIndexTrendDrawerProps {
   open: boolean;
@@ -34,6 +35,9 @@ export function MarketIndexTrendDrawer({
   const [data, setData] = useState<MarketIndexTrendResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [addingCode, setAddingCode] = useState<string | null>(null);
+
+  // 接入 Android 系统物理返回 / 屏幕边缘侧滑手势感知
+  useModalHistory(open, onClose, { id: 'market-index-trend-drawer' });
 
   // 走势图交互探针状态
   const [hoverPoint, setHoverPoint] = useState<IndexTimelinePoint | null>(null);

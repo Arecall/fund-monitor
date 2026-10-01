@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Modal,
+  Drawer,
   Tabs,
   Table,
   Tag,
@@ -27,6 +28,7 @@ import {
   ExternalLink,
   ShieldCheck,
   Clock,
+  X,
 } from 'lucide-react';
 import {
   fetchAlertHistory,
@@ -38,6 +40,7 @@ import {
   type AlertItem,
   type AlertHistoryItem,
 } from '../services/api';
+import { useModalHistory } from '../utils/modalHistory';
 
 interface NotificationLogModalProps {
   open: boolean;
@@ -54,6 +57,17 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
   onToast,
   onSelectFund,
 }) => {
+  // 1. 响应式形态感知 (< 768px 为移动端底部抽屉)
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 2. 接入移动端边缘侧滑与物理返回拦截 (PC桌面端由环境守卫自动旁路)
+  useModalHistory(open, onClose, { id: 'notification-log-panel' });
+
   const [activeTab, setActiveTab] = useState<'logs' | 'rules'>('logs');
 
   // Logs state
@@ -452,42 +466,223 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
     },
   ];
 
-  return (
-    <Modal
-      open={open}
-      onCancel={onClose}
-      footer={null}
-      width={860}
-      destroyOnClose
-      centered
-      className="apple-modal-blur"
-      title={
-        <div className="flex items-center justify-between pr-8">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-              <Bell size={16} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="apple-display-heading text-base font-bold text-slate-900 dark:text-slate-100 m-0">
-                  预警订阅与推送日志
-                </h3>
-                <Tag color="blue" className="rounded-full text-[11px] px-2 py-0 font-mono font-medium m-0 flex items-center gap-1">
-                  <ShieldCheck size={11} /> 用户: {currentUser}
+  // 3. 移动端轻量日志卡片流渲染 (消灭宽表格横滚)
+  const renderMobileLogs = () => {
+    if (logsLoading && logs.length === 0) {
+      return <div className="py-12 text-center text-xs text-slate-400">正在获取推送记录...</div>;
+    }
+    if (logs.length === 0) {
+      return (
+        <div className="py-12">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <div className="text-xs text-slate-400 space-y-1">
+                <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无推送日志记录</p>
+                <p className="m-0 text-[11px]">当您订阅的标的达到设定的水位线阈值时，系统会自动发送邮件并记录在此</p>
+              </div>
+            }
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-2 pb-6">
+        {logs.map((item) => {
+          const isUp = item.direction === 'up';
+          const isSuccess = item.sent_ok === 1;
+          const d = new Date(item.sent_at);
+          const timeStr = `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+          return (
+            <div
+              key={item.id}
+              className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-[var(--hairline-border)] space-y-2 shadow-2xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                  <span className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
+                    {item.fund_name || item.fund_code}
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                    {item.fund_code}
+                  </span>
+                  {onSelectFund && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onSelectFund(item.fund_code);
+                      }}
+                      className="text-slate-400 hover:text-blue-500 p-0.5 cursor-pointer"
+                      title="打开详情面板"
+                    >
+                      <ExternalLink size={11} />
+                    </button>
+                  )}
+                </div>
+                <Tag
+                  color={isUp ? 'red' : 'green'}
+                  className="m-0 flex items-center gap-0.5 font-bold text-[11px] px-1.5 py-0.2 border-0 rounded shrink-0"
+                >
+                  {isUp ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+                  {item.change_pct > 0 ? `+${item.change_pct.toFixed(2)}%` : `${item.change_pct.toFixed(2)}%`}
                 </Tag>
               </div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 m-0 mt-0.5">
-                数据严格按登录用户隔离，仅展示归属于您名下的提醒与投递记录
-              </p>
+
+              <div className="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-slate-100 dark:border-white/5">
+                <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                  <span>现价: <strong className="text-slate-700 dark:text-slate-200">{item.current_price != null ? item.current_price.toFixed(4) : '—'}</strong></span>
+                  <span className="text-slate-400">基准: {item.reference_price != null ? item.reference_price.toFixed(4) : '—'}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-400 flex items-center gap-0.5">
+                    <Clock size={10} /> {timeStr}
+                  </span>
+                  <Tag
+                    color={isSuccess ? 'success' : 'error'}
+                    className="m-0 text-[10px] px-1 py-0 rounded font-medium border-0"
+                  >
+                    {isSuccess ? '已送达' : '失败'}
+                  </Tag>
+                  <Popconfirm
+                    title="确认删除该条日志？"
+                    onConfirm={() => handleDeleteLogItem(item.id)}
+                    okText="删除"
+                    cancelText="取消"
+                  >
+                    <button type="button" className="text-slate-400 hover:text-red-500 p-0.5 ml-0.5 cursor-pointer">
+                      <Trash2 size={12} />
+                    </button>
+                  </Popconfirm>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // 4. 移动端订阅规则卡片流渲染
+  const renderMobileRules = () => {
+    if (rulesLoading && alerts.length === 0) {
+      return <div className="py-12 text-center text-xs text-slate-400">正在获取规则列表...</div>;
+    }
+    if (alerts.length === 0) {
+      return (
+        <div className="py-12">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <div className="text-xs text-slate-400 space-y-1">
+                <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无任何订阅规则</p>
+                <p className="m-0 text-[11px]">点击列表中的任意标的，在详情页即可添加“价格提醒与水位线”订阅</p>
+              </div>
+            }
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-2 pb-6">
+        {alerts.map((item) => (
+          <div
+            key={item.id}
+            className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-[var(--hairline-border)] space-y-2 shadow-2xs"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                <span className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
+                  {item.fund_name || item.fund_code}
+                </span>
+                <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                  {item.fund_code}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Switch
+                  size="small"
+                  checked={item.is_active === 1}
+                  loading={ruleActionLoading === item.id}
+                  onChange={() => handleToggleAlertActive(item)}
+                />
+                <Popconfirm
+                  title="确认删除该订阅规则？"
+                  onConfirm={() => handleDeleteAlert(item.id, item.fund_name || item.fund_code)}
+                  okText="删除"
+                  cancelText="取消"
+                >
+                  <button type="button" className="text-slate-400 hover:text-red-500 p-0.5 cursor-pointer">
+                    <Trash2 size={13} />
+                  </button>
+                </Popconfirm>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-slate-100 dark:border-white/5">
+              <div className="flex items-center gap-1.5">
+                {item.up_threshold != null && (
+                  <Tag color="red" className="text-[10px] font-mono m-0 px-1.5 py-0 border-0">
+                    涨 ≥ {item.up_threshold}%
+                  </Tag>
+                )}
+                {item.down_threshold != null && (
+                  <Tag color="green" className="text-[10px] font-mono m-0 px-1.5 py-0 border-0">
+                    跌 ≥ {item.down_threshold}%
+                  </Tag>
+                )}
+              </div>
+              <div className="text-slate-400 text-[10px]">
+                基准: <strong className="text-slate-600 dark:text-slate-300">{item.reference_price != null ? item.reference_price.toFixed(4) : '—'}</strong>
+              </div>
             </div>
           </div>
+        ))}
+      </div>
+    );
+  };
+
+  // 5. 核心面板内容
+  const modalContent = (
+    <div className="flex flex-col h-full">
+      {/* 头部信息区 */}
+      <div className="shrink-0 pb-3 flex items-center justify-between border-b border-[var(--hairline-border)]">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+            <Bell size={16} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="apple-display-heading text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 m-0 truncate">
+                预警订阅与推送日志
+              </h3>
+              <Tag color="blue" className="rounded-full text-[10px] px-2 py-0 font-mono font-medium m-0 flex items-center gap-1 shrink-0">
+                <ShieldCheck size={10} /> {currentUser}
+              </Tag>
+            </div>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 m-0 mt-0.5 truncate">
+              数据严格按登录用户隔离，仅展示归属于您名下的提醒与投递记录
+            </p>
+          </div>
         </div>
-      }
-    >
+        {isMobile && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500 hover:text-slate-800 dark:hover:text-white shrink-0 ml-2 cursor-pointer"
+            aria-label="关闭"
+          >
+            <X size={15} />
+          </button>
+        )}
+      </div>
+
+      {/* Tabs 主体区 */}
       <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as 'logs' | 'rules')}
-        className="mt-2"
+        className="mt-2 flex-1 flex flex-col min-h-0"
         items={[
           {
             key: 'logs',
@@ -499,13 +694,13 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
               </span>
             ),
             children: (
-              <div className="space-y-3 pt-1">
+              <div className="space-y-3 pt-1 flex-1 flex flex-col min-h-0 overflow-y-auto">
                 {/* 顶部筛选与操作栏 */}
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)]">
-                  <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-[320px]">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-white/[0.02] p-2 sm:p-2.5 rounded-xl border border-[var(--hairline-border)] shrink-0">
+                  <div className="flex items-center gap-2 flex-1 min-w-[160px] max-w-[280px]">
                     <Input
                       size="small"
-                      placeholder="按代码筛选 (如 001668)..."
+                      placeholder="筛选代码 (如 001668)..."
                       prefix={<Search size={12} className="text-slate-400" />}
                       value={searchKeyword}
                       onChange={(e) => setSearchKeyword(e.target.value)}
@@ -548,50 +743,56 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
                           icon={<Trash2 size={12} />}
                           className="text-xs rounded-lg flex items-center gap-1"
                         >
-                          清空日志
+                          清空
                         </Button>
                       </Popconfirm>
                     )}
                   </div>
                 </div>
 
-                {/* 日志数据表格 */}
-                <div className="rounded-xl border border-[var(--hairline-border)] overflow-hidden">
-                  <Table
-                    columns={logColumns}
-                    dataSource={logs}
-                    rowKey="id"
-                    loading={logsLoading}
-                    size="small"
-                    scroll={{ x: 780 }}
-                    pagination={{
-                      current: page,
-                      pageSize: pageSize,
-                      total: totalLogs,
-                      showSizeChanger: true,
-                      pageSizeOptions: ['10', '20', '50'],
-                      showTotal: (total) => `共 ${total} 条推送记录`,
-                      onChange: (p, ps) => loadHistory(p, ps, searchKeyword),
-                      size: 'small',
-                      className: 'p-2 m-0 border-t border-[var(--hairline-border)]',
-                    }}
-                    locale={{
-                      emptyText: (
-                        <div className="py-8">
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description={
-                              <div className="text-xs text-slate-400 space-y-1">
-                                <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无推送日志记录</p>
-                                <p className="m-0 text-[11px]">当您订阅的基金/股票达到设定的水位线阈值时，系统会自动发送邮件并记录在此</p>
-                              </div>
-                            }
-                          />
-                        </div>
-                      ),
-                    }}
-                  />
-                </div>
+                {/* 差异化分流：移动端卡片流 vs 桌面端宽表格 */}
+                {isMobile ? (
+                  <div className="flex-1 overflow-y-auto pt-1">
+                    {renderMobileLogs()}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-[var(--hairline-border)] overflow-hidden">
+                    <Table
+                      columns={logColumns}
+                      dataSource={logs}
+                      rowKey="id"
+                      loading={logsLoading}
+                      size="small"
+                      scroll={{ x: 780 }}
+                      pagination={{
+                        current: page,
+                        pageSize: pageSize,
+                        total: totalLogs,
+                        showSizeChanger: true,
+                        pageSizeOptions: ['10', '20', '50'],
+                        showTotal: (total) => `共 ${total} 条推送记录`,
+                        onChange: (p, ps) => loadHistory(p, ps, searchKeyword),
+                        size: 'small',
+                        className: 'p-2 m-0 border-t border-[var(--hairline-border)]',
+                      }}
+                      locale={{
+                        emptyText: (
+                          <div className="py-8">
+                            <Empty
+                              image={Empty.PRESENTED_IMAGE_SIMPLE}
+                              description={
+                                <div className="text-xs text-slate-400 space-y-1">
+                                  <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无推送日志记录</p>
+                                  <p className="m-0 text-[11px]">当您订阅的基金/股票达到设定的水位线阈值时，系统会自动发送邮件并记录在此</p>
+                                </div>
+                              }
+                            />
+                          </div>
+                        ),
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             ),
           },
@@ -605,8 +806,8 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
               </span>
             ),
             children: (
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)]">
+              <div className="space-y-3 pt-1 flex-1 flex flex-col min-h-0 overflow-y-auto">
+                <div className="flex items-center justify-between bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)] shrink-0">
                   <span className="text-xs text-slate-500 dark:text-slate-400">
                     当前共创建 <strong className="text-slate-700 dark:text-slate-200">{alerts.length}</strong> 条价格水位线监控规则
                   </span>
@@ -616,41 +817,95 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
                     onClick={loadAlertRules}
                     className="text-xs rounded-lg flex items-center gap-1"
                   >
-                    刷新规则
+                    刷新
                   </Button>
                 </div>
 
-                <div className="rounded-xl border border-[var(--hairline-border)] overflow-hidden">
-                  <Table
-                    columns={ruleColumns}
-                    dataSource={alerts}
-                    rowKey="id"
-                    loading={rulesLoading}
-                    size="small"
-                    scroll={{ x: 740 }}
-                    pagination={alerts.length > 10 ? { pageSize: 10, size: 'small', className: 'p-2 m-0' } : false}
-                    locale={{
-                      emptyText: (
-                        <div className="py-8">
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description={
-                              <div className="text-xs text-slate-400 space-y-1">
-                                <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无任何订阅规则</p>
-                                <p className="m-0 text-[11px]">点击列表中的任意标的，在详情页右下角即可添加“价格提醒与水位线”订阅</p>
-                              </div>
-                            }
-                          />
-                        </div>
-                      ),
-                    }}
-                  />
-                </div>
+                {/* 差异化分流：移动端卡片流 vs 桌面端宽表格 */}
+                {isMobile ? (
+                  <div className="flex-1 overflow-y-auto pt-1">
+                    {renderMobileRules()}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-[var(--hairline-border)] overflow-hidden">
+                    <Table
+                      columns={ruleColumns}
+                      dataSource={alerts}
+                      rowKey="id"
+                      loading={rulesLoading}
+                      size="small"
+                      scroll={{ x: 740 }}
+                      pagination={alerts.length > 10 ? { pageSize: 10, size: 'small', className: 'p-2 m-0' } : false}
+                      locale={{
+                        emptyText: (
+                          <div className="py-8">
+                            <Empty
+                              image={Empty.PRESENTED_IMAGE_SIMPLE}
+                              description={
+                                <div className="text-xs text-slate-400 space-y-1">
+                                  <p className="font-semibold text-slate-600 dark:text-slate-300 m-0">暂无任何订阅规则</p>
+                                  <p className="m-0 text-[11px]">点击列表中的任意标的，在详情页右下角即可添加“价格提醒与水位线”订阅</p>
+                                </div>
+                              }
+                            />
+                          </div>
+                        ),
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             ),
           },
         ]}
       />
+    </div>
+  );
+
+  // 6. 响应式形态分流渲染
+  if (isMobile) {
+    return (
+      <Drawer
+        open={open}
+        onClose={onClose}
+        placement="bottom"
+        height="86vh"
+        destroyOnClose
+        closeIcon={false}
+        styles={{
+          header: { display: 'none' },
+          body: { padding: '8px 16px 16px 16px', overflow: 'hidden' },
+          mask: { backdropFilter: 'blur(8px)', backgroundColor: 'rgba(0, 0, 0, 0.45)' },
+        }}
+        className="rounded-t-[24px] overflow-hidden"
+      >
+        {/* 顶部药丸抓手 (Apple Grabber) */}
+        <div className="w-full pt-1 pb-2 flex justify-center cursor-grab active:cursor-grabbing">
+          <div className="w-10 h-1 bg-slate-300 dark:bg-slate-700 rounded-full" />
+        </div>
+        <div className="h-[calc(100%-14px)] flex flex-col pb-safe">
+          {modalContent}
+        </div>
+      </Drawer>
+    );
+  }
+
+  // 桌面端保持精致居中 Modal
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      width={860}
+      destroyOnClose
+      centered
+      className="apple-modal-blur"
+      title={null}
+      closeIcon={<X size={16} className="text-slate-400 hover:text-slate-600 mt-1" />}
+    >
+      <div className="pt-2">
+        {modalContent}
+      </div>
     </Modal>
   );
 };

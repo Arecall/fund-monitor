@@ -480,10 +480,9 @@ button:focus-visible {
    Mobile Optimization & Ergonomics
    ─────────────────────────────────────────────────────────────────── */
 
-/* 移动端平滑滚动与过度滚动阻尼 */
+/* 移动端原生平滑滚动 */
 html, body {
   -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
 }
 
 /* 消除移动端 iOS Safari 键盘唤起缩放缺陷：在移动端小屏下保证 input 物理字号为 16px */

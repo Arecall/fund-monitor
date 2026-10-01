@@ -7,9 +7,9 @@ import {
   Spin,
   Empty,
   Modal,
+  Drawer,
   message,
   Input,
-  Select,
 } from 'antd';
 import {
   Landmark,
@@ -22,8 +22,6 @@ import {
   Sparkles,
   LineChart,
   AlertTriangle,
-  ChevronDown,
-  ChevronUp,
   Search,
   ArrowUpRight,
   ArrowDownRight,
@@ -34,6 +32,7 @@ import {
   FileText,
   Clock,
   ChevronLeft,
+  X,
 } from 'lucide-react';
 import {
   fetchBankStocksOverview,
@@ -46,6 +45,7 @@ import {
   type BankMacroNews,
   type BankAiDiagnoseResult,
 } from '../services/api';
+import { useModalHistory } from '../utils/modalHistory';
 
 interface BankStocksTabProps {
   currentUser?: string;
@@ -58,13 +58,49 @@ interface BankStocksTabProps {
 }
 
 const TIER_OPTIONS = [
-  { key: 'all', label: '全部稳健资产', icon: <Layers className="w-4 h-4" /> },
-  { key: 't0_cash', label: 'T+0 场内活钱', icon: <Zap className="w-4 h-4 text-amber-500" />, desc: '盘中可用·保本稳健' },
-  { key: 'national', label: '国有六大行', icon: <Landmark className="w-4 h-4 text-blue-500" />, desc: '主权底仓·高股息' },
-  { key: 'commercial', label: '优质股份行', icon: <Scale className="w-4 h-4 text-purple-500" />, desc: '零售壁垒·估值弹性' },
-  { key: 'regional', label: '区域高成长', icon: <TrendingUp className="w-4 h-4 text-emerald-500" />, desc: '极低不良·超厚拨备' },
-  { key: 'etf', label: '银行/红利 ETF', icon: <PieChart className="w-4 h-4 text-indigo-500" />, desc: '一篮子分散·防暴雷' },
-  { key: 'hk', label: '港股高息折价', icon: <DollarSign className="w-4 h-4 text-rose-500" />, desc: 'AH实时折价·扣税后精算' },
+  { key: 'all', label: '全部稳健资产', shortLabel: '全部', icon: <Layers className="w-4 h-4" /> },
+  { key: 't0_cash', label: 'T+0 场内活钱', shortLabel: 'T+0活钱', icon: <Zap className="w-4 h-4 text-amber-500" />, desc: '盘中可用·保本稳健' },
+  { key: 'national', label: '国有六大行', shortLabel: '六大行', icon: <Landmark className="w-4 h-4 text-blue-500" />, desc: '主权底仓·高股息' },
+  { key: 'commercial', label: '优质股份行', shortLabel: '股份行', icon: <Scale className="w-4 h-4 text-purple-500" />, desc: '零售壁垒·估值弹性' },
+  { key: 'regional', label: '区域高成长', shortLabel: '城农商行', icon: <TrendingUp className="w-4 h-4 text-emerald-500" />, desc: '极低不良·超厚拨备' },
+  { key: 'etf', label: '银行/红利 ETF', shortLabel: '行业ETF', icon: <PieChart className="w-4 h-4 text-indigo-500" />, desc: '一篮子分散·防暴雷' },
+  { key: 'hk', label: '港股高息折价', shortLabel: '港股通高息', icon: <DollarSign className="w-4 h-4 text-rose-500" />, desc: 'AH实时折价·扣税后精算' },
+];
+
+const SORT_OPTIONS = [
+  { key: 'afterTaxDividendYield', label: '税后实得股息', shortLabel: '税后股息' },
+  { key: 'dividendYield', label: '名义股息率', shortLabel: '名义股息' },
+  { key: 'pb', label: '市净率 PB', shortLabel: '市净率' },
+  { key: 'changePct', label: '今日涨跌幅', shortLabel: '今日涨跌' },
+  { key: 'stabilityScore', label: '综合稳健度', shortLabel: '稳健度' },
+];
+
+const MECHANISM_RULES = [
+  {
+    id: 1,
+    title: '股票非保本：',
+    desc: '二级市场股价每日波动，极端行情下分红收益无法完全覆盖本金浮亏，严禁等同于保本存款。',
+  },
+  {
+    id: 2,
+    title: '港股通 20% 红利税：',
+    desc: '港股名义股息虽达 6.5%~7%，但内地个人通过港股通强制扣除 20% 红利税，到手实得约 5.2%~5.6%，本专区已做实得换算。',
+  },
+  {
+    id: 3,
+    title: '资金可用 ≠ 可转出：',
+    desc: 'T+0 货币 ETF 卖出后盘中在证券账户即刻可用；提现到银行卡受银证转账交易时段（工作日 9:00~16:00）约束，夜间与非交易日无法提现。',
+  },
+  {
+    id: 4,
+    title: '货基机制差异：',
+    desc: '华宝添益（面值100元按日结转份额）与银华日利（净值累加年末集中除权分红）机制不同，二级市场买卖存在微小贴水波动。',
+  },
+  {
+    id: 5,
+    title: '财报报告期时间戳：',
+    desc: '不良贷款率、拨备覆盖率均按上市公司季报统一公布（当前为 2024 中报基准），不随二级市场日频刷新。',
+  },
 ];
 
 /**
@@ -435,8 +471,8 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const [searchText, setSearchText] = useState<string>('');
   const [sortBy, setSortBy] = useState<string>('dividendYield');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  // 辨析 Banner 折叠状态：默认收起以释放首屏高价值资产信息空间，支持渐进式展开
-  const [showNoticeBanner, setShowNoticeBanner] = useState(false);
+  // 机制辨析抽屉状态（替代侵占首屏的大横幅，渐进式披露）
+  const [rulesDrawerOpen, setRulesDrawerOpen] = useState(false);
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
 
   // AI 诊断弹窗状态
@@ -444,6 +480,20 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const [diagnosingStock, setDiagnosingStock] = useState<BankStockItem | null>(null);
   const [diagnoseLoading, setDiagnoseLoading] = useState(false);
   const [diagnoseResult, setDiagnoseResult] = useState<BankAiDiagnoseResult | null>(null);
+
+  // 接入 Android 系统物理返回 / 边缘侧滑手势感知
+  useModalHistory(diagnoseModalOpen, () => setDiagnoseModalOpen(false), { id: 'bank-diagnose-modal' });
+  useModalHistory(rulesDrawerOpen, () => setRulesDrawerOpen(false), { id: 'bank-rules-drawer' });
+
+  // 快捷表头排序切换器
+  const handleToggleSort = useCallback((key: string) => {
+    if (sortBy === key) {
+      setSortOrder(prev => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(key);
+      setSortOrder(key === 'pb' ? 'asc' : 'desc');
+    }
+  }, [sortBy]);
 
   // 移动端全屏二级页面打开时，锁定 body 滚动防止背景穿透
   useEffect(() => {
@@ -564,295 +614,192 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   }, [stocks, selectedTier, searchText]);
 
   return (
-    <div className="space-y-5 pb-16 max-w-7xl mx-auto px-2 sm:px-4">
-      {/* 1. 顶部 Header 与操作 */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
+    <div className="space-y-4 pb-16 max-w-7xl mx-auto px-2 sm:px-4">
+      {/* 1. 顶部 Header 与操作微岛 */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-5 shadow-2xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/70 dark:border-emerald-800/60 flex items-center justify-center shrink-0">
-                <Landmark className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600 dark:text-emerald-400" />
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/70 dark:border-emerald-800/60 flex items-center justify-center shrink-0">
+                <Landmark className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               </div>
-              <h1 className="text-lg sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-                银行·稳健红利专区
-              </h1>
-              <span className="px-2 py-0.5 text-xs font-medium bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 rounded-full shrink-0">
-                <span className="hidden sm:inline">金融精算级量化 + 配置大模型诊断</span>
-                <span className="sm:hidden">精算量化 · 大模型</span>
-              </span>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <h1 className="text-base sm:text-xl font-bold text-slate-900 dark:text-white tracking-tight truncate">
+                  银行·稳健红利
+                </h1>
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200/70 dark:border-emerald-800/60 rounded-md shrink-0">
+                  精算版
+                </span>
+              </div>
             </div>
-            <p className="mt-1.5 text-xs sm:text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-3xl">
-              立足金融投资常识与客观准则，区分 A 股免税与港股通 20% 红利税实得收益，动态追踪 AH 折溢价，覆盖高股息银行底仓与 T+0 场内货币工具。
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-snug line-clamp-1 sm:line-clamp-none">
+              精算税后实得 · 动态追踪 AH 折价 · 场内 T+0 稳健配置
             </p>
           </div>
 
-          <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
-            <Button
-              icon={<RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />}
-              onClick={() => loadData(true)}
-              loading={refreshing}
-              className="rounded-xl flex items-center gap-1.5 border-slate-300 dark:border-slate-700 dark:text-slate-200 hover:border-emerald-500 text-xs sm:text-sm h-8 sm:h-9 px-3"
-            >
-              刷新行情与汇率
-            </Button>
-          </div>
-        </div>
-
-        {/* 2. 轻量合规与机制微岛（大厂渐进式折叠 + 无障碍防折行） */}
-        <div className="mt-3.5 border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 rounded-xl p-2.5 sm:p-3 transition-colors">
-          <div
-            onClick={() => setShowNoticeBanner(!showNoticeBanner)}
-            className="flex items-center justify-between gap-2 cursor-pointer select-none group"
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setShowNoticeBanner(!showNoticeBanner);
-              }
-            }}
-            aria-expanded={showNoticeBanner}
-          >
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <span className="px-1.5 py-0.5 text-[11px] font-semibold bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 rounded shrink-0 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3 text-sky-600 dark:text-sky-400" />
-                <span>机制辨析</span>
-              </span>
-              {showNoticeBanner ? (
-                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
-                  专业金融常识与流动性关键辨析（5项核心准则）
-                </span>
-              ) : (
-                <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                  <span className="hidden sm:inline">①股票非保本波动 · ②港股通扣20%红利税已实折 · ③T+0盘中可用≠可转出 · ④货基机制 · ⑤季报时间戳</span>
-                  <span className="sm:hidden">①非保本 · ②港股通税后实折 · ③T+0转出时效...</span>
-                </span>
-              )}
-            </div>
-
+          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+            {/* 机制辨析抽屉触发按键 */}
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowNoticeBanner(!showNoticeBanner);
-              }}
-              className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white flex items-center gap-1 shrink-0 whitespace-nowrap px-2 py-1 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
+              onClick={() => setRulesDrawerOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-sky-50 dark:bg-sky-950/50 hover:bg-sky-100 dark:hover:bg-sky-900/50 text-sky-700 dark:text-sky-300 text-xs font-medium transition-all cursor-pointer border border-sky-200/60 dark:border-sky-800/60"
             >
-              <span>{showNoticeBanner ? '收起辨析' : '展开辨析 (5)'}</span>
-              {showNoticeBanner ? (
-                <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-              )}
+              <ShieldCheck className="w-3.5 h-3.5 text-sky-500" />
+              <span className="text-[11px]">机制辨析 (5)</span>
+            </button>
+
+            {/* 刷新时间戳按键 */}
+            <button
+              type="button"
+              onClick={() => loadData(true)}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100/80 dark:bg-slate-800/70 hover:bg-slate-200/80 dark:hover:bg-slate-700/70 text-slate-600 dark:text-slate-300 text-xs font-mono transition-all cursor-pointer border border-slate-200/60 dark:border-slate-700/60"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-slate-400 ${refreshing ? 'animate-spin text-emerald-500' : ''}`} />
+              <span className="text-[11px] tabular-nums font-semibold">{overview?.updateTime ? overview.updateTime.slice(-8) : '实时'}</span>
             </button>
           </div>
-
-          <AnimatePresence initial={false}>
-            {showNoticeBanner && (
-              <motion.div
-                key="notice-content"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-                className="overflow-hidden"
-              >
-                <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 dark:border-slate-800/80 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs leading-relaxed">
-                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      1
-                    </span>
-                    <div className="text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">股票非保本：</span>
-                      二级市场股价每日波动，极端行情下分红收益无法完全覆盖本金浮亏，严禁等同于保本存款。
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      2
-                    </span>
-                    <div className="text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">港股通 20% 红利税：</span>
-                      港股名义股息虽达 6.5%~7%，但内地个人通过港股通强制扣除 20% 红利税，到手实得约 5.2%~5.6%，本专区已做实得换算。
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      3
-                    </span>
-                    <div className="text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">资金可用 ≠ 可转出：</span>
-                      T+0 货币 ETF 卖出后盘中在证券账户即刻可用；提现到银行卡受银证转账交易时段（工作日 9:00~16:00）约束，夜间与非交易日无法提现。
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      4
-                    </span>
-                    <div className="text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">货基机制差异：</span>
-                      华宝添益（面值100元按日结转份额）与银华日利（净值累加年末集中除权分红）机制不同，二级市场买卖存在微小贴水波动。
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)] md:col-span-2">
-                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      5
-                    </span>
-                    <div className="text-slate-600 dark:text-slate-300">
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">财报报告期时间戳：</span>
-                      不良贷款率、拨备覆盖率均按上市公司季报统一公布（当前为 2024 中报基准），不随二级市场日频刷新。
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
       </div>
 
-      {/* 3. 板块估值与晴雨表温度计（双重视角：算术平均 vs 市值加权） */}
+      {/* 2. 板块估值与晴雨表微岛（去彩虹化、防折行、Slate高级中性灰底） */}
       {overview && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-between">
-              <span>行业平均股息率</span>
-              <DollarSign className="w-4 h-4 text-emerald-500" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
+          {/* 卡片 1: 股息率 (统一采用纯净金融绿) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 sm:p-3.5 shadow-2xs relative overflow-hidden">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+              <span>股息率(市值加权)</span>
+              <DollarSign className="w-3.5 h-3.5 text-emerald-500" />
             </div>
-            <div className="mt-2 flex items-baseline gap-1.5">
-              <span className="text-2xl sm:text-3xl font-bold text-emerald-600 dark:text-emerald-400 font-mono">
-                {overview.sectorAvgDividendYield}%
+            <div className="mt-1 flex items-baseline gap-1 font-mono">
+              <span className="text-xl sm:text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums tracking-tight">
+                {overview.sectorWeightedDividendYield}%
               </span>
-              <span className="text-xs text-slate-400">算术均值</span>
             </div>
-            <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-              市值加权: <strong className="font-mono text-slate-700 dark:text-slate-300">{overview.sectorWeightedDividendYield}%</strong>（大行权重高）
+            <div className="mt-1 text-[10px] text-slate-400 font-mono truncate">
+              算术均值 {overview.sectorAvgDividendYield}% · 样本高权
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-between">
+          {/* 卡片 2: 板块市净率 (PB) (中性克制 Slate 配色，拒绝刺眼纯蓝) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 sm:p-3.5 shadow-2xs relative overflow-hidden">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
               <span>板块市净率 (PB)</span>
-              <Scale className="w-4 h-4 text-blue-500" />
+              <Scale className="w-3.5 h-3.5 text-slate-400" />
             </div>
-            <div className="mt-2 flex items-baseline gap-1.5">
-              <span className="text-2xl sm:text-3xl font-bold text-blue-600 dark:text-blue-400 font-mono">
+            <div className="mt-1 flex items-baseline gap-1 font-mono">
+              <span className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100 tabular-nums tracking-tight">
                 {overview.sectorAvgPb}
               </span>
-              <span className="text-xs text-slate-400">倍 (样本均值)</span>
+              <span className="text-[10px] text-slate-400">倍</span>
             </div>
-            <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-              市值加权 PB: <strong className="font-mono text-slate-700 dark:text-slate-300">{overview.sectorWeightedPb}倍</strong>
+            <div className="mt-1 text-[10px] text-slate-400 font-mono truncate">
+              加权 PB: {overview.sectorWeightedPb}倍
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-between">
+          {/* 卡片 3: 破净银行比例 (去除紫色，克制排版) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 sm:p-3.5 shadow-2xs relative overflow-hidden">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
               <span>破净银行比例</span>
-              <ShieldCheck className="w-4 h-4 text-purple-500" />
+              <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
             </div>
-            <div className="mt-2 flex items-baseline gap-1.5">
-              <span className="text-2xl sm:text-3xl font-bold text-purple-600 dark:text-purple-400 font-mono">
+            <div className="mt-1 flex items-baseline gap-1 font-mono">
+              <span className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100 tabular-nums tracking-tight">
                 {overview.brokenNetRatio}%
               </span>
-              <span className="text-xs text-slate-400 font-mono">({overview.brokenNetCount}只破净)</span>
+              <span className="text-[10px] text-slate-400">({overview.brokenNetCount}只)</span>
             </div>
-            <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-500"></span>
-              资产价格深度折价交易
+            <div className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium truncate">
+              资产深度折价 · 安全垫厚
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-between">
-              <span>今日跟踪与汇率</span>
-              <TrendingUp className="w-4 h-4 text-amber-500" />
+          {/* 卡片 4: 今日跟踪与汇率 (去除橙色) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 sm:p-3.5 shadow-2xs relative overflow-hidden">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+              <span>今日涨跌与汇率</span>
+              <TrendingUp className="w-3.5 h-3.5 text-slate-400" />
             </div>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-xs font-semibold text-rose-500 font-mono">
-                ↑{overview.upCount}
-              </span>
-              <span className="text-xs font-semibold text-emerald-500 font-mono">
-                ↓{overview.downCount}
-              </span>
-              <span className="text-xs font-semibold text-slate-400 font-mono">
-                -{overview.flatCount}
-              </span>
-              <span className="text-[11px] text-slate-400 font-mono border-l border-slate-200 dark:border-slate-700 pl-2">
-                汇率 {overview.hkdCnyRate ? overview.hkdCnyRate.toFixed(4) : '0.8550'}
+            <div className="mt-1 flex items-center gap-2 font-mono tabular-nums">
+              <span className="text-sm font-bold text-rose-500">↑{overview.upCount}</span>
+              <span className="text-sm font-bold text-emerald-500">↓{overview.downCount}</span>
+              <span className="text-xs font-semibold text-slate-400">-{overview.flatCount}</span>
+              <span className="text-[10px] text-slate-400 border-l border-slate-200 dark:border-slate-700 pl-1.5">
+                HK$ {overview.hkdCnyRate ? overview.hkdCnyRate.toFixed(4) : '0.8545'}
               </span>
             </div>
-            <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1">
-              <Clock className="w-3 h-3 text-slate-400" />
-              <span>更新时间: {overview.updateTime}</span>
+            <div className="mt-1 text-[10px] text-slate-400 font-mono truncate">
+              更新: {overview.updateTime ? overview.updateTime.slice(-8) : '--'}
             </div>
           </div>
         </div>
       )}
 
-      {/* 4. 分类梯队切换与搜索排序 */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-4">
-        {/* 梯队胶囊导航 */}
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+      {/* 3. 分类梯队切换与搜索排序一体化控制条 */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-3 sm:p-4 shadow-2xs space-y-3">
+        {/* 梯队胶囊导航 (移动端自适应紧凑标签，杜绝超长滚动) */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
           {TIER_OPTIONS.map(opt => {
             const isSelected = selectedTier === opt.key;
             return (
               <button
                 key={opt.key}
+                type="button"
                 onClick={() => setSelectedTier(opt.key)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium whitespace-nowrap transition-all cursor-pointer ${
+                className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
                   isSelected
-                    ? 'bg-slate-900 text-white dark:bg-emerald-600 dark:text-white shadow-sm'
+                    ? 'bg-slate-900 text-white dark:bg-emerald-600 dark:text-white shadow-2xs font-semibold'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700/80'
                 }`}
               >
                 {opt.icon}
-                <span>{opt.label}</span>
+                <span className="sm:hidden">{opt.shortLabel || opt.label}</span>
+                <span className="hidden sm:inline">{opt.label}</span>
               </button>
             );
           })}
         </div>
 
-        {/* 搜索与排序栏 */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        {/* 搜索与快捷排序栏 */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2.5 border-t border-slate-100 dark:border-slate-800/80">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <Input
               placeholder="搜索标的（如 招行、银华日利、601398、007467联接、AH折价...）"
               value={searchText}
               onChange={e => setSearchText(e.target.value)}
               allowClear
-              className="pl-9 rounded-xl border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
+              className="pl-8 text-xs rounded-xl border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 h-8"
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0">排序:</span>
-            <Select
-              value={sortBy}
-              onChange={val => setSortBy(val)}
-              className="w-36"
-              options={[
-                { value: 'dividendYield', label: '名义股息率' },
-                { value: 'afterTaxDividendYield', label: '税后实得股息率' },
-                { value: 'stabilityScore', label: '综合稳健度' },
-                { value: 'pb', label: '市净率 PB' },
-                { value: 'price', label: '当前股价' },
-                { value: 'changePct', label: '今日涨跌幅' },
-              ]}
-            />
-            <Button
-              size="small"
-              onClick={() => setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'))}
-              className="rounded-lg text-xs"
-            >
-              {sortOrder === 'desc' ? '降序 ↓' : '升序 ↑'}
-            </Button>
+          {/* 快捷表头排序胶囊组 */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 shrink-0">
+            <span className="text-xs text-slate-400 shrink-0 hidden md:inline">排序:</span>
+            {SORT_OPTIONS.map(opt => {
+              const isActive = sortBy === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => handleToggleSort(opt.key)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-all flex items-center gap-0.5 cursor-pointer ${
+                    isActive
+                      ? 'bg-slate-900 text-white dark:bg-emerald-600 dark:text-white shadow-2xs font-semibold'
+                      : 'bg-slate-100/80 text-slate-600 dark:bg-slate-800 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                  }`}
+                >
+                  <span className="sm:hidden">{opt.shortLabel || opt.label}</span>
+                  <span className="hidden sm:inline">{opt.label}</span>
+                  {isActive && (
+                    <span className="font-mono text-[10px] ml-0.5">
+                      {sortOrder === 'desc' ? '↓' : '↑'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -897,13 +844,13 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
             return (
               <div
                 key={stock.symbol}
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-500/50 dark:hover:border-emerald-500/40 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group"
+                className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-emerald-500/50 dark:hover:border-emerald-500/40 rounded-2xl p-3.5 sm:p-4.5 shadow-2xs hover:shadow-xs transition-all flex flex-col justify-between group"
               >
                 <div>
                   {/* 卡片头部 */}
                   <div className="flex items-start justify-between gap-2">
                     <div
-                      className="cursor-pointer"
+                      className="cursor-pointer min-w-0 flex-1"
                       onClick={() => onOpenDetail?.(
                         stock.code,
                         stock.market,
@@ -918,45 +865,45 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         }
                       )}
                     >
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-base sm:text-lg text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-base text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors truncate">
                           {stock.name}
                         </span>
-                        <span className="text-xs font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                        <span className="text-[11px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded shrink-0">
                           {stock.code}
                         </span>
                         {isHk && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400">
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200/60 dark:border-rose-900/40 shrink-0">
                             HK 港股通
                           </span>
                         )}
                       </div>
-                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                        <Tag color={isT0 ? 'gold' : isHk ? 'magenta' : 'blue'} className="text-[11px] rounded-md m-0">
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex-wrap">
+                        <Tag color={isT0 ? 'gold' : isHk ? 'magenta' : 'blue'} className="text-[10px] rounded-md m-0 px-1.5 py-0 leading-tight">
                           {stock.tierName}
                         </Tag>
-                        {stock.riskLevel && (
-                          <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                            {stock.riskLevel}
-                          </span>
+                        <span className="text-slate-300 dark:text-slate-600">·</span>
+                        <span>{isHk ? '港股20%税' : '持股>1年免税'}</span>
+                        {stock.dividendFrequency && (
+                          <>
+                            <span className="text-slate-300 dark:text-slate-600">·</span>
+                            <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                              {stock.dividendFrequency}
+                            </span>
+                          </>
                         )}
                         {stock.reportPeriod && (
-                          <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-400">
-                            {stock.reportPeriod}
-                          </span>
-                        )}
-                        {stock.dividendFrequency && (
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50 flex items-center gap-0.5">
-                            <DollarSign className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
-                            <span>{stock.dividendFrequency}</span>
-                          </span>
+                          <>
+                            <span className="text-slate-300 dark:text-slate-600">·</span>
+                            <span className="font-mono text-slate-400">{stock.reportPeriod}</span>
+                          </>
                         )}
                       </div>
                     </div>
 
                     {/* 右侧价格与涨跌（自适应 3 位毫厘精度） */}
                     <div className="text-right shrink-0">
-                      <div className="text-lg sm:text-xl font-bold font-mono text-slate-900 dark:text-white">
+                      <div className="text-base sm:text-lg font-bold font-mono text-slate-900 dark:text-white tabular-nums">
                         {stock.price > 0 ? (
                           <>
                             {isHk ? 'HK$' : '¥'}{stock.price.toFixed(isLowPrice ? 3 : 2)}
@@ -966,7 +913,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         )}
                       </div>
                       <div
-                        className={`text-xs font-mono font-semibold flex items-center justify-end gap-0.5 ${
+                        className={`text-xs font-mono font-bold flex items-center justify-end gap-0.5 tabular-nums ${
                           isUp ? 'text-rose-500' : isDown ? 'text-emerald-500' : 'text-slate-400'
                         }`}
                       >
@@ -1234,21 +1181,18 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                 </div>
 
                 {/* 卡片底部操作按钮 */}
-                <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
-                    <Button
-                      size="small"
-                      type="default"
-                      icon={<Sparkles className="w-3.5 h-3.5 text-indigo-500" />}
+                    <button
+                      type="button"
                       onClick={() => handleOpenDiagnose(stock)}
-                      className="rounded-lg text-xs flex items-center gap-1 dark:border-slate-700 dark:text-slate-300 hover:border-indigo-500 hover:text-indigo-500"
+                      className="px-2 py-1 rounded-lg text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 hover:bg-indigo-50/80 dark:hover:bg-indigo-950/50 flex items-center gap-1 transition-colors cursor-pointer"
                     >
-                      AI 体检
-                    </Button>
-                    <Button
-                      size="small"
-                      type="default"
-                      icon={<LineChart className="w-3.5 h-3.5 text-blue-500" />}
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>AI 体检</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => onOpenDetail?.(
                         stock.code,
                         stock.market,
@@ -1262,26 +1206,26 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                           market: stock.market,
                         }
                       )}
-                      className="rounded-lg text-xs flex items-center gap-1 dark:border-slate-700 dark:text-slate-300 hover:border-blue-500 hover:text-blue-500"
+                      className="px-2 py-1 rounded-lg text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 flex items-center gap-1 transition-colors cursor-pointer"
                     >
-                      分时
-                    </Button>
+                      <LineChart className="w-3.5 h-3.5 text-slate-400" />
+                      <span>分时</span>
+                    </button>
                   </div>
 
-                  <Button
-                    size="small"
-                    type={isAdded ? 'dashed' : 'primary'}
-                    icon={isAdded ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                  <button
+                    type="button"
                     onClick={() => handleAddToWatchlist(stock)}
                     disabled={isAdded}
-                    className={`rounded-lg text-xs flex items-center gap-1 ${
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition-all cursor-pointer ${
                       isAdded
-                        ? 'text-slate-400 dark:text-slate-500 border-slate-300 dark:border-slate-700'
-                        : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        ? 'text-slate-400 dark:text-slate-500 bg-slate-100/70 dark:bg-slate-800/60 border border-transparent'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs'
                     }`}
                   >
-                    {isAdded ? '已在自选' : '加自选'}
-                  </Button>
+                    {isAdded ? <Check className="w-3 h-3 text-slate-400" /> : <Plus className="w-3 h-3" />}
+                    <span>{isAdded ? '已在自选' : '加自选'}</span>
+                  </button>
                 </div>
               </div>
             );
@@ -1339,7 +1283,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
               animate={{ x: 0, opacity: 1 }}
               exit={prefersReducedMotion ? { opacity: 0 } : { x: '100%' }}
               transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden"
+              className="fixed inset-0 z-[1050] w-screen h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden"
             >
               {/* 顶部吸顶导航栏：左上角唯一返回锚点，右上角留白对称，彻底根治多重退出混乱 */}
               <header className="shrink-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-b border-slate-200/80 dark:border-slate-800/80 pt-[calc(0.875rem+env(safe-area-inset-top,0px))] pb-3 px-3.5 flex items-center justify-between shadow-2xs">
@@ -1402,23 +1346,20 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                 <Button
                   type="primary"
                   onClick={() => {
-                    const stock = diagnosingStock;
-                    setDiagnoseModalOpen(false);
-                    setTimeout(() => {
-                      onOpenDetail?.(
-                        stock.code,
-                        stock.market,
-                        stock.isFund ? 'fund' : 'stock',
-                        {
-                          name: stock.name,
-                          dwjz: String(stock.price),
-                          gsz: String(stock.price),
-                          gszzl: String(stock.changePct),
-                          gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-                          market: stock.market,
-                        }
-                      );
-                    }, 120);
+                    if (!diagnosingStock) return;
+                    onOpenDetail?.(
+                      diagnosingStock.code,
+                      diagnosingStock.market,
+                      diagnosingStock.isFund ? 'fund' : 'stock',
+                      {
+                        name: diagnosingStock.name,
+                        dwjz: String(diagnosingStock.price),
+                        gsz: String(diagnosingStock.price),
+                        gszzl: String(diagnosingStock.changePct),
+                        gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                        market: diagnosingStock.market,
+                      }
+                    );
                   }}
                   className="flex-1 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
                 >
@@ -1452,23 +1393,20 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                 key="detail"
                 type="primary"
                 onClick={() => {
-                  const stock = diagnosingStock;
-                  setDiagnoseModalOpen(false);
-                  setTimeout(() => {
-                    onOpenDetail?.(
-                      stock.code,
-                      stock.market,
-                      stock.isFund ? 'fund' : 'stock',
-                      {
-                        name: stock.name,
-                        dwjz: String(stock.price),
-                        gsz: String(stock.price),
-                        gszzl: String(stock.changePct),
-                        gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-                        market: stock.market,
-                      }
-                    );
-                  }, 90);
+                  if (!diagnosingStock) return;
+                  onOpenDetail?.(
+                    diagnosingStock.code,
+                    diagnosingStock.market,
+                    diagnosingStock.isFund ? 'fund' : 'stock',
+                    {
+                      name: diagnosingStock.name,
+                      dwjz: String(diagnosingStock.price),
+                      gsz: String(diagnosingStock.price),
+                      gszzl: String(diagnosingStock.changePct),
+                      gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                      market: diagnosingStock.market,
+                    }
+                  );
                 }}
                 className="rounded-xl bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
               >
@@ -1489,6 +1427,67 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
           )}
         </Modal>
       )}
+
+      {/* 8. 机制辨析与投资准则抽屉 (移动端 Bottom Sheet, 桌面端右侧滑出 Drawer) */}
+      <Drawer
+        open={rulesDrawerOpen}
+        onClose={() => setRulesDrawerOpen(false)}
+        placement={isMobile ? 'bottom' : 'right'}
+        height={isMobile ? '76vh' : undefined}
+        width={isMobile ? undefined : 480}
+        closeIcon={false}
+        title={
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+              </div>
+              <span className="font-bold text-sm text-slate-900 dark:text-white">
+                银行·稳健红利 机制辨析（5项核心准则）
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRulesDrawerOpen(false)}
+              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg cursor-pointer"
+              aria-label="关闭"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        }
+        styles={{
+          body: {
+            padding: '16px',
+            paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
+          },
+          header: {
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--hairline-border, #e2e8f0)',
+          },
+        }}
+      >
+        {isMobile && (
+          <div className="w-10 h-1 bg-slate-200 dark:bg-slate-700 rounded-full mx-auto -mt-2 mb-3.5 shrink-0" />
+        )}
+
+        <div className="space-y-2.5">
+          {MECHANISM_RULES.map((rule) => (
+            <div
+              key={rule.id}
+              className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800"
+            >
+              <span className="w-5 h-5 rounded-full bg-sky-100 dark:bg-sky-950/80 text-sky-700 dark:text-sky-300 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 font-mono">
+                {rule.id}
+              </span>
+              <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <span className="font-semibold text-slate-900 dark:text-slate-100">{rule.title}</span>
+                {rule.desc}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Drawer>
     </div>
   );
 }

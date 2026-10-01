@@ -3827,7 +3827,7 @@ async function getMarketIndices() {
     return cache.market;
   }
 
-  const indexCodes = ['s_sh000001', 's_sz399001', 's_sz399006', 's_sh000688', 's_hkHSI', 'gb_ixic', 'gb_gspc'];
+  const indexCodes = ['s_sh000001', 's_sz399001', 's_sz399006', 's_sh000688', 'int_hangseng', 'gb_ixic'];
   const url = `http://hq.sinajs.cn/list=${indexCodes.join(',')}`;
 
   try {
@@ -3853,7 +3853,9 @@ async function getMarketIndices() {
 
       const match = line.match(/var hq_str_(.+?)="(.+?)"/);
       if (match) {
-        const code = match[1];
+        const rawCode = match[1];
+        // 将新浪港股恒指代码规范化对齐为平台标准 code 's_hkHSI'
+        const code = rawCode === 'int_hangseng' ? 's_hkHSI' : rawCode;
         const dataStr = match[2];
         const parts = dataStr.split(',');
 
@@ -3863,10 +3865,8 @@ async function getMarketIndices() {
           const change = parseFloat(parts[2]);
           // Sina 不同市场数据格式不同：
           //   - s_sh/s_sz: parts[3] 是涨跌幅(%)
-          //   - s_hk:      parts[3] 是涨跌幅(%)
-          //   - gb_ (美股): parts[3] 是时间戳 "YYYY-MM-DD HH:MM:SS"，
-          //     parseFloat 会拿到年份；parts[4] 也不是涨跌幅（是别的字段，比如 open/last close 之类）
-          // 最可靠：changePercent = change / (price - change) * 100，从 change + price 反推
+          //   - int_hangseng: parts[3] 是涨跌幅(%)
+          //   - gb_ (美股): parts[3] 是时间戳 "YYYY-MM-DD HH:MM:SS"
           let changePercent;
           if (code.startsWith('gb_')) {
             const prevClose = price - change;
@@ -3878,7 +3878,7 @@ async function getMarketIndices() {
           let status = 'closed';
           if (code.startsWith('s_sh') || code.startsWith('s_sz')) {
             status = isChinaTradingTime ? 'open' : 'closed';
-          } else if (code.startsWith('s_hk')) {
+          } else if (code.startsWith('s_hk') || rawCode === 'int_hangseng') {
             status = isInTradingTime('00700', date, 'hk') ? 'open' : 'closed';
           } else if (code.startsWith('gb_')) {
             status = isInTradingTime('AAPL', date, 'us') ? 'open' : 'closed';

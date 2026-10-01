@@ -270,6 +270,14 @@ function formatChangePct(g: GoldPrice | null | undefined): string {
   return `${sign}${g.changePct.toFixed(2)}%`;
 }
 
+const USD_TO_CNY = 7.18; // 参考国际外汇中间价基准
+const OZ_TO_GRAM = 31.1034768; // 国际金衡盎司克重标准
+
+function calcCnyPerGram(priceInUsd: number | null | undefined): number | null {
+  if (!priceInUsd || priceInUsd <= 0) return null;
+  return (priceInUsd / OZ_TO_GRAM) * USD_TO_CNY;
+}
+
 export function GoldTab() {
   const prefersReducedMotion = useReducedMotion();
   const [data, setData] = useState<{ international: GoldPrice | null; domestic: GoldPrice | null; london: GoldPrice | null; updatedAt: string; error: string | null } | null>(null);
@@ -409,8 +417,108 @@ export function GoldTab() {
         </div>
       )}
 
-      {/* 3 cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* 3 cards — 双模架构：移动端方案A紧凑微岛列表 (高度减半，屏效翻倍) ｜ 桌面端 3 列高透微岛 */}
+      {/* 移动端视图 (md:hidden)：78px 紧凑微岛列表，国内黄金稳居首屏，消灭假性红涨 */}
+      <div className="flex flex-col gap-2.5 md:hidden">
+        {CARDS.map((card) => {
+          const q = data?.[card.key];
+          const Icon = card.icon;
+          const price = formatPrice(q);
+          const changePct = formatChangePct(q);
+          const dirUp = q?.change != null && q.change > 0;
+          const dirDown = q?.change != null && q.change < 0;
+          const isFocused = focus === card.key;
+          const clickable = q?.price != null;
+          const status = marketStatuses.get(card.key)!;
+          const cnyPerGram = card.key === 'domestic' ? null : calcCnyPerGram(q?.price);
+          const badgeStyle = dirUp
+            ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
+            : dirDown
+            ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
+            : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
+
+          return (
+            <motion.button
+              key={card.key}
+              type="button"
+              onClick={() => clickable && setFocus(card.key)}
+              disabled={!clickable}
+              whileTap={{ scale: 0.98 }}
+              className={`w-full text-left p-3 rounded-2xl border transition-all select-none relative ${
+                isFocused
+                  ? 'bg-white dark:bg-[#1a1b20] border-[var(--primary-accent)] ring-2 ring-[var(--primary-accent)]/20 shadow-xs'
+                  : 'bg-white/80 dark:bg-[#151518]/90 border-slate-200/80 dark:border-white/[0.08] hover:border-slate-300 dark:hover:border-slate-700 shadow-2xs'
+              } ${clickable ? 'cursor-pointer' : 'opacity-90'}`}
+            >
+              {/* 楼层 1 (主轴，22px)：名称 + 状态微灯 ｜ 右侧：大字等宽现价 */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Icon size={14} className="text-slate-400 shrink-0" />
+                  <span className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+                    {card.title}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                    {q?.source || card.subtitle.split('·')[0].trim()}
+                  </span>
+                  {/* 状态微点 */}
+                  <span className="inline-flex items-center gap-1 ml-0.5 shrink-0">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        status.state === 'open' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                      }`}
+                    />
+                    <span className="text-[9px] text-slate-400 scale-90 origin-left">
+                      {status.label}
+                    </span>
+                  </span>
+                </div>
+
+                {/* 右侧大字等宽现价 */}
+                <div className="font-mono font-bold text-base text-slate-900 dark:text-slate-50 tabular-nums shrink-0">
+                  {price}
+                  <span className="text-[10px] font-normal text-slate-400 ml-1">
+                    {q?.currency}/{q?.unit}
+                  </span>
+                </div>
+              </div>
+
+              {/* 楼层 2 (辅轴，24px)：平价克价折算 ｜ 中间：迷你 Sparkline 走势 ｜ 右侧：涨跌幅大药丸 */}
+              <div className="flex items-center justify-between gap-2 mt-1.5">
+                {/* 平价折算注脚 */}
+                <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 min-w-0 flex items-center gap-1">
+                  {cnyPerGram ? (
+                    <>
+                      <span className="text-slate-400 text-[10px]">折合</span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                        ≈ ¥{cnyPerGram.toFixed(2)}/克
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-slate-400 text-[10px] font-sans">现货基准 · 纯度99.99%</span>
+                  )}
+                </div>
+
+                {/* 右侧：涨跌额辅标 + 涨跌幅大药丸 (彻底消灭伪造曲线与悬空断线) */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {q?.change != null && (
+                    <span className={`font-mono text-[11px] font-medium tabular-nums ${
+                      dirUp ? 'text-[var(--color-up)]' : dirDown ? 'text-[var(--color-down)]' : 'text-slate-400'
+                    }`}>
+                      {q.change > 0 ? `+${q.change.toFixed(2)}` : q.change.toFixed(2)}
+                    </span>
+                  )}
+                  <div className={`w-[66px] h-[24px] shrink-0 flex items-center justify-center rounded-md font-mono font-bold text-xs tabular-nums shadow-2xs ${badgeStyle}`}>
+                    {changePct}
+                  </div>
+                </div>
+              </div>
+            </motion.button>
+          );
+        })}
+      </div>
+
+      {/* 桌面端视图 (hidden md:grid)：大厂 3 列 Bento 紧凑微岛 (高透中性底色，消灭假性红涨) */}
+      <div className="hidden md:grid md:grid-cols-3 gap-4">
         {CARDS.map((card) => {
           const q = data?.[card.key];
           const Icon = card.icon;
@@ -424,67 +532,77 @@ export function GoldTab() {
           const isFocused = focus === card.key;
           const clickable = q?.price != null;
           const status = marketStatuses.get(card.key)!;
+          const cnyPerGram = card.key === 'domestic' ? null : calcCnyPerGram(q?.price);
 
           return (
             <motion.button
               key={card.key}
+              type="button"
               onClick={() => clickable && setFocus(card.key)}
               disabled={!clickable}
               initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35 }}
-              className={`text-left rounded-2xl border p-5 transition-all
-                ${card.accentRing} ${card.accentBg}
-                ${isFocused ? 'ring-2 ring-offset-2 ring-[var(--primary-accent)] dark:ring-offset-[#1d1d1f]' : ''}
-                ${clickable ? 'hover:scale-[1.01] cursor-pointer' : 'opacity-90'}
-              `}
+              className={`text-left rounded-2xl border p-4 transition-all relative select-none ${
+                isFocused
+                  ? 'bg-white dark:bg-[#1a1b20] border-[var(--primary-accent)] ring-2 ring-[var(--primary-accent)]/20 shadow-xs'
+                  : 'bg-white/80 dark:bg-[#151518]/90 border-slate-200/80 dark:border-white/[0.08] hover:border-slate-300 dark:hover:border-slate-700 shadow-2xs'
+              } ${clickable ? 'hover:scale-[1.01] cursor-pointer' : 'opacity-90'}`}
             >
-              <div className="flex items-start justify-between mb-3">
+              <div className="flex items-start justify-between mb-2">
                 <div>
-                  <div className={`text-sm font-bold flex items-center gap-1.5 ${card.accentText}`}>
-                    <Icon size={14} />
+                  <div className="text-sm font-bold flex items-center gap-1.5 text-slate-800 dark:text-slate-100">
+                    <Icon size={14} className="text-slate-400" />
                     {card.title}
                   </div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">{card.subtitle}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{card.subtitle}</div>
                   <MarketStatusBadge status={status} />
                 </div>
                 {q?.source && (
-                  <span className="text-[9px] font-mono text-slate-400 bg-white/60 dark:bg-black/30 px-1.5 py-0.5 rounded-full border border-slate-200/60 dark:border-slate-800/60">
+                  <span className="text-[9px] font-mono text-slate-400 bg-slate-100 dark:bg-white/5 px-2 py-0.5 rounded-full border border-[var(--hairline-border)]">
                     {q.source}
                   </span>
                 )}
               </div>
 
-              <div className="mb-3">
-                <div className="text-3xl font-bold font-mono tabular-nums text-slate-900 dark:text-slate-50">
+              <div className="mb-2">
+                <div className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-slate-50">
                   {loading && !data ? (
-                    <span className="inline-block w-24 h-9 bg-slate-200/60 dark:bg-slate-700/40 rounded animate-pulse" />
+                    <span className="inline-block w-24 h-8 bg-slate-200/60 dark:bg-slate-700/40 rounded animate-pulse" />
                   ) : (
-                    <>{price}<span className="text-sm font-normal text-slate-500 ml-1">{q?.currency}/{q?.unit}</span></>
+                    <>{price}<span className="text-xs font-normal text-slate-400 ml-1">{q?.currency}/{q?.unit}</span></>
+                  )}
+                </div>
+                {/* 汇率平价换算注脚 */}
+                <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">
+                  {cnyPerGram ? (
+                    <span>折合 ≈ <strong className="text-slate-700 dark:text-slate-200">¥{cnyPerGram.toFixed(2)}/克</strong></span>
+                  ) : (
+                    <span className="text-slate-400">现货基准 · 纯度 99.99%</span>
                   )}
                 </div>
               </div>
 
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100 dark:border-white/5">
                 <span className="flex items-center gap-1 font-bold tabular-nums" style={{ color: trendColor }}>
                   <TrendIcon size={12} />
                   {changePct}
                 </span>
-                <span className="text-slate-500 tabular-nums">{change}</span>
+                <span className="text-slate-400 tabular-nums text-[11px]">{change}</span>
               </div>
 
-              <div className="mt-3 pt-3 border-t border-slate-200/50 dark:border-white/10 grid grid-cols-3 gap-2 text-[10px]">
+              <div className="mt-2 pt-2 border-t border-slate-100 dark:border-white/5 grid grid-cols-3 gap-2 text-[10px]">
                 <div>
                   <div className="text-slate-400">最高</div>
-                  <div className="font-mono tabular-nums text-slate-700 dark:text-slate-300">{q?.high != null ? q.high.toFixed(2) : '—'}</div>
+                  <div className="font-mono tabular-nums text-slate-700 dark:text-slate-300 font-semibold">{q?.high != null ? q.high.toFixed(2) : '—'}</div>
                 </div>
                 <div>
                   <div className="text-slate-400">最低</div>
-                  <div className="font-mono tabular-nums text-slate-700 dark:text-slate-300">{q?.low != null ? q.low.toFixed(2) : '—'}</div>
+                  <div className="font-mono tabular-nums text-slate-700 dark:text-slate-300 font-semibold">{q?.low != null ? q.low.toFixed(2) : '—'}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-slate-400">时间</div>
-                  <div className="font-mono text-slate-700 dark:text-slate-300">{q?.time || '—'}</div>
+                  <div className="font-mono text-slate-500 dark:text-slate-400">{q?.time || '—'}</div>
                 </div>
               </div>
             </motion.button>

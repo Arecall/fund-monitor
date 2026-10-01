@@ -3,6 +3,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   Button,
   Modal,
+  Drawer,
   Form,
   Input,
   Select,
@@ -39,6 +40,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   ArrowDownRight,
+  X,
 } from 'lucide-react';
 import {
   fetchAiSystemStatus,
@@ -59,6 +61,7 @@ import {
   type AiStockPickReport,
   type AiStockRecommendation,
 } from '../services/api';
+import { useModalHistory } from '../utils/modalHistory';
 
 interface AiStockPickTabProps {
   isAdmin?: boolean;
@@ -144,6 +147,20 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
   const isUserAdmin = isAdmin || currentUser.toLowerCase() === 'admin';
   const prefersReducedMotion = useReducedMotion();
 
+  // 视口与触控设备感知：针对移动端 (<768px 或纯触摸屏) 彻底静默 Hover 类 Tooltip
+  const [isMobileOrTouch, setIsMobileOrTouch] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 768 || window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  });
+
+  useEffect(() => {
+    const checkDevice = () => {
+      setIsMobileOrTouch(window.innerWidth < 768 || window.matchMedia('(hover: none), (pointer: coarse)').matches);
+    };
+    window.addEventListener('resize', checkDevice);
+    return () => window.removeEventListener('resize', checkDevice);
+  }, []);
+
   // System AI Status & Admin Config
   const [systemStatus, setSystemStatus] = useState<AiSystemStatus | null>(null);
   const [systemConfig, setSystemConfig] = useState<AiSystemConfig | null>(null);
@@ -172,6 +189,11 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
   // Added to watchlist feedback tracker
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
+
+  // 接入 Android 系统物理返回 / 边缘侧滑手势感知
+  useModalHistory(adminModalOpen, () => setAdminModalOpen(false), { id: 'ai-admin-modal' });
+  useModalHistory(prefModalOpen, () => setPrefModalOpen(false), { id: 'ai-pref-modal' });
+  useModalHistory(mobileView === 'detail', () => setMobileView('list'), { id: 'ai-report-detail' });
 
   // 1. Load System AI Status
   const loadSystemStatus = useCallback(async () => {
@@ -413,10 +435,17 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
             {/* 2. API 接口配置（仅限 admin 用户可见） */}
             {isUserAdmin && (
-              <Tooltip title="全局大模型与 API 接口凭证设置 (仅管理员可见)">
+              <Tooltip
+                title={isMobileOrTouch ? '' : '全局大模型与 API 接口凭证设置 (仅管理员可见)'}
+                trigger={isMobileOrTouch ? [] : ['hover']}
+                open={adminModalOpen || isMobileOrTouch ? false : undefined}
+                destroyTooltipOnHide
+              >
                 <Button
                   icon={<Settings size={14} />}
-                  onClick={() => {
+                  onClick={(e) => {
+                    // 主动释放焦点，防止移动端保留 focus 状态导致 Tooltip 残留
+                    (e.currentTarget as HTMLElement)?.blur();
                     loadAdminConfig();
                     setAdminModalOpen(true);
                   }}
@@ -930,6 +959,132 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 }
 
 /* ───────────────────────────────────────────────────────────────────
+   通用双模自适应模态容器 (Responsive Morphology Container)
+   移动端 (<768px): 原生 Apple 风格底部抽屉 (Bottom Sheet + Grabber)
+   桌面端 (>=768px): 精致居中高聚焦模态 (Centered Modal)
+   ─────────────────────────────────────────────────────────────────── */
+
+interface ResponsiveSheetModalProps {
+  open: boolean;
+  onClose: () => void;
+  title: React.ReactNode;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  desktopWidth?: number;
+  mobileHeight?: string;
+  destroyOnClose?: boolean;
+}
+
+function ResponsiveSheetModal({
+  open,
+  onClose,
+  title,
+  icon,
+  children,
+  footer,
+  desktopWidth = 580,
+  mobileHeight = '86vh',
+  destroyOnClose = true,
+}: ResponsiveSheetModalProps) {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 1. 移动端：原生质感 Bottom Sheet (AntD Drawer)
+  if (isMobile) {
+    return (
+      <Drawer
+        open={open}
+        onClose={onClose}
+        placement="bottom"
+        height={mobileHeight}
+        destroyOnClose={destroyOnClose}
+        zIndex={1100}
+        closeIcon={false}
+        styles={{
+          header: { display: 'none' },
+          body: {
+            padding: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          },
+          mask: {
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+          },
+        }}
+        className="rounded-t-[28px] overflow-hidden shadow-2xl border-t border-[var(--hairline-border)]"
+      >
+        <div className="flex flex-col h-full bg-white dark:bg-[#1c1c1e] text-slate-800 dark:text-slate-100">
+          {/* Apple 风格药丸抓手 (Grabber) */}
+          <div className="w-full pt-3 pb-1.5 flex justify-center shrink-0 cursor-grab">
+            <div className="w-10 h-1.5 bg-slate-300 dark:bg-slate-700 rounded-full" />
+          </div>
+
+          {/* 抽屉头部 */}
+          <div className="px-5 py-2.5 border-b border-[var(--hairline-border)] flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2.5 font-bold text-base text-slate-900 dark:text-slate-100 min-w-0">
+              {icon && <span className="shrink-0">{icon}</span>}
+              <div className="truncate">{title}</div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/10 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-white transition-colors shrink-0 cursor-pointer"
+              aria-label="关闭"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* 表单内容滚动区 (支持弹性滚动) */}
+          <div className="flex-1 overflow-y-auto px-5 py-4 overscroll-contain">
+            {children}
+          </div>
+
+          {/* 底部吸附操作栏 (适配 iPhone Home 键安全距离) */}
+          {footer && (
+            <div className="shrink-0 px-5 pt-3 pb-[calc(14px+env(safe-area-inset-bottom,0px))] border-t border-[var(--hairline-border)] bg-slate-50/90 dark:bg-[#18181a]/90 backdrop-blur-md">
+              {footer}
+            </div>
+          )}
+        </div>
+      </Drawer>
+    );
+  }
+
+  // 2. 桌面端：精致高对比度居中模态 (AntD Modal)
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={footer}
+      width={desktopWidth}
+      destroyOnClose={destroyOnClose}
+      zIndex={1100}
+      centered
+      className="apple-modal-blur"
+      title={
+        <div className="flex items-center gap-2.5 text-slate-800 dark:text-slate-100 font-bold text-base">
+          {icon}
+          <span>{title}</span>
+        </div>
+      }
+      closeIcon={<X size={16} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 mt-1" />}
+    >
+      <div className="pt-2">{children}</div>
+    </Modal>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────────
    1. 个人股票偏好与自动化策略设置弹窗 (面向所有网站用户)
    ─────────────────────────────────────────────────────────────────── */
 
@@ -975,46 +1130,52 @@ function AiPreferencesModal({ open, preferences, onClose, onSaved }: AiPreferenc
   };
 
   return (
-    <Modal
-      title={
-        <div className="flex items-center gap-2 text-slate-800 dark:text-slate-100 font-bold">
-          <Sliders size={18} className="text-blue-500" />
-          <span>个人选股偏好与自动化策略设置</span>
+    <ResponsiveSheetModal
+      open={open}
+      onClose={onClose}
+      title="个人选股偏好与自动化策略"
+      icon={<Sliders size={18} className="text-blue-500" />}
+      desktopWidth={560}
+      mobileHeight="82vh"
+      footer={
+        <div className="flex items-center justify-end gap-3 w-full">
+          <Button onClick={onClose} className="rounded-full text-xs h-9 px-5 font-medium flex-1 md:flex-initial">
+            取消
+          </Button>
+          <Button
+            type="primary"
+            loading={saving}
+            onClick={handleSave}
+            className="rounded-full text-xs font-bold bg-blue-600 hover:bg-blue-500 h-9 px-6 flex-1 md:flex-initial shadow-md shadow-blue-500/10"
+          >
+            保存偏好
+          </Button>
         </div>
       }
-      open={open}
-      onCancel={onClose}
-      footer={[
-        <Button key="cancel" onClick={onClose} className="rounded-full text-xs">
-          取消
-        </Button>,
-        <Button key="save" type="primary" loading={saving} onClick={handleSave} className="rounded-full text-xs font-bold bg-blue-600">
-          保存偏好
-        </Button>,
-      ]}
-      width={560}
-      destroyOnClose
     >
-      <Form form={form} layout="vertical" className="mt-4">
+      <Form form={form} layout="vertical" className="space-y-4">
         {/* 1. Target Markets & Stock Count */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Form.Item
             name="markets"
             label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">目标筛选市场 (多选)</span>}
             rules={[{ required: true, message: '请至少选择一个市场' }]}
+            className="mb-0"
           >
             <Checkbox.Group
               options={[
-                { label: 'A股', value: 'domestic' },
-                { label: '港股', value: 'hk' },
-                { label: '美股', value: 'us' },
+                { label: 'A股核心', value: 'domestic' },
+                { label: '港股精选', value: 'hk' },
+                { label: '美股龙头', value: 'us' },
               ]}
+              className="flex gap-4 pt-1"
             />
           </Form.Item>
 
           <Form.Item
             name="stock_count"
             label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">推荐股票数量 (3~10 只)</span>}
+            className="mb-0"
           >
             <Slider min={3} max={10} marks={{ 3: '3只', 5: '5只', 8: '8只', 10: '10只' }} />
           </Form.Item>
@@ -1024,8 +1185,9 @@ function AiPreferencesModal({ open, preferences, onClose, onSaved }: AiPreferenc
         <Form.Item
           name="strategy"
           label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">选股投资风格偏好</span>}
+          className="mb-0"
         >
-          <Select options={STRATEGY_OPTIONS} className="rounded-xl" />
+          <Select options={STRATEGY_OPTIONS} className="rounded-xl w-full" />
         </Form.Item>
 
         {/* 3. Scheduled Triggers */}
@@ -1034,28 +1196,28 @@ function AiPreferencesModal({ open, preferences, onClose, onSaved }: AiPreferenc
             <Clock size={13} className="text-blue-500" /> 自动化定时分析策略
           </span>
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">盘前自动分析</div>
-              <div className="text-[10px] text-slate-400">交易日 09:00~09:25 自动结合隔夜要闻与集合竞价生成研报</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">交易日 09:00~09:25 自动结合隔夜要闻与集合竞价生成研报</div>
             </div>
-            <Form.Item name="pre_market_enabled" valuePropName="checked" className="m-0">
+            <Form.Item name="pre_market_enabled" valuePropName="checked" className="m-0 shrink-0">
               <Switch />
             </Form.Item>
           </div>
 
-          <div className="flex items-center justify-between pt-2 border-t border-slate-200/50 dark:border-white/5">
+          <div className="flex items-center justify-between gap-4 pt-2.5 border-t border-slate-200/50 dark:border-white/5">
             <div>
               <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">收盘前 1 小时自动分析</div>
-              <div className="text-[10px] text-slate-400">交易日 14:00~14:40 自动捕捉日内强势异动与尾盘抢筹机会</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">交易日 14:00~14:40 自动捕捉日内强势异动与尾盘抢筹机会</div>
             </div>
-            <Form.Item name="close_enabled" valuePropName="checked" className="m-0">
+            <Form.Item name="close_enabled" valuePropName="checked" className="m-0 shrink-0">
               <Switch />
             </Form.Item>
           </div>
         </div>
       </Form>
-    </Modal>
+    </ResponsiveSheetModal>
   );
 }
 
@@ -1129,34 +1291,44 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
   };
 
   return (
-    <Modal
-      title={
-        <div className="flex items-center gap-2 text-slate-800 dark:text-slate-100 font-bold">
-          <ShieldCheck size={18} className="text-indigo-600 dark:text-indigo-400" />
-          <span>全局 AI 接口凭证与大模型配置 (管理员专属)</span>
+    <ResponsiveSheetModal
+      open={open}
+      onClose={onClose}
+      title="全局 AI 接口凭证与大模型配置 (管理员专属)"
+      icon={<ShieldCheck size={18} className="text-indigo-600 dark:text-indigo-400" />}
+      desktopWidth={640}
+      mobileHeight="88vh"
+      footer={
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 w-full">
+          <Button
+            loading={testing}
+            onClick={handleTest}
+            className="rounded-full text-xs font-semibold h-9 px-4 border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+          >
+            测试 API 连通性
+          </Button>
+
+          <div className="flex items-center gap-2.5">
+            <Button onClick={onClose} className="rounded-full text-xs h-9 px-4 font-medium flex-1 sm:flex-initial">
+              取消
+            </Button>
+            <Button
+              type="primary"
+              loading={saving}
+              onClick={handleSave}
+              className="rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500 h-9 px-5 flex-1 sm:flex-initial shadow-md shadow-indigo-500/10"
+            >
+              保存全局配置
+            </Button>
+          </div>
         </div>
       }
-      open={open}
-      onCancel={onClose}
-      footer={[
-        <Button key="test" loading={testing} onClick={handleTest} className="rounded-full text-xs font-semibold">
-          测试 API 连通性
-        </Button>,
-        <Button key="cancel" onClick={onClose} className="rounded-full text-xs">
-          取消
-        </Button>,
-        <Button key="save" type="primary" loading={saving} onClick={handleSave} className="rounded-full text-xs font-bold bg-indigo-600 hover:bg-indigo-500">
-          保存全局配置
-        </Button>,
-      ]}
-      width={620}
-      destroyOnClose
     >
-      <div className="p-3 mb-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/50 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300">
+      <div className="p-3 mb-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/50 dark:border-indigo-800/40 text-xs text-indigo-700 dark:text-indigo-300 leading-relaxed">
         💡 <b>管理员提示</b>：在此配置的 API 密钥及大模型将作为全站的公共 AI 算力底座，所有注册用户均可直接使用智能选股服务，普通用户无权查看或修改任何密钥。
       </div>
 
-      <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" className="space-y-3.5">
         {/* 1. API Key */}
         <Form.Item
           name="api_key"
@@ -1173,10 +1345,11 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
             </div>
           }
           extra="密钥采用 AES-256-GCM 服务端硬件级加密存储，留空表示保留已有密钥。"
+          className="mb-0"
         >
           <Input.Password
             placeholder={config?.configured ? '留空保留原密钥，输入新 Key 覆盖' : 'sk-ant-... / sk-...'}
-            className="rounded-xl"
+            className="rounded-xl h-10"
           />
         </Form.Item>
 
@@ -1186,8 +1359,9 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
           label={<span className="font-semibold text-xs text-slate-700 dark:text-slate-200">模型调用地址 (Base URL)</span>}
           rules={[{ required: true, message: '请输入模型调用地址' }]}
           extra="支持官方地址 https://api.anthropic.com 或第三方中转代理地址（如 https://api.openai.com/v1 或 OneAPI / NewAPI / 聚合中转站）。"
+          className="mb-0"
         >
-          <Input placeholder="https://api.anthropic.com" className="rounded-xl" />
+          <Input placeholder="https://api.anthropic.com" className="rounded-xl h-10 font-mono text-xs" />
         </Form.Item>
 
         {/* 3. Model Name */}
@@ -1203,11 +1377,12 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
           }
           rules={[{ required: true, message: '请选择或输入模型名称' }]}
           extra="支持自由输入任意自定义模型名称（如 deepseek-r1, gpt-4o, claude-3-7-sonnet 等），亦可从预设推荐中快速选择。"
+          className="mb-0"
         >
           <AutoComplete
             options={MODEL_PRESETS.map(p => ({ value: p.value, label: `${p.value} (${p.label.split('(')[1] || ''}` }))}
             placeholder="输入或选择模型名称，如 claude-3-7-sonnet-20250219"
-            className="rounded-xl"
+            className="rounded-xl w-full"
             filterOption={(inputValue, option) =>
               (option?.value?.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1) ||
               (option?.label?.toString().toUpperCase().indexOf(inputValue.toUpperCase()) !== -1)
@@ -1216,7 +1391,7 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
         </Form.Item>
 
         {/* 高级选项 (API 格式与认证字段，对齐 cc-switch 规范) */}
-        <div className="mb-2">
+        <div className="pt-1">
           <Collapse
             ghost
             items={[
@@ -1268,6 +1443,6 @@ function AiAdminConfigModal({ open, config, onClose, onSaved }: AiAdminConfigMod
           />
         </div>
       </Form>
-    </Modal>
+    </ResponsiveSheetModal>
   );
 }

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Drawer, ConfigProvider, theme as antdTheme, Tag, Spin, Pagination, Tooltip, Badge } from 'antd';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
 import {
-  Plus,
   Trash2,
   Search,
   Info,
@@ -18,6 +17,8 @@ import {
   Target,
   Settings,
   X,
+  Plus,
+  ArrowLeft,
   Loader2,
   Pencil,
   Maximize2,
@@ -57,8 +58,8 @@ import {
   type FundHoldingStock,
   type WatchlistItem,
 } from './services/api';
-import { detectFundMarket, isAnyMarketOpen, type FundMarket } from './utils/fundMarket';
-import { QuoteSourceBadge } from './components/QuoteSourceBadge';
+import { detectFundMarket, isAnyMarketOpen, isMarketOpen, type FundMarket } from './utils/fundMarket';
+import { useModalHistory } from './utils/modalHistory';
 import { Sparkline } from './components/Sparkline';
 import { QuantLogo } from './components/QuantLogo';
 
@@ -237,9 +238,9 @@ function DetailPanelSkeleton() {
 
 function SkeletonTableRow({ code }: { code: string }) {
   return (
-    <tr className="animate-pulse select-none">
-      {/* 名称与代码 */}
-      <td className="p-4 pl-6">
+    <tr className="animate-pulse select-none h-[52px]">
+      {/* 1. 名称与代码 */}
+      <td className="py-2 pl-4 pr-3 min-w-[200px]">
         <div className="space-y-1.5">
           <div className="h-4 w-36 bg-slate-200/80 dark:bg-white/10 rounded-md" />
           <div className="flex items-center gap-1.5">
@@ -248,29 +249,33 @@ function SkeletonTableRow({ code }: { code: string }) {
           </div>
         </div>
       </td>
-      {/* 昨收 */}
-      <td className="p-4 text-right">
-        <div className="h-4 w-16 bg-slate-200/70 dark:bg-white/10 rounded ml-auto" />
+      {/* 2. 昨收 */}
+      <td className="py-2 px-3 text-right w-[100px]">
+        <div className="h-4 w-14 bg-slate-200/70 dark:bg-white/10 rounded ml-auto" />
       </td>
-      {/* 现价 */}
-      <td className="p-4 text-right">
-        <div className="h-4 w-16 bg-slate-200/80 dark:bg-white/10 rounded ml-auto" />
+      {/* 3. 现价 */}
+      <td className="py-2 px-3 text-right w-[110px]">
+        <div className="h-4 w-14 bg-slate-200/80 dark:bg-white/10 rounded ml-auto" />
       </td>
-      {/* 涨跌幅 */}
-      <td className="p-4 text-right">
-        <div className="h-5 w-14 bg-slate-200/80 dark:bg-white/10 rounded-md ml-auto" />
+      {/* 4. 涨跌幅 */}
+      <td className="py-2 px-3 text-right w-[104px]">
+        <div className="h-5 w-12 bg-slate-200/80 dark:bg-white/10 rounded-md ml-auto" />
       </td>
-      {/* 持仓 */}
-      <td className="p-4 text-right">
-        <div className="h-4 w-20 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
+      {/* 5. 分时走势 */}
+      <td className="py-2 px-3 text-center w-[96px]">
+        <div className="h-5 w-20 bg-slate-200/50 dark:bg-white/5 rounded mx-auto" />
       </td>
-      {/* 盈亏 */}
-      <td className="p-4 text-right">
-        <div className="h-4 w-14 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
+      {/* 6. 持仓 */}
+      <td className="py-2 px-3 text-right w-[120px]">
+        <div className="h-4 w-16 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
       </td>
-      {/* 操作按钮 */}
-      <td className="p-4 text-center pr-6">
-        <div className="h-6 w-16 bg-slate-200/70 dark:bg-white/10 rounded-full mx-auto" />
+      {/* 7. 盈亏 */}
+      <td className="py-2 px-3 text-right w-[100px]">
+        <div className="h-4 w-12 bg-slate-200/60 dark:bg-white/5 rounded ml-auto" />
+      </td>
+      {/* 8. 操作按钮 */}
+      <td className="py-2 pr-4 pl-1 text-right w-[72px]">
+        <div className="h-5 w-10 bg-slate-200/50 dark:bg-white/5 rounded ml-auto" />
       </td>
     </tr>
   );
@@ -409,7 +414,7 @@ const WatchlistCard = React.memo(function WatchlistCard({
         if (dragJustEndedRef.current) return;
         onSelect(code);
       }}
-      className={`p-3.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors duration-150 cursor-pointer space-y-2 select-none relative ${
+      className={`px-3.5 py-2.5 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition-colors duration-150 cursor-pointer select-none relative w-full min-w-0 max-w-full overflow-hidden ${
         pressDrag.activeCode === code
           ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
           : ''
@@ -419,52 +424,52 @@ const WatchlistCard = React.memo(function WatchlistCard({
           : ''
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">
+      {/* 楼层 1 (主轴，24px)：标的名称与市场微标 ｜ 右侧：72px 涨跌幅等宽大药丸 */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <span className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate leading-snug tracking-tight">
             {fund.name}
-          </div>
-          <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
-            <span className="tabular-nums">{fund.fundcode}</span>
-            <Tag
-              color={
-                selfTab === 'stock'
-                  ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
-                  : 'default'
-              }
-              className="font-semibold text-[10px] rounded-full border-0 m-0 leading-none py-0.5 px-2 font-sans"
-            >
-              {selfTab === 'stock'
-                ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
-                : '公募场外'}
-            </Tag>
-          </div>
+          </span>
+          <Tag
+            color={
+              selfTab === 'stock'
+                ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
+                : 'default'
+            }
+            className="font-medium text-[9px] rounded-full border-0 m-0 py-0 px-1.5 leading-tight shrink-0 font-sans"
+          >
+            {selfTab === 'stock'
+              ? (fund.market === 'us' ? '美' : fund.market === 'hk' ? '港' : 'A')
+              : '场外'}
+          </Tag>
         </div>
 
-        <div className="flex items-center gap-1 text-slate-300 dark:text-slate-600" onClick={e => e.stopPropagation()}>
-          <ChevronRight size={14} className="opacity-60" />
+        {/* 核心涨跌幅大药丸 (水上水下着色，72px 等宽，右侧绝对对齐) */}
+        <div className={`w-[72px] h-[26px] shrink-0 flex items-center justify-center rounded-lg font-mono font-bold text-xs tabular-nums shadow-2xs ${changeBg}`}>
+          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
         </div>
       </div>
 
-      <div className="flex items-center justify-between pt-1">
-        <div>
-          <div className="text-[10px] text-slate-400">
-            {selfTab === 'stock' ? '现价' : fund.navOnly ? '官方净值' : fund.quoteFreshness === 'stale' ? '估算净值（滞后）' : '估算净值'}
+      {/* 楼层 2 (辅轴，26px)：代码与时间 ｜ 中间：迷你 Sparkline 走势 ｜ 右侧：最新估值现价与持仓微状态 */}
+      <div className="flex items-center justify-between gap-2 mt-1.5">
+        {/* 左区：代码 + 估算时间 / 实时代理标的 */}
+        <div className="min-w-0 flex flex-col justify-center">
+          <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono tabular-nums leading-none">
+            <span>{fund.fundcode}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            <span>{fund.gztime ? (fund.gztime.split(' ')[1] || fund.gztime).slice(0, 5) : '--'}</span>
           </div>
-          <div className="font-mono font-bold text-base text-slate-800 dark:text-slate-100 tabular-nums">
-            {(() => {
-              const val = parseFloat(fund.gsz);
-              return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
-            })()}
-            <span className="text-[10px] font-normal text-slate-400 ml-1.5">
-              {fund.gztime.split(' ')[1] || fund.gztime}
-            </span>
-          </div>
-          <div className="mt-1 font-sans"><QuoteSourceBadge fund={fund} compact /></div>
+          {fund.proxyTicker && (
+            <div className="mt-1">
+              <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-sans font-medium" title={fund.quoteSourceName || `代理标的 ${fund.proxyTicker}`}>
+                {fund.proxyTicker} · 实时
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* 迷你分时走势图 */}
-        <div className="px-1 shrink-0">
+        {/* 中区：迷你 Sparkline 分时走势线 (固定 72x22px，去多余外框，平衡居中) */}
+        <div className="shrink-0 px-1">
           <Sparkline
             key={`${selfTab}:${fund.market || 'domestic'}:${code}`}
             code={code}
@@ -477,42 +482,46 @@ const WatchlistCard = React.memo(function WatchlistCard({
             highPrice={typeof fund.stockSpecific?.high === 'number' && fund.stockSpecific.high > 0 ? fund.stockSpecific.high : undefined}
             lowPrice={typeof fund.stockSpecific?.low === 'number' && fund.stockSpecific.low > 0 ? fund.stockSpecific.low : undefined}
             isUp={isUp}
-            width={80}
-            height={26}
+            width={72}
+            height={22}
           />
         </div>
 
-        <div className={`px-2.5 py-1 rounded-lg font-mono font-bold text-sm tabular-nums ${changeBg}`}>
-          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
-        </div>
-      </div>
-
-      <div className="pt-2 border-t border-slate-100/80 dark:border-slate-800/40 flex items-center justify-between text-[11px]" onClick={e => e.stopPropagation()}>
-        {pos ? (
-          <div className="flex items-center justify-between w-full">
-            <div className="text-slate-500 text-[10px]">
-              持仓 <span className="font-mono font-bold text-slate-700 dark:text-slate-200">¥{holdingValue.toFixed(2)}</span>
-            </div>
-            <div className="font-mono font-semibold text-[10px]">
-              今日: <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}>
-                {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(2)}
-              </span>
-            </div>
-            <button
-              onClick={() => onEditPosition(code)}
-              className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 py-1 rounded-full border border-blue-200/50 dark:border-blue-900/30 transition-colors ml-2 -my-0.5 shrink-0 cursor-pointer"
-            >
-              改持仓
-            </button>
+        {/* 右区：最新净值/现价 (与上方药丸右侧严格对齐) + 持仓微状态 */}
+        <div className="shrink-0 text-right min-w-[72px]" onClick={e => e.stopPropagation()}>
+          <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums leading-none">
+            {(() => {
+              const val = parseFloat(fund.gsz);
+              return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
+            })()}
           </div>
-        ) : (
-          <button
-            onClick={() => onEditPosition(code)}
-            className="text-[10px] text-blue-600 dark:text-blue-400 hover:text-blue-700 py-1 px-2.5 -my-0.5 rounded-full bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200/40 dark:border-blue-900/30 flex items-center gap-1 font-medium transition-colors"
-          >
-            + 添加持仓数据
-          </button>
-        )}
+
+          {/* 持仓状态：有持仓显示金额与盈亏；无持仓极克制微弱加号，零占位 */}
+          <div className="mt-1 flex items-center justify-end">
+            {pos ? (
+              <button
+                type="button"
+                onClick={() => onEditPosition(code)}
+                className="text-[10px] font-mono leading-none tracking-tight text-slate-400 dark:text-slate-500 hover:text-blue-600 transition-colors"
+              >
+                持¥{(holdingValue / 10000).toFixed(1)}w ·
+                <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : ''}>
+                  {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(1)}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onEditPosition(code)}
+                className="group flex items-center gap-0.5 text-[10px] text-slate-300 dark:text-slate-600 hover:text-blue-500 transition-colors py-0.5"
+                title="记录持仓"
+              >
+                <Plus size={9} className="opacity-70 group-hover:opacity-100" />
+                <span className="text-[9px]">持仓</span>
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </motion.div>
   );
@@ -546,11 +555,13 @@ const WatchlistRow = React.memo(function WatchlistRow({
   const isUp = changeVal > 0;
   const isDown = changeVal < 0;
 
+  const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0;
+  const prevPrice = parseFloat(fund.dwjz) || 0;
+  const priceDelta = currentPrice - prevPrice;
+
   let holdingValue = 0;
   let todayProfit = 0;
   if (pos) {
-    const currentPrice = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-    const prevPrice = parseFloat(fund.dwjz);
     holdingValue = pos.shares * currentPrice;
     const updatedToday = isUpdatedToday(pos.updated_at);
     const basePrice = getTodayBasePrice(pos.cost, prevPrice, currentPrice, updatedToday);
@@ -569,7 +580,8 @@ const WatchlistRow = React.memo(function WatchlistRow({
       onDragEnd={onDragEnd}
       onPointerDown={onRowPointerDown(code)}
       onClickCapture={suppressClickAfterDrag}
-      className={`apple-row select-none cursor-grab active:cursor-grabbing transition-colors duration-150 ${
+      onClick={() => onSelect(code)}
+      className={`group apple-row select-none cursor-pointer h-[52px] transition-colors duration-150 hover:bg-slate-50/80 dark:hover:bg-white/[0.03] ${
         pressDrag.activeCode === code
           ? 'opacity-30 scale-[0.985] saturate-[0.6] transition-none'
           : ''
@@ -581,11 +593,12 @@ const WatchlistRow = React.memo(function WatchlistRow({
         dragOverCode === code ? 'bg-blue-50/60 dark:bg-blue-950/30' : ''
       }`}
     >
-      <td
-        className="py-3 pl-4 pr-2 cursor-pointer hover:underline decoration-slate-400 underline-offset-4"
-        onClick={() => onSelect(code)}
-      >
-        <div className="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[160px]" title={fund.name}>
+      {/* 1. 标的名称与代码：解除 160px 硬编码限制，支持弹性展开，完整显示 A/C/QDII 等关键信息 */}
+      <td className="py-2 pl-4 pr-3 min-w-[200px] max-w-[340px] 2xl:max-w-none">
+        <div
+          className="font-semibold text-[13px] text-slate-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors leading-snug"
+          title={fund.name}
+        >
           {fund.name}
         </div>
         <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
@@ -596,41 +609,67 @@ const WatchlistRow = React.memo(function WatchlistRow({
                 ? (fund.market === 'us' ? 'blue' : fund.market === 'hk' ? 'green' : 'gold')
                 : 'default'
             }
-            className="font-semibold text-[10px] rounded-full border-0 m-0 leading-none py-0.5 px-2 font-sans"
+            className="font-medium text-[9px] rounded-full border-0 m-0 leading-none py-0.5 px-1.5 font-sans"
           >
             {selfTab === 'stock'
               ? (fund.market === 'us' ? '美股' : fund.market === 'hk' ? '港股' : 'A股')
-              : '公募场外'}
+              : '场外公募'}
           </Tag>
         </div>
       </td>
-      <td className="py-3 px-2 text-right font-mono font-medium tabular-nums">
-        {(() => {
-          const val = parseFloat(fund.dwjz);
-          return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
-        })()}
-        <div className="text-[9px] text-[#86868b] mt-0.5">{fund.jzrq}</div>
+
+      {/* 2. 昨日单位净值/昨收价 */}
+      <td className="py-2 px-3 text-right font-mono tabular-nums whitespace-nowrap w-[100px]">
+        <div className="text-[13px] text-slate-700 dark:text-slate-300 font-medium">
+          {prevPrice ? prevPrice.toFixed(selfTab === 'stock' ? 2 : 4) : '--'}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5 leading-none">
+          {fund.jzrq ? fund.jzrq.slice(5) : '--'}
+        </div>
       </td>
-      <td className="py-3 px-2 text-right font-mono font-bold text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap">
-        {(() => {
-          const val = parseFloat(fund.gsz);
-          return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
-        })()}
-        <div className="text-[9px] text-[#86868b] mt-0.5">{fund.gztime.split(' ')[1] || fund.gztime}</div>
-        <div className="mt-1 flex justify-end whitespace-nowrap"><QuoteSourceBadge fund={fund} compact /></div>
+
+      {/* 3. 估算净值/现价：时间与代理标的内联紧凑呈现，消灭第3行超高问题 */}
+      <td className="py-2 px-3 text-right font-mono tabular-nums whitespace-nowrap w-[110px]">
+        <div className="text-[13px] font-bold text-slate-900 dark:text-slate-50">
+          {currentPrice ? currentPrice.toFixed(selfTab === 'stock' ? 2 : 4) : '--'}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5 leading-none flex items-center justify-end gap-1">
+          <span>{(fund.gztime.split(' ')[1] || fund.gztime).slice(0, 5)}</span>
+          {fund.proxyTicker && (
+            <span
+              className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-sans font-medium"
+              title={`${fund.quoteSourceName || `代理标的 ${fund.proxyTicker}`}；基于官方净值近似估算`}
+            >
+              {fund.proxyTicker}
+            </span>
+          )}
+        </div>
       </td>
-      <td className="py-3 px-2 text-right font-mono tabular-nums whitespace-nowrap">
-        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-bold ${
-          isUp
-            ? 'text-[var(--color-up)] bg-[var(--color-up-bg)]'
-            : isDown
-            ? 'text-[var(--color-down)] bg-[var(--color-down-bg)]'
-            : 'text-slate-500 bg-slate-100 dark:bg-white/5'
-        }`}>
-          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
-        </span>
+
+      {/* 4. 估算涨跌：双核呈现 (主值百分比 + 辅值点数变动) */}
+      <td className="py-2 px-3 text-right font-mono tabular-nums whitespace-nowrap w-[104px]">
+        <div className="inline-flex flex-col items-end">
+          <span
+            className={`inline-block px-1.5 py-0.5 rounded text-xs font-bold leading-none ${
+              isUp
+                ? 'text-[var(--color-up)] bg-[var(--color-up-bg)]'
+                : isDown
+                ? 'text-[var(--color-down)] bg-[var(--color-down-bg)]'
+                : 'text-slate-500 bg-slate-100 dark:bg-white/5'
+            }`}
+          >
+            {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+          </span>
+          {priceDelta !== 0 && (
+            <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 leading-none">
+              {isUp ? '+' : ''}{priceDelta.toFixed(selfTab === 'stock' ? 2 : 4)}
+            </span>
+          )}
+        </div>
       </td>
-      <td className="py-3 px-2 text-center align-middle whitespace-nowrap w-[96px]">
+
+      {/* 5. 分时走势微图 */}
+      <td className="py-2 px-3 text-center align-middle whitespace-nowrap w-[96px]">
         <Sparkline
           code={code}
           fundName={fund.name}
@@ -647,75 +686,89 @@ const WatchlistRow = React.memo(function WatchlistRow({
         />
       </td>
 
-      <td className="py-3 px-2 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+      {/* 6. 我的持仓预估：未持仓灰阶静音破折号，悬停渐显录入按钮 */}
+      <td
+        className="py-2 px-3 text-right whitespace-nowrap w-[120px]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {pos ? (
           <button
             onClick={() => onEditPosition(code)}
-            className="cursor-pointer group inline-flex flex-col items-end text-right p-1 rounded-xl hover:bg-slate-100/60 dark:hover:bg-white/5 transition-all"
+            className="cursor-pointer group/btn inline-flex flex-col items-end text-right p-1 -mr-1 rounded-lg hover:bg-slate-200/50 dark:hover:bg-white/10 transition-colors"
           >
-            <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+            <div className="font-mono font-bold text-[13px] text-slate-800 dark:text-slate-100 tabular-nums group-hover/btn:text-blue-600 dark:group-hover/btn:text-blue-400 transition-colors">
               ¥{holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1 tabular-nums">
-              <span>{pos.shares.toFixed(2)}份</span>
+              <span>{pos.shares.toFixed(0)}份</span>
               <span className="opacity-40">·</span>
-              <span>@{pos.cost.toFixed(4)}</span>
-              <Pencil size={9} className="opacity-60 group-hover:opacity-100 transition-opacity ml-0.5" />
+              <span>@{pos.cost.toFixed(2)}</span>
+              <Pencil size={9} className="opacity-0 group-hover/btn:opacity-100 transition-opacity ml-0.5" />
             </div>
           </button>
         ) : (
-          <PressableButton
-            onClick={() => onEditPosition(code)}
-            className="text-[10px] text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-2.5 py-1 rounded-full border border-blue-200/60 dark:border-blue-900/40 font-semibold transition-all"
-          >
-            + 持仓
-          </PressableButton>
+          <div className="h-[36px] flex items-center justify-end group/entry">
+            <button
+              onClick={() => onEditPosition(code)}
+              className="hidden group-hover/entry:inline-flex group-hover:inline-flex items-center gap-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline transition-all cursor-pointer"
+            >
+              + 录入持仓
+            </button>
+            <span className="inline-block group-hover/entry:hidden group-hover:hidden text-slate-300 dark:text-slate-600 font-mono text-[13px] pr-2">
+              —
+            </span>
+          </div>
         )}
       </td>
 
-      <td className={`py-3 px-2 text-right font-mono font-bold tabular-nums whitespace-nowrap ${
+      {/* 7. 今日估算盈亏：语义着色 */}
+      <td className={`py-2 px-3 text-right font-mono font-bold tabular-nums whitespace-nowrap w-[100px] ${
         pos
           ? (todayProfit > 0 ? 'text-[var(--color-up)]'
               : todayProfit < 0 ? 'text-[var(--color-down)]'
               : 'text-slate-400')
-          : 'text-slate-300 dark:text-slate-700'
+          : 'text-slate-300 dark:text-slate-600'
       }`}>
         {pos ? (
-          <>
+          <span className="text-[13px]">
             {todayProfit > 0 ? '+' : ''}
-            {todayProfit.toFixed(2)}
-          </>
+            {todayProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
         ) : (
-          '--'
+          <span className="font-normal text-[13px] pr-2">—</span>
         )}
       </td>
 
-      <td className="py-3 pr-4 pl-2 text-center whitespace-nowrap w-[96px]" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-center gap-1 whitespace-nowrap">
+      {/* 8. 操作区：悬浮即现微岛 (消灭全表常驻垃圾桶) */}
+      <td
+        className="py-2 pr-4 pl-1 text-center whitespace-nowrap w-[72px]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 whitespace-nowrap">
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               onSelect(code);
             }}
-            className="text-[11px] font-medium text-[var(--primary-accent)] hover:bg-[var(--primary-accent-translucent)] px-2.5 py-1 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-0.5"
+            title="查看行情详情"
+            aria-label="查看行情详情"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors cursor-pointer"
           >
-            <span>详情</span>
-            <ChevronRight size={11} className="opacity-70" />
+            <ChevronRight size={13} />
           </button>
           <button
             type="button"
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              e.nativeEvent.stopImmediatePropagation();
               onRemove(code, fund.name);
             }}
-            title="退订自选"
-            aria-label="退订自选"
-            className="p-1 rounded-full text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 transition-all cursor-pointer opacity-70 group-hover:opacity-100"
+            title="移除自选"
+            aria-label="移除自选"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
           >
-            <Trash2 size={12} />
+            <Trash2 size={13} />
           </button>
         </div>
       </td>
@@ -845,6 +898,32 @@ function App() {
   /* ---------- Selection state for market index drawer ---------- */
   const [selectedDrawerIndex, setSelectedDrawerIndex] = useState<MarketIndex | null>(null);
   const [isIndexDrawerOpen, setIsIndexDrawerOpen] = useState(false);
+  const mobileIndexScrollRef = useRef<HTMLDivElement>(null);
+  const [currentMarketPage, setCurrentMarketPage] = useState(0);
+
+  const handleIndexScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (!el || el.clientWidth === 0) return;
+    const page = Math.round(el.scrollLeft / el.clientWidth);
+    setCurrentMarketPage(page);
+  }, []);
+
+  const scrollToMarketPage = useCallback((page: number) => {
+    const el = mobileIndexScrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      left: page * el.clientWidth,
+      behavior: 'smooth',
+    });
+    setCurrentMarketPage(page);
+  }, []);
+
+  // 接入 Android 系统物理返回 / 边缘侧滑手势统一协调
+  useModalHistory(isMobileMenuOpen, () => setIsMobileMenuOpen(false), { id: 'app-mobile-menu' });
+  useModalHistory(isEmailConfigOpen, () => setIsEmailConfigOpen(false), { id: 'app-email-config' });
+  useModalHistory(editingCode !== null, () => setEditingCode(null), { id: 'app-edit-position' });
+  useModalHistory(deletingItem !== null, () => setDeletingItem(null), { id: 'app-delete-confirm' });
+  useModalHistory(listedEtfPrompt !== null, () => setListedEtfPrompt(null), { id: 'app-etf-prompt' });
 
   // 加载当前用户未读告警推送数量
   const refreshUnreadCount = useCallback(async () => {
@@ -2312,7 +2391,7 @@ function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -16, scale: 0.94 }}
             transition={SPRING.toast}
-            className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-slate-900/95 text-white dark:bg-white/95 dark:text-slate-900 backdrop-blur-2xl px-4 py-2.5 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.25)] ring-1 ring-white/10 dark:ring-black/10 text-xs font-medium flex items-center gap-2.5 pointer-events-none"
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-[11000] bg-slate-900/95 text-white dark:bg-white/95 dark:text-slate-900 backdrop-blur-2xl px-4 py-2.5 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.25)] ring-1 ring-white/10 dark:ring-black/10 text-xs font-medium flex items-center gap-2.5 pointer-events-none"
           >
             <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-white shrink-0">
               <Info size={10} strokeWidth={3} />
@@ -2322,48 +2401,50 @@ function App() {
         )}
       </AnimatePresence>
 
-      {/* Top navigation — Frosted Glass material */}
-      <nav className="apple-navbar sticky top-0 z-40 px-3 py-2.5 md:px-6 md:py-4 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 md:gap-6 shrink-0">
-          <h1 className="text-base md:text-lg font-bold tracking-tight apple-display-heading flex items-center gap-2.5 whitespace-nowrap shrink-0">
-            <QuantLogo size={28} className="shadow-xs" />
+      {/* Top navigation — Frosted Glass material (大厂工效标准微岛，全视口自适应) */}
+      <nav className="apple-navbar sticky top-0 z-40 px-2 py-1.5 md:px-6 md:py-3.5 flex items-center justify-between gap-1.5 md:gap-4">
+        <div className="flex items-center gap-1.5 md:gap-6 min-w-0">
+          <h1 className="text-base md:text-lg font-bold tracking-tight apple-display-heading flex items-center gap-2 whitespace-nowrap shrink-0">
+            <QuantLogo size={28} className="w-7 h-7 shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] active:scale-95 transition-transform duration-150 shrink-0" />
             <span className="hidden md:inline bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 dark:from-white dark:via-slate-100 dark:to-slate-300 bg-clip-text text-transparent">
               全球量化基金平台
             </span>
           </h1>
 
-          {/* 主 tab: 自选 (portfolio) / 金价 (gold) / 优质选股 (ai-stock-pick) / 银行·稳健红利 (bank-stocks) */}
-          <div className="relative inline-flex bg-slate-100/60 dark:bg-white/5 rounded-full p-0.5 shrink-0 max-w-full overflow-x-auto no-scrollbar scroll-fade-edge">
+          {/* 主 tab: 升级至大厂标准工效尺寸 (高度提升、字号13px/14px、图标14px、多视口自适应Padding) */}
+          <div className="relative inline-flex items-center bg-slate-100/70 dark:bg-white/5 border border-[var(--hairline-border)] rounded-full p-0.5 md:p-1 shadow-2xs shrink-0">
             {([
-              { key: 'portfolio',     label: '自选', icon: BookmarkCheck },
-              { key: 'gold',          label: '金价', icon: Coins },
-              { key: 'ai-stock-pick', label: '优质选股', icon: Sparkles },
-              { key: 'bank-stocks',   label: '银行·稳健红利', icon: Landmark },
+              { key: 'portfolio',     label: '自选',         shortLabel: '自选', icon: BookmarkCheck },
+              { key: 'gold',          label: '金价',         shortLabel: '金价', icon: Coins },
+              { key: 'ai-stock-pick', label: '优质选股',     shortLabel: '选股', icon: Sparkles },
+              { key: 'bank-stocks',   label: '银行·稳健红利', shortLabel: '银行', icon: Landmark },
             ] as const).map(t => {
               const active = mainTab === t.key;
               const IconComp = t.icon;
               return (
                 <button
                   key={t.key}
+                  type="button"
                   onClick={() => {
                     setMainTab(t.key);
                     try { localStorage.setItem('fund_main_tab', t.key); } catch {}
                   }}
-                  className={`relative px-2.5 md:px-3.5 py-1 md:py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1.5 whitespace-nowrap ${
-                    active ? 'text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                  className={`relative px-1.5 min-[375px]:px-2 min-[390px]:px-2.5 md:px-3.5 py-1.5 md:py-1.5 text-[13px] md:text-sm font-semibold rounded-full transition-colors flex items-center gap-1 md:gap-1.5 whitespace-nowrap cursor-pointer select-none ${
+                    active ? 'text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                 >
                   {active && (
                     <motion.span
                       layoutId="main-tab-pill"
                       transition={{ type: 'spring' as const, bounce: 0.05, duration: 0.36 }}
-                      className="absolute inset-0 rounded-full"
+                      className="absolute inset-0 rounded-full shadow-xs"
                       style={{ background: 'var(--primary-accent)' }}
                     />
                   )}
-                  <span className="relative z-10 flex items-center gap-1.5">
-                    <IconComp size={13} className={active ? 'text-white' : 'opacity-70'} />
-                    <span>{t.label}</span>
+                  <span className="relative z-10 flex items-center gap-1 md:gap-1.5">
+                    <IconComp size={14} className={`md:w-3.5 md:h-3.5 ${active ? 'text-white' : 'opacity-75'}`} />
+                    <span className="inline md:hidden">{t.shortLabel}</span>
+                    <span className="hidden md:inline">{t.label}</span>
                   </span>
                 </button>
               );
@@ -2371,19 +2452,24 @@ function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
           {/* ─────────────────────────────────────────────────────────────
               微岛 1：业务动态警报探针 (Live Activity Island)
               独立成岛，业务级动态焦点；无未读时沉静，有未读时呼吸微动
               ───────────────────────────────────────────────────────────── */}
-          <Tooltip title={unreadAlertCount > 0 ? `预警通知与推送日志 (${unreadAlertCount} 条未读)` : '预警通知与推送日志'} placement="bottom">
+          <Tooltip
+            title={unreadAlertCount > 0 ? `预警通知与推送日志 (${unreadAlertCount} 条未读)` : '预警通知与推送日志'}
+            placement="bottom"
+            open={isNotificationLogOpen ? false : undefined}
+            destroyTooltipOnHide
+          >
             <PressableIconButton
               onClick={handleOpenNotificationLogs}
               aria-label="预警通知与推送日志"
               className="relative w-8 h-8 rounded-full flex items-center justify-center bg-slate-100/70 dark:bg-white/5 hover:bg-slate-200/60 dark:hover:bg-white/10 border border-[var(--hairline-border)] shadow-2xs text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
             >
               <Badge count={unreadAlertCount} size="small" offset={[2, -2]} overflowCount={99}>
-                <Bell size={14} className={unreadAlertCount > 0 ? 'text-blue-500 animate-pulse' : 'opacity-80'} />
+                <Bell size={14} className={`md:w-3.5 md:h-3.5 ${unreadAlertCount > 0 ? 'text-blue-500 animate-pulse' : 'opacity-80'}`} />
               </Badge>
             </PressableIconButton>
           </Tooltip>
@@ -2563,68 +2649,202 @@ function App() {
             <PressableIconButton
               onClick={() => setIsMobileMenuOpen(true)}
               aria-label="打开应用设置菜单"
-              className="p-2 rounded-full bg-slate-100/80 dark:bg-white/5 border border-[var(--hairline-border)] text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-white/10"
+              className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100/80 dark:bg-white/5 border border-[var(--hairline-border)] text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-white/10 shadow-2xs"
             >
-              <Settings size={15} />
+              <Settings size={14} />
             </PressableIconButton>
           </div>
         </div>
       </nav>
 
-      {/* Market ticker strip */}
-      <div className="apple-toolbar px-3.5 py-2.5 md:px-6 md:py-3 overflow-x-auto scrollbar-none flex items-center gap-3 md:gap-6 text-[11px] whitespace-nowrap">
-        <span className="apple-eyebrow flex items-center gap-1.5 whitespace-nowrap">
-          <Sparkles size={13} className="text-amber-500" /> 全球大盘
-        </span>
+      {/* ─────────────────────────────────────────────────────────────
+          全球大盘指数：双端差异化极客架构 (Responsive Market Ticker)
+          移动端：三等分黄金三联卡 + 原生 Snap 滑动分页
+          桌面端 (解法A)：伴随型极简状态微岛条 (38px 紧凑对齐)
+          信息架构准则：仅在“自选” Tab 展示，黄金/选股/银行专区彻底释放垂直空间
+          ───────────────────────────────────────────────────────────── */}
+      {mainTab === 'portfolio' && (
+      <div className="w-full max-w-full bg-slate-100/50 dark:bg-white/[0.02] border-b border-[var(--hairline-border)] py-2 md:py-2 transition-colors">
         {marketIndices.length === 0 ? (
-          <div className="flex gap-4 animate-pulse">
-            {[...Array(6)].map((_, i) => (
-              <span key={i} className="bg-slate-100 dark:bg-slate-800 h-4 w-20 rounded" />
-            ))}
+          <div className="max-w-7xl mx-auto px-3.5 md:px-6">
+            <div className="grid grid-cols-3 md:flex md:items-center gap-2 md:gap-3">
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="h-16 md:h-7 rounded-xl md:rounded-full bg-slate-200/50 dark:bg-white/5 animate-pulse md:w-32" />
+              ))}
+            </div>
           </div>
-        ) : (
-          <div className="flex items-center gap-5">
-            {marketIndices.map(index => {
-              const isFlat = Math.abs(index.changePercent) < 0.005 || Math.abs(index.change) < 0.005;
-              const isUp = !isFlat && index.change > 0;
-              const isDown = !isFlat && index.change < 0;
-              const color = isUp
-                ? 'text-[var(--color-up)]'
-                : isDown ? 'text-[var(--color-down)]' : 'text-slate-400 dark:text-slate-500';
-              const isSelected = isIndexDrawerOpen && selectedDrawerIndex?.code === index.code;
-              return (
-                <button
-                  key={index.code}
-                  type="button"
-                  onClick={() => handleOpenIndexDrawer(index)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full border transition-all duration-200 cursor-pointer select-none group shadow-2xs ${
-                    isSelected
-                      ? 'bg-white dark:bg-[#1c1d22] border-[var(--primary-accent)] ring-2 ring-[var(--primary-accent)]/20 shadow-xs'
-                      : 'bg-white/70 dark:bg-black/60 border-[var(--hairline-border)] hover:bg-white dark:hover:bg-white/10 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs active:scale-[0.97]'
-                  }`}
-                  title={`点击查看 ${index.name} 日内分时走势与关联代表性 ETF`}
+        ) : (() => {
+          // 移动端按每页 3 个指数进行分组
+          const pages: MarketIndex[][] = [];
+          for (let i = 0; i < marketIndices.length; i += 3) {
+            pages.push(marketIndices.slice(i, i + 3));
+          }
+
+          const isDomesticTrading = isMarketOpen('domestic');
+          const isHkTrading = isMarketOpen('hk');
+          const isUsTrading = isMarketOpen('us');
+
+          return (
+            <>
+              {/* 移动端 (md:hidden)：3 列等分 Snap 原生手势滑屏 */}
+              <div className="md:hidden">
+                <div
+                  ref={mobileIndexScrollRef}
+                  onScroll={handleIndexScroll}
+                  className="flex overflow-x-auto snap-x snap-mandatory no-scrollbar w-full"
                 >
-                  <span className="font-semibold text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
-                    {index.name}
-                  </span>
-                  <span className="font-mono font-bold text-slate-800 dark:text-slate-100 tabular-nums">
-                    {index.price.toFixed(2)}
-                  </span>
-                  <span className={`font-mono font-semibold flex items-center text-[10px] tabular-nums ${color}`}>
-                    {isUp ? '▲' : isDown ? '▼' : ''}
-                    {Math.abs(index.changePercent).toFixed(2)}%
-                  </span>
-                  <ChevronRight size={10} className="text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 opacity-50 group-hover:opacity-100 -ml-0.5 transition-all" />
-                </button>
-              );
-            })}
-          </div>
-        )}
+                  {pages.map((group, pageIdx) => (
+                    <div key={pageIdx} className="w-full shrink-0 snap-center px-3">
+                      <div className="grid grid-cols-3 gap-2">
+                        {group.map(index => {
+                          const isFlat = Math.abs(index.changePercent) < 0.005 || Math.abs(index.change) < 0.005;
+                          const isUp = !isFlat && index.change > 0;
+                          const isDown = !isFlat && index.change < 0;
+                          const colorClass = isUp
+                            ? 'text-[var(--color-up)]'
+                            : isDown ? 'text-[var(--color-down)]' : 'text-slate-400 dark:text-slate-500';
+                          const bgTint = isUp
+                            ? 'hover:bg-rose-500/[0.04]'
+                            : isDown ? 'hover:bg-emerald-500/[0.04]' : '';
+                          const isSelected = isIndexDrawerOpen && selectedDrawerIndex?.code === index.code;
+                          const isHk = index.code.includes('hk') || index.code.includes('HSI');
+                          const isUs = index.code.startsWith('gb_') || index.code.includes('ixic');
+                          const isTrading = isHk ? isHkTrading : isUs ? isUsTrading : isDomesticTrading;
+
+                          return (
+                            <button
+                              key={index.code}
+                              type="button"
+                              onClick={() => handleOpenIndexDrawer(index)}
+                              className={`group relative flex flex-col items-center justify-center p-2 rounded-xl border transition-all duration-200 cursor-pointer select-none text-center ${
+                                isSelected
+                                  ? 'bg-white dark:bg-[#1c1d22] border-[var(--primary-accent)] ring-2 ring-[var(--primary-accent)]/20 shadow-xs'
+                                  : `bg-white/70 dark:bg-[#151518]/80 border-[var(--hairline-border)] hover:border-slate-300 dark:hover:border-slate-700 shadow-2xs active:scale-[0.97] ${bgTint}`
+                              }`}
+                              title={`点击查看 ${index.name} 日内分时走势与关联代表性 ETF`}
+                            >
+                              <div className="flex items-center justify-center gap-1 w-full">
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                    isTrading ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-white/20'
+                                  }`}
+                                />
+                                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
+                                  {index.name}
+                                </span>
+                                <ChevronRight size={10} className="text-slate-300 dark:text-slate-600 group-hover:text-slate-500 dark:group-hover:text-slate-300 -mr-0.5 opacity-0 group-hover:opacity-100 transition-all shrink-0" />
+                              </div>
+                              <span className={`font-mono font-bold text-sm sm:text-base tabular-nums tracking-tight mt-0.5 ${colorClass}`}>
+                                {index.price.toFixed(2)}
+                              </span>
+                              <div className={`flex items-center justify-center gap-1 font-mono text-[10px] font-semibold mt-0.5 tabular-nums ${colorClass}`}>
+                                <span>{index.change > 0 ? `+${index.change.toFixed(2)}` : index.change.toFixed(2)}</span>
+                                <span>{index.changePercent > 0 ? `+${index.changePercent.toFixed(2)}%` : `${index.changePercent.toFixed(2)}%`}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 移动端分页指示微岛 (Dots Indicator) */}
+                {pages.length > 1 && (
+                  <div className="flex items-center justify-center gap-1.5 mt-1.5">
+                    {pages.map((_, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => scrollToMarketPage(idx)}
+                        className={`h-1 rounded-full transition-all duration-300 cursor-pointer ${
+                          currentMarketPage === idx
+                            ? 'w-4 bg-[var(--primary-accent)]'
+                            : 'w-1.5 bg-slate-300 dark:bg-white/20'
+                        }`}
+                        aria-label={`切换到第 ${idx + 1} 组大盘指数`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 桌面端 (hidden md:block)：彭博级状态内嵌微岛条 (方案A：交易状态微灯点直接融入胶囊，消灭右侧独立微岛) */}
+              <div className="hidden md:flex items-center gap-2 lg:gap-2.5 max-w-7xl mx-auto px-6 w-full overflow-x-auto no-scrollbar">
+                <span className="apple-eyebrow flex items-center gap-1 shrink-0 text-slate-400 dark:text-slate-500 mr-1 select-none">
+                  <Sparkles size={11} className="text-amber-500" />
+                  <span>大盘</span>
+                </span>
+
+                <div className="flex items-center gap-2 flex-nowrap">
+                  {marketIndices.map(index => {
+                    const isFlat = Math.abs(index.changePercent) < 0.005 || Math.abs(index.change) < 0.005;
+                    const isUp = !isFlat && index.change > 0;
+                    const isDown = !isFlat && index.change < 0;
+                    const colorClass = isUp
+                      ? 'text-[var(--color-up)]'
+                      : isDown ? 'text-[var(--color-down)]' : 'text-slate-400 dark:text-slate-500';
+                    const isSelected = isIndexDrawerOpen && selectedDrawerIndex?.code === index.code;
+                    // 对应市场交易状态判定
+                    const isHk = index.code.includes('hk') || index.code.includes('HSI');
+                    const isUs = index.code.startsWith('gb_') || index.code.includes('ixic');
+                    const isTrading = isHk ? isHkTrading : isUs ? isUsTrading : isDomesticTrading;
+                    const marketLabel = isHk ? '港股' : isUs ? '美股' : 'A股';
+                    const statusText = isTrading ? '连续交易中' : '已收盘/休市';
+
+                    const displayName = index.name === '上证指数' ? '上证'
+                      : index.name === '深证成指' ? '深成'
+                      : index.name === '创业板指' ? '创指'
+                      : index.name === '恒生指数' ? '恒指'
+                      : index.name === '纳斯达克' ? '纳指'
+                      : index.name;
+
+                    return (
+                      <Tooltip
+                        key={index.code}
+                        title={`${index.name} · ${marketLabel} (${statusText}) · 点击查看日内分时`}
+                        placement="bottom"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleOpenIndexDrawer(index)}
+                          className={`group flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border transition-all duration-200 cursor-pointer select-none shadow-2xs whitespace-nowrap shrink-0 ${
+                            isSelected
+                              ? 'bg-white dark:bg-[#1c1d22] border-[var(--primary-accent)] ring-2 ring-[var(--primary-accent)]/20 shadow-xs'
+                              : 'bg-white/70 dark:bg-[#151518]/80 border-[var(--hairline-border)] hover:bg-white dark:hover:bg-white/10 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xs active:scale-[0.97]'
+                          }`}
+                        >
+                          {/* 方案A核心：微型状态呼吸灯点 (交易中绿灯微动 / 休市沉静灰点) */}
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              isTrading ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-white/20'
+                            }`}
+                          />
+                          <span className="font-semibold text-xs text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">
+                            {displayName}
+                          </span>
+                          <span className="font-mono font-bold text-xs text-slate-800 dark:text-slate-100 tabular-nums">
+                            {index.price.toFixed(2)}
+                          </span>
+                          <span className={`font-mono font-semibold flex items-center text-[10px] tabular-nums ${colorClass}`}>
+                            {isUp ? '▲' : isDown ? '▼' : ''}
+                            {index.changePercent > 0 ? `+${index.changePercent.toFixed(2)}%` : `${index.changePercent.toFixed(2)}%`}
+                          </span>
+                        </button>
+                      </Tooltip>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          );
+        })()}
       </div>
+      )}
 
       {/* Main grid — 页面分支渲染 */}
       {mainTab === 'gold' ? (
-        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
+        <div className="flex-1 max-w-7xl w-full min-w-0 mx-auto p-3.5 md:p-6">
           <React.Suspense fallback={
             <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
               <Spin size="large" tip="正在加载黄金行情分析看板..." />
@@ -2634,7 +2854,7 @@ function App() {
           </React.Suspense>
         </div>
       ) : mainTab === 'ai-stock-pick' ? (
-        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
+        <div className="flex-1 max-w-7xl w-full min-w-0 mx-auto p-3.5 md:p-6">
           <React.Suspense fallback={
             <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
               <Spin size="large" tip="正在加载优质股票智能筛选中心..." />
@@ -2648,7 +2868,7 @@ function App() {
           </React.Suspense>
         </div>
       ) : mainTab === 'bank-stocks' ? (
-        <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6">
+        <div className="flex-1 max-w-7xl w-full min-w-0 mx-auto p-3.5 md:p-6">
           <React.Suspense fallback={
             <div className="flex flex-col items-center justify-center p-16 min-h-[360px] gap-3">
               <Spin size="large" tip="正在加载银行·稳健红利专区..." />
@@ -2661,16 +2881,16 @@ function App() {
           </React.Suspense>
         </div>
       ) : (
-      <div className="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-6">
+      <div className="flex-1 max-w-7xl w-full min-w-0 mx-auto p-3.5 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-3.5 md:gap-6 content-start items-start">
 
-        {/* Left column: portfolio summary + settings */}
-        <div className="lg:col-span-1 flex flex-col gap-4 md:gap-6">
+        {/* Left column: portfolio summary + settings (移动端紧凑自适应高度，阻断拉伸空白) */}
+        <div className="lg:col-span-1 flex flex-col gap-3.5 md:gap-6 h-fit">
 
           {/* Portfolio summary card — Apple 级高透白玻/深冷黑玻 双模材质 */}
           <motion.section
             whileHover={prefersReducedMotion ? undefined : { y: -2 }}
             transition={SPRING.default}
-            className="relative overflow-hidden rounded-[20px] p-4 md:p-6 transition-all duration-300
+            className="relative overflow-hidden rounded-[20px] p-4 md:p-6 transition-all duration-300 w-full min-w-0 max-w-full
                        bg-white/85 dark:bg-[#151518]/90 backdrop-blur-xl
                        border border-slate-200/80 dark:border-white/[0.08]
                        shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_12px_36px_rgb(0,0,0,0.4)]
@@ -2823,15 +3043,15 @@ function App() {
           </div>
         </div>
 
-        {/* Right column: watchlist */}
-        <div className="lg:col-span-3 flex flex-col gap-6">
-          <section className="apple-card overflow-hidden flex flex-col">
+        {/* Right column: watchlist (紧凑自适应排布) */}
+        <div className="lg:col-span-3 flex flex-col gap-4 md:gap-6 min-w-0 w-full h-fit">
+          <section className="apple-card overflow-hidden flex flex-col min-w-0 w-full">
 
-            {/* Header / tabs / add watchlist — 单行流体整合工具栏 */}
-            <div className="px-4 md:px-5 py-3 border-b border-[var(--hairline-border)] bg-slate-50/40 dark:bg-[#1d1d1f]/40">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            {/* Header / tabs / add watchlist — 大厂单行流体微岛工具栏 (44px 极致紧凑) */}
+            <div className="px-3.5 md:px-5 py-2 md:py-2.5 border-b border-[var(--hairline-border)] bg-slate-50/40 dark:bg-[#1d1d1f]/40">
+              <div className="flex items-center justify-between gap-2 sm:gap-3">
                 {/* 左侧：标的分段切换与数量微胶囊一体化 */}
-                <div className="flex items-center gap-3 shrink-0">
+                <div className="flex items-center shrink-0">
                   <div className="p-0.5 bg-slate-200/50 dark:bg-white/10 rounded-full inline-flex items-center">
                     {([
                       { key: 'fund',   label: '基金', count: watchlistItems.filter(w => w.kind === 'fund').length },
@@ -2844,7 +3064,7 @@ function App() {
                           setSelfTab(tab.key);
                           try { localStorage.setItem('fund_self_tab', tab.key); } catch {}
                         }}
-                        className={`relative px-3.5 py-1 text-xs font-semibold rounded-full transition-all flex items-center gap-1.5 ${
+                        className={`relative px-2.5 sm:px-3.5 py-1 text-xs font-semibold rounded-full transition-all flex items-center gap-1 sm:gap-1.5 ${
                           selfTab === tab.key
                             ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-xs'
                             : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
@@ -2863,13 +3083,13 @@ function App() {
                   </div>
                 </div>
 
-                {/* 右侧：紧凑搜索与订阅入口 */}
-                <form onSubmit={handleAddFund} className="flex items-center gap-2 flex-1 md:max-w-md w-full ml-auto">
-                  <div ref={addBoxRef} className="relative flex-1 min-w-0">
+                {/* 右侧：单行无缝内嵌搜索微胶囊 (彻底消除实心大蓝块视觉噪音) */}
+                <form onSubmit={handleAddFund} className="relative flex-1 min-w-0 max-w-[210px] sm:max-w-xs md:max-w-sm ml-auto">
+                  <div ref={addBoxRef} className="relative w-full">
                     <input
                       type="text"
                       maxLength={20}
-                      placeholder={selfTab === 'stock' ? '代码或名称，支持中英文 (如 NVDA / TSLA / 00700 / 腾讯 / 苹果)' : '代码或名称，支持中英文 (如 161039 / 易方达 / 标普500)'}
+                      placeholder={selfTab === 'stock' ? '搜股票代码/名称...' : '搜基金代码/名称...'}
                       value={newCode}
                       onChange={(e) => handleAddInputChange(e.target.value)}
                       onCompositionStart={() => { composingRef.current = true; }}
@@ -2882,12 +3102,27 @@ function App() {
                       onFocus={() => { if (searchResults.length > 0) setDropdownOpen(true); }}
                       autoComplete="off"
                       spellCheck={false}
-                      className="apple-input pl-8 pr-3 py-1.5 text-xs w-full font-medium placeholder-slate-400 rounded-full"
+                      className="apple-input pl-7 pr-7 py-1 text-xs w-full font-medium placeholder-slate-400 dark:placeholder-slate-500 rounded-full transition-all duration-200 focus:ring-2 focus:ring-[var(--primary-accent)]/20"
                     />
                     <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                    {searchBusy && (
-                      <Loader2 size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />
-                    )}
+                    {searchBusy || searchLoading ? (
+                      <Loader2 size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />
+                    ) : newCode ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewCode('');
+                          setSearchResults([]);
+                          setDropdownOpen(false);
+                        }}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                        title="清空"
+                      >
+                        <X size={12} />
+                      </button>
+                    ) : null}
+
+                    {/* 即时搜索下拉匹配列表 */}
                     <AnimatePresence>
                       {dropdownOpen && searchResults.length > 0 && (
                         <motion.div
@@ -2895,24 +3130,33 @@ function App() {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -4, scale: 0.98 }}
                           transition={SPRING.snap}
-                          className="absolute top-full left-0 right-0 mt-1 z-50 apple-card overflow-hidden shadow-lg max-h-72 overflow-y-auto"
+                          className="absolute top-full right-0 mt-1.5 z-50 w-72 sm:w-80 apple-card overflow-hidden shadow-xl max-h-72 overflow-y-auto border border-[var(--hairline-border)]"
                         >
+                          <div className="px-3 py-1.5 bg-slate-50/80 dark:bg-white/[0.03] text-[10px] text-slate-400 font-medium border-b border-[var(--hairline-border)] flex items-center justify-between">
+                            <span>匹配标的 (点击直接添加自选)</span>
+                            <span className="font-mono">{searchResults.length} 条</span>
+                          </div>
                           {searchResults.map((r, i) => (
                             <button
                               key={`${r.market}:${r.code}`}
                               type="button"
                               onMouseEnter={() => setHighlightIdx(i)}
                               onClick={() => addFromSearchResult(r)}
-                              className={`w-full px-3 py-2 text-xs flex items-center gap-3 text-left transition-colors ${
+                              className={`w-full px-3 py-2 text-xs flex items-center gap-2.5 text-left transition-colors cursor-pointer group ${
                                 i === highlightIdx
                                   ? 'bg-[#0066cc]/10 dark:bg-[#2997ff]/15 text-slate-900 dark:text-slate-50'
                                   : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/5'
                               }`}
                             >
-                              <span className="flex-1 truncate font-medium">{r.name}</span>
-                              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">{r.code}</span>
+                              <span className="flex-1 truncate font-medium group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                {r.name}
+                              </span>
+                              <span className="font-mono text-[10px] text-slate-400">{r.code}</span>
                               <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 shrink-0">
                                 {r.market === 'domestic' ? 'A股' : r.market === 'hk' ? '港股' : r.market === 'us' ? '美股' : '其他'}
+                              </span>
+                              <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                +
                               </span>
                             </button>
                           ))}
@@ -2920,14 +3164,6 @@ function App() {
                       )}
                     </AnimatePresence>
                   </div>
-                  <PressableButton
-                    type="submit"
-                    disabled={searchLoading}
-                    className="px-3.5 py-1.5 apple-btn-primary text-xs font-semibold flex items-center gap-1 disabled:opacity-50 whitespace-nowrap shrink-0 rounded-full shadow-xs"
-                  >
-                    <Plus size={13} strokeWidth={2.5} />
-                    订阅
-                  </PressableButton>
                 </form>
               </div>
             </div>
@@ -2996,26 +3232,26 @@ function App() {
                     <div className="overflow-x-auto flex-1 scrollbar-none">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
-                        <tr className="bg-slate-50/40 dark:bg-[#1d1d1f]/40 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold whitespace-nowrap">
-                          <th className="py-3 pl-4 pr-2">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
+                        <tr className="bg-slate-50/50 dark:bg-[#1d1d1f]/50 text-slate-400 dark:text-slate-500 border-b border-[var(--hairline-border)] font-semibold text-[11px] whitespace-nowrap select-none">
+                          <th className="py-2.5 pl-4 pr-3 text-left min-w-[200px]">{selfTab === 'stock' ? '股票名称与代码' : '基金名称与代码'}</th>
                           {selfTab === 'stock' ? (
                             <>
-                              <th className="py-3 px-2 text-right">昨收</th>
-                              <th className="py-3 px-2 text-right">现价</th>
-                              <th className="py-3 px-2 text-right">涨跌幅</th>
-                              <th className="py-3 px-2 text-center w-[96px]">分时走势</th>
+                              <th className="py-2.5 px-3 text-right w-[100px]">昨收价</th>
+                              <th className="py-2.5 px-3 text-right w-[110px]">现价</th>
+                              <th className="py-2.5 px-3 text-right w-[104px]">今日涨跌</th>
+                              <th className="py-2.5 px-3 text-center w-[96px]">分时走势</th>
                             </>
                           ) : (
                             <>
-                              <th className="py-3 px-2 text-right">昨日单位净值</th>
-                              <th className="py-3 px-2 text-right">估算净值</th>
-                              <th className="py-3 px-2 text-right">估算涨跌</th>
-                              <th className="py-3 px-2 text-center w-[96px]">分时走势</th>
+                              <th className="py-2.5 px-3 text-right w-[100px]">昨日单位净值</th>
+                              <th className="py-2.5 px-3 text-right w-[110px]">估算净值</th>
+                              <th className="py-2.5 px-3 text-right w-[104px]">估算涨跌</th>
+                              <th className="py-2.5 px-3 text-center w-[96px]">分时走势</th>
                             </>
                           )}
-                          <th className="py-3 px-2 text-right">我的持仓预估</th>
-                          <th className="py-3 px-2 text-right">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
-                          <th className="py-3 pr-4 pl-2 text-center w-[96px]">操作</th>
+                          <th className="py-2.5 px-3 text-right w-[120px]">我的持仓预估</th>
+                          <th className="py-2.5 px-3 text-right w-[100px]">{selfTab === 'stock' ? '今日盈亏' : '今日估算盈亏'}</th>
+                          <th className="py-2.5 pr-4 pl-1 text-right w-[72px]">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -4067,6 +4303,9 @@ function DetailDrawer({
     setVisible(false);
   }, []);
 
+  // 接入 Android 物理返回 / 边缘侧滑手势感知
+  useModalHistory(visible, handleClose, { id: 'app-fund-detail-drawer' });
+
   const handleAfterOpenChange = useCallback((open: boolean) => {
     if (!open) {
       onDismiss();
@@ -4084,9 +4323,20 @@ function DetailDrawer({
       }}
     >
       <Drawer
+        closeIcon={false}
         title={
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="flex items-center gap-1.5 px-2.5 py-1 -ml-1 rounded-full bg-slate-100/80 dark:bg-white/10 hover:bg-slate-200/80 dark:hover:bg-white/20 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-all cursor-pointer select-none shrink-0 whitespace-nowrap"
+              title="返回上一页"
+            >
+              <ArrowLeft size={14} className="text-slate-500 dark:text-slate-400" />
+              <span>返回</span>
+            </button>
+            <span className="w-px h-3.5 bg-slate-200 dark:bg-white/10 shrink-0" />
+            <span className="text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">{title}</span>
             {isExpanded && (
               <Tag color="processing" className="text-[10px] rounded-full border-0 font-semibold m-0">
                 全屏视图
@@ -4113,6 +4363,7 @@ function DetailDrawer({
         open={visible}
         onClose={handleClose}
         afterOpenChange={handleAfterOpenChange}
+        zIndex={10000}
         width={
           isExpanded
             ? '100vw'
