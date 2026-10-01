@@ -722,7 +722,7 @@ export function FundDetailPanel({
       })()}
 
       {/* ── Chart card ───────────────────────────────────────── */}
-      <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-4">
+      <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-2.5 sm:p-4">
         <Suspense fallback={
           <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100/50 dark:bg-white/5 flex flex-col items-center justify-center gap-3`}>
             <Spin size="large" tip="正在加载图表模块..." />

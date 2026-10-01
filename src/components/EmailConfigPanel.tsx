@@ -29,41 +29,80 @@ const SPRING = {
   snap:  { type: 'spring' as const, bounce: 0.18, duration: 0.32 },
 };
 
+// 模块级缓存已知的最新模式，实现弹窗秒开与即时就位 (Pre-warmed Cache)
+let cachedEmailStatus: EmailStatus | null = null;
+let cachedEmailMode: 'dev' | 'resend' | 'smtp' = (() => {
+  try {
+    return (localStorage.getItem('fund_cached_mail_mode') as any) || 'dev';
+  } catch {
+    return 'dev';
+  }
+})();
+
 interface EmailConfigPanelProps {
   isAdmin: boolean;
   currentUser: string;
   onToast?: (msg: string) => void;
+  open?: boolean;
+  onClose?: () => void;
+  trigger?: (open: () => void) => React.ReactNode;
 }
 
-export function EmailConfigPanel({ isAdmin, currentUser, onToast }: EmailConfigPanelProps) {
-  const [open, setOpen] = useState(false);
+export function EmailConfigPanel({
+  isAdmin,
+  currentUser,
+  onToast,
+  open: controlledOpen,
+  onClose: controlledOnClose,
+  trigger
+}: EmailConfigPanelProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const prefersReducedMotion = useReducedMotion();
 
   // 非 admin 完全隐藏入口（admin 才可点击）
   if (!isAdmin) return null;
 
+  const isControlled = typeof controlledOpen === 'boolean';
+  const isOpen = isControlled ? controlledOpen : internalOpen;
+  const handleClose = () => {
+    if (isControlled) {
+      controlledOnClose?.();
+    } else {
+      setInternalOpen(false);
+    }
+  };
+  const handleOpen = () => {
+    if (!isControlled) {
+      setInternalOpen(true);
+    }
+  };
+
   return (
     <>
-      <Tooltip title="邮件服务配置 (Admin)" placement="bottom">
-        <motion.button
-          type="button"
-          onClick={() => setOpen(true)}
-          whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
-          transition={SPRING.snap}
-          className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer flex items-center justify-center"
-          aria-label="邮件配置"
-        >
-          <Mail size={14} />
-        </motion.button>
-      </Tooltip>
+      {trigger ? (
+        trigger(handleOpen)
+      ) : isControlled ? null : (
+        <Tooltip title="邮件服务配置 (Admin)" placement="bottom">
+          <motion.button
+            type="button"
+            onClick={handleOpen}
+            whileTap={prefersReducedMotion ? undefined : { scale: 0.92 }}
+            transition={SPRING.snap}
+            className="p-1.5 rounded-full hover:bg-white dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer flex items-center justify-center"
+            aria-label="邮件配置"
+          >
+            <Mail size={14} />
+          </motion.button>
+        </Tooltip>
+      )}
 
       <AnimatePresence>
-        {open && (
+        {isOpen && (
           <ConfigModal
             key="email-config"
             isAdmin={isAdmin}
             currentUser={currentUser}
-            onClose={() => setOpen(false)}
+            onClose={handleClose}
             onToast={onToast}
           />
         )}
@@ -80,8 +119,9 @@ function ConfigModal({
   onClose: () => void;
   onToast?: (msg: string) => void;
 }) {
-  const [status, setStatus] = useState<EmailStatus | null>(null);
-  const [mode, setMode] = useState<'dev' | 'resend' | 'smtp'>('dev');
+  const [status, setStatus] = useState<EmailStatus | null>(cachedEmailStatus);
+  const [mode, setMode] = useState<'dev' | 'resend' | 'smtp'>(cachedEmailStatus?.mode as any || cachedEmailMode);
+  const [userInteractedTab, setUserInteractedTab] = useState(false);
   const [mailFrom, setMailFrom] = useState('');
   const [appName, setAppName] = useState('');
   // 已配置密钥（admin 时从后端 reveal 取回）
@@ -111,6 +151,11 @@ function ConfigModal({
   const load = useCallback(async () => {
     try {
       const s = await fetchEmailStatus();
+      cachedEmailStatus = s;
+      if (s?.mode) {
+        cachedEmailMode = s.mode as any;
+        try { localStorage.setItem('fund_cached_mail_mode', s.mode); } catch {}
+      }
       setStatus(s);
       setMode((s.mode as any) || 'dev');
       setMailFrom(s.mailFrom || '');
@@ -220,9 +265,12 @@ function ConfigModal({
           animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
           exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 8, filter: 'blur(4px)' }}
           transition={SPRING.panel}
-          className="bg-[var(--canvas-bg)] dark:bg-[#1d1d1f] rounded-[28px] max-w-lg w-full border border-[var(--hairline-border)] shadow-2xl relative max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-4rem)] flex flex-col"
+          className="bg-[var(--canvas-bg)] dark:bg-[#1d1d1f] rounded-[28px] overflow-hidden max-w-lg w-full border border-[var(--hairline-border)] shadow-2xl relative max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-4rem)] flex flex-col"
         >
-          <div className="sticky top-0 z-10 bg-[var(--canvas-bg)]/95 dark:bg-[#1d1d1f]/95 backdrop-blur-xl border-b border-[var(--hairline-border)] px-5 py-3 flex items-center justify-between flex-shrink-0">
+          {/* 顶部微内高光 (Specular Highlight) */}
+          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-blue-500/25 to-transparent pointer-events-none z-20" />
+
+          <div className="sticky top-0 z-10 bg-[var(--canvas-bg)]/95 dark:bg-[#1d1d1f]/95 backdrop-blur-xl border-b border-[var(--hairline-border)] px-5 py-3.5 flex items-center justify-between flex-shrink-0 rounded-t-[28px]">
             <div className="flex items-center gap-2">
               <SettingsIcon size={14} className="text-[var(--primary-accent)]" />
               <h3 className="apple-display-heading text-sm font-bold">邮件配置</h3>
@@ -260,7 +308,12 @@ function ConfigModal({
                 <motion.button
                   key={m}
                   type="button"
-                  onClick={() => isAdmin && setMode(m)}
+                  onClick={() => {
+                    if (isAdmin) {
+                      setUserInteractedTab(true);
+                      setMode(m);
+                    }
+                  }}
                   disabled={!isAdmin}
                   whileTap={prefersReducedMotion || !isAdmin ? undefined : { scale: 0.96 }}
                   transition={SPRING.snap}
@@ -271,7 +324,7 @@ function ConfigModal({
                   {mode === m && (
                     <motion.span
                       layoutId="mail-mode-tab"
-                      transition={SPRING.snap}
+                      transition={userInteractedTab ? SPRING.snap : { duration: 0 }}
                       className="absolute inset-0 rounded-full bg-[var(--primary-accent)]"
                     />
                   )}

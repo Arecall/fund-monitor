@@ -4572,6 +4572,207 @@ async function fetchUpstreamGoldHistory(key, range = 'intraday') {
   return [];
 }
 
+const _indexTrendCache = new Map();
+const INDEX_TREND_TTL = 15 * 1000;
+
+const INDEX_CONFIG_MAP = {
+  s_sh000001: {
+    code: 's_sh000001',
+    symbol: 'SH000001',
+    name: '上证综合指数',
+    market: 'domestic',
+    tencentSym: 'sh000001',
+    etfs: [
+      { code: '510300', name: '华泰柏瑞沪深300ETF', reason: '核心大盘宽基标杆' },
+      { code: '510050', name: '华夏上证50ETF', reason: '沪市超大盘蓝筹龙头' },
+    ]
+  },
+  s_sz399001: {
+    code: 's_sz399001',
+    symbol: 'SZ399001',
+    name: '深证成份指数',
+    market: 'domestic',
+    tencentSym: 'sz399001',
+    etfs: [
+      { code: '159901', name: '易方达深证100ETF', reason: '深市核心资产代表' },
+    ]
+  },
+  s_sz399006: {
+    code: 's_sz399006',
+    symbol: 'SZ399006',
+    name: '创业板指',
+    market: 'domestic',
+    tencentSym: 'sz399006',
+    etfs: [
+      { code: '159915', name: '易方达创业板ETF', reason: '创业板流动性最强标的' },
+    ]
+  },
+  s_sh000688: {
+    code: 's_sh000688',
+    symbol: 'SH000688',
+    name: '科创50指数',
+    market: 'domestic',
+    tencentSym: 'sh000688',
+    etfs: [
+      { code: '588000', name: '华夏科创50ETF', reason: '硬科技投资核心工具' },
+    ]
+  },
+  s_hkHSI: {
+    code: 's_hkHSI',
+    symbol: 'HSI',
+    name: '恒生指数',
+    market: 'hk',
+    tencentSym: 'hkHSI',
+    etfs: [
+      { code: '159920', name: '华夏恒生ETF', reason: '港股蓝筹一键配置' },
+      { code: '513180', name: '华夏恒生科技ETF', reason: '港股科技巨头聚集地' },
+    ]
+  },
+  gb_ixic: {
+    code: 'gb_ixic',
+    symbol: '.IXIC',
+    name: '纳斯达克综合指数',
+    market: 'us',
+    tencentSym: 'us.IXIC',
+    proxyTicker: 'QQQ',
+    etfs: [
+      { code: '513100', name: '国泰纳斯达克100ETF', reason: '全球科技核心资产' },
+      { code: '159941', name: '广发纳斯达克100ETF', reason: '高流动性 QDII 工具' },
+    ]
+  },
+  gb_gspc: {
+    code: 'gb_gspc',
+    symbol: '.INX',
+    name: '标普500指数',
+    market: 'us',
+    tencentSym: 'us.INX',
+    proxyTicker: 'SPY',
+    etfs: [
+      { code: '513500', name: '博时标普500ETF', reason: '全球宏观配置基石' },
+    ]
+  }
+};
+
+async function fetchIndexTrendData(indexCode) {
+  const cfg = INDEX_CONFIG_MAP[indexCode] || Object.values(INDEX_CONFIG_MAP).find(c => c.symbol.toLowerCase() === String(indexCode).toLowerCase());
+  if (!cfg) return null;
+
+  const now = Date.now();
+  const cached = _indexTrendCache.get(cfg.code);
+  if (cached && now - cached.ts < INDEX_TREND_TTL) {
+    return cached.data;
+  }
+
+  // 1. 获取最新大盘指数实时行情与基础指标
+  const indices = await getMarketIndices();
+  const baseInfo = indices.find(i => i.code === cfg.code) || {
+    code: cfg.code,
+    name: cfg.name,
+    price: 0,
+    change: 0,
+    changePercent: 0,
+    status: 'closed'
+  };
+
+  const preClose = baseInfo.price - baseInfo.change;
+
+  // 2. 获取分时走势分钟点
+  let timeline = [];
+  try {
+    if (cfg.tencentSym) {
+      const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${cfg.tencentSym}`;
+      const r = await axios.get(url, { timeout: 3500 });
+      const rawArr = r.data?.data?.[cfg.tencentSym]?.data?.data;
+      if (Array.isArray(rawArr) && rawArr.length >= 2) {
+        timeline = rawArr.map(line => {
+          const parts = line.split(' ');
+          if (parts.length < 2) return null;
+          const hm = parts[0];
+          const p = parseFloat(parts[1]);
+          const v = parseFloat(parts[2]) || 0;
+          return {
+            t: `${hm.slice(0, 2)}:${hm.slice(2, 4)}`,
+            v: p,
+            vol: v
+          };
+        }).filter(Boolean);
+      }
+    }
+  } catch (err) {
+    console.warn(`[index] 腾讯分时接口获取失败 ${cfg.code}:`, err.message);
+  }
+
+  // 美股休市兜底：如果美股指数分时点数过少，复用 QQQ / SPY 分时线并缩放
+  if (timeline.length < 2 && cfg.proxyTicker && cfg.market === 'us') {
+    try {
+      const proxyBars = await fetchStockMinuteData(cfg.proxyTicker, 'us', 'stock');
+      if (Array.isArray(proxyBars) && proxyBars.length >= 2) {
+        const baseProxyPrice = proxyBars[proxyBars.length - 1].close || 1;
+        const scaleRatio = baseInfo.price > 0 ? (baseInfo.price / baseProxyPrice) : 1;
+        timeline = proxyBars.map(b => {
+          const tPart = (b.time || '').split(' ')[1] || '';
+          return {
+            t: tPart.slice(0, 5),
+            v: parseFloat((b.close * scaleRatio).toFixed(2)),
+            vol: b.volume || 100
+          };
+        });
+      }
+    } catch {}
+  }
+
+  // 计算极值
+  const prices = timeline.map(p => p.v).filter(v => typeof v === 'number' && v > 0);
+  const open = prices[0] || (preClose > 0 ? preClose : baseInfo.price);
+  const high = prices.length > 0 ? Math.max(...prices, baseInfo.price) : baseInfo.price;
+  const low = prices.length > 0 ? Math.min(...prices, baseInfo.price) : baseInfo.price;
+  const amplitude = preClose > 0 ? ((high - low) / preClose) * 100 : 0;
+
+  // 3. 关联代表性 ETF 最新行情
+  const relatedEtfs = [];
+  for (const etfCfg of (cfg.etfs || [])) {
+    try {
+      const q = await getFundValuation(etfCfg.code, 'stock');
+      relatedEtfs.push({
+        code: etfCfg.code,
+        name: etfCfg.name,
+        reason: etfCfg.reason,
+        price: parseFloat(q?.gsz || q?.dwjz || '0') || 0,
+        changePercent: parseFloat(q?.gszzl || '0') || 0
+      });
+    } catch {
+      relatedEtfs.push({
+        code: etfCfg.code,
+        name: etfCfg.name,
+        reason: etfCfg.reason,
+        price: 0,
+        changePercent: 0
+      });
+    }
+  }
+
+  const result = {
+    code: cfg.code,
+    symbol: cfg.symbol,
+    name: cfg.name,
+    market: cfg.market,
+    price: baseInfo.price,
+    change: baseInfo.change,
+    changePercent: baseInfo.changePercent,
+    status: baseInfo.status,
+    open: parseFloat(open.toFixed(2)),
+    preClose: parseFloat(preClose.toFixed(2)),
+    high: parseFloat(high.toFixed(2)),
+    low: parseFloat(low.toFixed(2)),
+    amplitude: parseFloat(amplitude.toFixed(2)),
+    timeline,
+    relatedEtfs
+  };
+
+  _indexTrendCache.set(cfg.code, { ts: now, data: result });
+  return result;
+}
+
 module.exports = {
   getFundValuation,
   enrichStockValuation,
@@ -4583,6 +4784,7 @@ module.exports = {
   fetchStockQuotes,
   parseStockCodes,
   getMarketIndices,
+  fetchIndexTrendData,
   detectCodeKind,
   detectMarketFromName,
   currencyForExchange,

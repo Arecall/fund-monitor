@@ -36,6 +36,7 @@ import {
   Trash2,
   LineChart,
   Target,
+  ArrowLeft,
   ArrowUpRight,
   ArrowDownRight,
 } from 'lucide-react';
@@ -161,6 +162,8 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
   const [currentReport, setCurrentReport] = useState<AiStockPickReport | null>(null);
   const [recommendations, setRecommendations] = useState<AiStockRecommendation[]>([]);
   const [loadingReportDetail, setLoadingReportDetail] = useState(false);
+  // 移动端分层下钻状态机：'list' 历史列表 | 'detail' 二级研报详情
+  const [mobileView, setMobileView] = useState<'list' | 'detail'>('list');
 
   // Analysis job state
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -271,6 +274,7 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
           await loadReports(false);
           if (res.reportId) {
             setSelectedReportId(res.reportId);
+            setMobileView('detail'); // 移动端自动推入研报详情页
           }
         } else if (res.status === 'failed') {
           clearInterval(timer);
@@ -340,7 +344,11 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
       const nextReports = reports.filter(r => r.id !== reportId);
       setReports(nextReports);
       if (selectedReportId === reportId) {
-        setSelectedReportId(nextReports.length > 0 ? nextReports[0].id : null);
+        const nextId = nextReports.length > 0 ? nextReports[0].id : null;
+        setSelectedReportId(nextId);
+        if (!nextId) {
+          setMobileView('list');
+        }
       }
     } catch (err: any) {
       message.error('删除报告失败: ' + err.message);
@@ -349,13 +357,13 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
   return (
     <div className="flex flex-col gap-5">
-      {/* ── Top Header Card ── */}
-      <section className="apple-card p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center shadow-md">
+      {/* ── Top Header Card (移动端进入二级研报时收起，释放全部视口给正文) ── */}
+      <section className={`${mobileView === 'detail' ? 'hidden lg:flex' : 'flex'} apple-card p-4 sm:p-5 flex-col md:flex-row items-start md:items-center justify-between gap-4`}>
+        <div className="flex items-center gap-3 min-w-0 w-full md:w-auto">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center shadow-md shrink-0">
             <Sparkles size={22} className="animate-pulse" />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="apple-display-heading text-lg font-bold text-slate-800 dark:text-slate-100">
                 优质股票智能筛选
@@ -384,47 +392,51 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                 </Tag>
               )}
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
               全网宏观大盘 · 热点领涨板块 · 主力资金动向 · 财经快讯与真实标的候选池深度推理
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
-          {/* 1. 股票偏好设置（所有用户均可见） */}
-          <Button
-            icon={<Sliders size={14} />}
-            onClick={() => setPrefModalOpen(true)}
-            className="rounded-full text-xs font-semibold"
-          >
-            选股偏好设置
-          </Button>
+        {/* 响应式操作控制区：移动端双层结构（二级配置等分 + 主行动点全宽贯通），桌面端单行流式对齐 */}
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2.5 w-full md:w-auto md:justify-end">
+          {/* 二级配置组：移动端等分排布，消除悬空与阶梯断裂；桌面端自适应紧凑流 */}
+          <div className={`grid ${isUserAdmin ? 'grid-cols-2' : 'grid-cols-1'} gap-2 w-full md:flex md:w-auto`}>
+            {/* 1. 股票偏好设置（所有用户均可见） */}
+            <Button
+              icon={<Sliders size={14} />}
+              onClick={() => setPrefModalOpen(true)}
+              className="rounded-xl md:rounded-full text-xs font-semibold h-9 md:h-8 flex items-center justify-center !w-full md:!w-auto"
+            >
+              选股偏好设置
+            </Button>
 
-          {/* 2. API 接口配置（仅限 admin 用户可见） */}
-          {isUserAdmin && (
-            <Tooltip title="全局大模型与 API 接口凭证设置 (仅管理员可见)">
-              <Button
-                icon={<Settings size={14} />}
-                onClick={() => {
-                  loadAdminConfig();
-                  setAdminModalOpen(true);
-                }}
-                className="rounded-full text-xs font-semibold border-indigo-200 dark:border-indigo-800/60 text-indigo-600 dark:text-indigo-400 hover:border-indigo-400"
-              >
-                <span className="flex items-center gap-1">
-                  <ShieldCheck size={13} className="text-indigo-500" /> AI 接口配置
-                </span>
-              </Button>
-            </Tooltip>
-          )}
+            {/* 2. API 接口配置（仅限 admin 用户可见） */}
+            {isUserAdmin && (
+              <Tooltip title="全局大模型与 API 接口凭证设置 (仅管理员可见)">
+                <Button
+                  icon={<Settings size={14} />}
+                  onClick={() => {
+                    loadAdminConfig();
+                    setAdminModalOpen(true);
+                  }}
+                  className="rounded-xl md:rounded-full text-xs font-semibold border-indigo-200 dark:border-indigo-800/60 text-indigo-600 dark:text-indigo-400 hover:border-indigo-400 h-9 md:h-8 flex items-center justify-center !w-full md:!w-auto"
+                >
+                  <span className="flex items-center gap-1">
+                    <ShieldCheck size={13} className="text-indigo-500" /> AI 接口配置
+                  </span>
+                </Button>
+              </Tooltip>
+            )}
+          </div>
 
-          {/* 3. 立即选股按钮 */}
+          {/* 3. 立即选股按钮（核心主行动点：移动端 100% 贯通，高度 40px，强化触控热区与动效质感） */}
           <Button
             type="primary"
             icon={<Zap size={14} />}
             loading={analyzing}
             onClick={handleStartAnalysis}
-            className="rounded-full text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md"
+            className="rounded-xl md:rounded-full text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md shadow-blue-500/10 h-10 md:h-8 flex items-center justify-center !w-full md:!w-auto active:scale-[0.98] transition-transform"
           >
             {analyzing ? '智能选股分析中...' : '立即智能选股'}
           </Button>
@@ -467,8 +479,8 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
       {/* ── Main Content Grid ── */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
-        {/* Left Column: History Reports List */}
-        <div className="lg:col-span-1 flex flex-col gap-3">
+        {/* Left Column: History Reports List (移动端在 detail 视图时隐藏，list 视图时全宽展现) */}
+        <div className={`${mobileView === 'detail' ? 'hidden lg:flex' : 'flex'} lg:col-span-1 flex-col gap-3`}>
           <div className="flex items-center justify-between px-1">
             <span className="apple-eyebrow flex items-center gap-1.5">
               <Clock size={13} className="text-slate-400" /> 我的分析历史 ({totalReports})
@@ -482,7 +494,7 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
             />
           </div>
 
-          <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
+          <div className="space-y-2 lg:max-h-[640px] lg:overflow-y-auto pr-1">
             {reports.length === 0 ? (
               <div className="p-6 text-center text-slate-400 text-xs border border-[var(--hairline-border)] rounded-2xl bg-white/40 dark:bg-white/[0.02]">
                 暂无分析历史，点击上方“立即智能选股”生成首份研报。
@@ -509,7 +521,10 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                 return (
                   <div
                     key={report.id}
-                    onClick={() => setSelectedReportId(report.id)}
+                    onClick={() => {
+                      setSelectedReportId(report.id);
+                      setMobileView('detail'); // 移动端点击直达二级研报页面
+                    }}
                     className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col gap-2 relative overflow-hidden ${
                       isSelected
                         ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/50 shadow-sm ring-1 ring-blue-500/30'
@@ -570,10 +585,12 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                       {displayTitle}
                     </div>
 
-                    {/* 卡片副信息：标的数量提示 */}
+                    {/* 卡片副信息：标的数量提示与下钻指示 */}
                     <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800/60">
                       <span>甄选 {report.rec_count || report.stock_count || 3} 只标的</span>
-                      <span className="text-blue-600 dark:text-blue-400 font-medium text-[10px]">查看研报 →</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-semibold text-[11px] flex items-center gap-0.5">
+                        查看研报 <ArrowUpRight size={12} />
+                      </span>
                     </div>
                   </div>
                 );
@@ -582,8 +599,41 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
           </div>
         </div>
 
-        {/* Right Column: Recommendations Stream */}
-        <div className="lg:col-span-3 flex flex-col gap-4">
+        {/* Right Column: Recommendations Stream (移动端在 list 视图时隐藏，detail 视图时独占全宽展开) */}
+        <div className={`${mobileView === 'list' ? 'hidden lg:flex' : 'flex'} lg:col-span-3 flex-col gap-4`}>
+          {/* 移动端专属：二级页面吸顶返回导航条 (Level-2 Sticky Top Bar) */}
+          <div className="lg:hidden flex items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-xl border border-[var(--hairline-border)] shadow-xs sticky top-2 z-20">
+            <Button
+              type="text"
+              size="small"
+              icon={<ArrowLeft size={16} className="text-blue-600 dark:text-blue-400" />}
+              onClick={() => setMobileView('list')}
+              className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1 px-2 h-8 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5"
+            >
+              返回分析历史
+            </Button>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] sm:text-[11px] font-mono text-slate-400">
+                {currentReport ? currentReport.created_at.slice(5, 16) : ''}
+              </span>
+              {currentReport && (
+                <Popconfirm
+                  title="确认删除该报告？"
+                  onConfirm={() => {
+                    handleDeleteReport(currentReport.id);
+                    setMobileView('list');
+                  }}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<Trash2 size={13} className="text-slate-400 hover:text-red-500" />}
+                    className="p-1 h-8 w-8 flex items-center justify-center rounded-xl"
+                  />
+                </Popconfirm>
+              )}
+            </div>
+          </div>
           <AnimatePresence mode="wait">
             {loadingReportDetail ? (
               <motion.div
@@ -605,7 +655,14 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                 className="apple-card p-12 text-center flex flex-col items-center justify-center gap-3"
               >
                 <Empty description="暂未选择或生成分析报告" />
-                <Button type="primary" onClick={handleStartAnalysis} className="rounded-full text-xs font-semibold mt-2">
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    setMobileView('list');
+                    handleStartAnalysis();
+                  }}
+                  className="rounded-full text-xs font-semibold mt-2"
+                >
                   立即生成精选股票报告
                 </Button>
               </motion.div>

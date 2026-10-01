@@ -161,13 +161,16 @@ export function Sparkline({
       };
     });
 
+    // 计算昨收价对应的零轴基准线 Y 坐标
+    const baselineY = padTop + (1 - (basePrice - minV) / range_v) * innerH;
+
     // 单调三次 Hermite 样条曲线（Monotone Cubic Spline）
     const lineD = buildMonotoneSplinePath(pts);
     const lastPt = pts[pts.length - 1];
     const firstPt = pts[0];
     const areaD = `${lineD} L ${lastPt.x.toFixed(1)} ${height} L ${firstPt.x.toFixed(1)} ${height} Z`;
 
-    return { lineD, areaD, lastPt };
+    return { lineD, areaD, lastPt, baselineY };
   }, [isPreMarket, series, height, width, prevClose, highPrice, lowPrice, openPrice, currentPrice, market]);
 
   const strokeColor = isUp ? 'var(--color-up)' : 'var(--color-down)';
@@ -209,6 +212,18 @@ export function Sparkline({
             <stop offset="100%" stopColor={strokeColor} stopOpacity="0.0" />
           </linearGradient>
         </defs>
+
+        {/* 昨收价零轴基准参考线 (Zero-Axis Baseline) */}
+        <line
+          x1={0}
+          y1={geometry.baselineY}
+          x2={width}
+          y2={geometry.baselineY}
+          stroke="currentColor"
+          className="text-slate-300 dark:text-slate-700/80"
+          strokeWidth="0.8"
+          strokeDasharray="2,2"
+        />
 
         {/* 区域阴影 */}
         <path d={geometry.areaD} fill={`url(#${gradId})`} />

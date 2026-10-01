@@ -126,7 +126,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.6.003' });
+  res.json({ status: 'ok', version: '1.6.004' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -882,6 +882,21 @@ app.get('/api/market/fund/:code/holdings', async (req, res) => {
     res.json({ code, holdings: data });
   } catch (error) {
     res.status(500).json({ error: '获取基金持仓失败' });
+  }
+});
+
+// 获取大盘指数深度趋势与分钟走势（支持上证、深成、创业板、科创50、纳指等）
+app.get('/api/market/index/:code/trend', async (req, res) => {
+  const { code } = req.params;
+  try {
+    const trend = await marketHelper.fetchIndexTrendData(code);
+    if (!trend) {
+      return res.status(404).json({ error: '未找到该大盘指数配置' });
+    }
+    res.json(trend);
+  } catch (error) {
+    console.error(`[index-trend] 获取指数趋势失败 [${code}]:`, error);
+    res.status(500).json({ error: '获取大盘指数趋势失败' });
   }
 });
 

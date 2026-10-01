@@ -29,6 +29,12 @@
   --spring-default: cubic-bezier(0.32, 0.72, 0, 1);          /* close to critically-damped spring */
   --spring-materialize: cubic-bezier(0.16, 1, 0.3, 1);      /* gentle ease-out for surface arrival */
   --spring-snap: cubic-bezier(0.5, 1.5, 0.6, 1);            /* inverse for snappy release */
+
+  /* Mobile Safe Area Insets (iOS Safari / PWA / WeChat) */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
 }
 
 :root.intl-color {
@@ -468,4 +474,39 @@ body {
 /* Buttons override — they have their own focus styling */
 button:focus-visible {
   outline-offset: 4px;
+}
+
+/* ───────────────────────────────────────────────────────────────────
+   Mobile Optimization & Ergonomics
+   ─────────────────────────────────────────────────────────────────── */
+
+/* 移动端平滑滚动与过度滚动阻尼 */
+html, body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* 消除移动端 iOS Safari 键盘唤起缩放缺陷：在移动端小屏下保证 input 物理字号为 16px */
+@media screen and (max-width: 767px) {
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  input[type="search"] {
+    font-size: 16px !important;
+  }
+}
+
+/* 移动端安全区底部 padding 通用类 */
+.pb-safe {
+  padding-bottom: calc(0.75rem + var(--sab));
+}
+
+.pt-safe {
+  padding-top: calc(0.5rem + var(--sat));
+}
+
+/* 优雅的横向滚动遮罩（左右渐隐流体提示） */
+.scroll-fade-edge {
+  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 20px), transparent);
 }

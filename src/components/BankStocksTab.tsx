@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   Tag,
@@ -32,6 +33,7 @@ import {
   PieChart,
   FileText,
   Clock,
+  ChevronLeft,
 } from 'lucide-react';
 import {
   fetchBankStocksOverview,
@@ -152,9 +154,9 @@ const SPRING = {
 };
 
 const AI_STEPS = [
-  { icon: '🔍', text: '正在调取历史中报分红、股息率基准与红利税负...' },
-  { icon: '🛡️', text: '正在核算信贷资产质量、不良率与拨备安全边际...' },
-  { icon: '✨', text: '大模型多维客观严谨推演完成，正在结构化排版研报...' },
+  { step: '1', text: '正在调取历史中报分红、股息率基准与红利税负...' },
+  { step: '2', text: '正在核算信贷资产质量、不良率与拨备安全边际...' },
+  { step: '3', text: '大模型多维客观严谨推演完成，正在结构化排版研报...' },
 ];
 
 function AiDiagnosisSkeleton() {
@@ -175,11 +177,11 @@ function AiDiagnosisSkeleton() {
     <div className="space-y-3">
       {/* 动态步骤探针栏 */}
       <div className="flex items-center justify-between text-xs px-3.5 py-2.5 bg-indigo-50/80 dark:bg-indigo-950/40 rounded-xl border border-indigo-100 dark:border-indigo-900/50 text-indigo-700 dark:text-indigo-300">
-        <div className="flex items-center gap-2">
-          <span className="animate-spin text-sm">⚙️</span>
-          <span className="font-medium animate-pulse">{currentStep.icon} {currentStep.text}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600 dark:text-indigo-400 shrink-0" />
+          <span className="font-medium animate-pulse truncate">{currentStep.text}</span>
         </div>
-        <span className="text-[10px] font-mono text-indigo-500/80">{stepIdx + 1}/3 步</span>
+        <span className="text-[10px] font-mono text-indigo-500/80 shrink-0 ml-2">{stepIdx + 1}/3 步</span>
       </div>
 
       {/* 3 张 1:1 预占位骨架卡片（高度与真实成稿 1:1 匹配，消除高度跳跃） */}
@@ -294,8 +296,136 @@ function AiDiagnosisView({ text }: { text: string }) {
   );
 }
 
+interface DiagnoseDetailContentProps {
+  stock: BankStockItem;
+  loading: boolean;
+  result: BankAiDiagnoseResult | null;
+  prefersReducedMotion: boolean | null;
+}
+
+function DiagnoseDetailContent({
+  stock,
+  loading,
+  result,
+  prefersReducedMotion,
+}: DiagnoseDetailContentProps) {
+  return (
+    <div className="space-y-3.5 py-1">
+      {/* 标的基本信息条 */}
+      <div className="flex items-center justify-between p-3.5 sm:p-4 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/70 rounded-2xl shadow-2xs">
+        <div>
+          <div className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <span>{stock.name}</span>
+            <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+              {stock.code}
+            </span>
+          </div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
+            <Tag color="blue" className="text-[11px] m-0 rounded-md">{stock.tierName}</Tag>
+            <span>{stock.tradeMechanism || 'A股 T+1'}</span>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white font-mono">
+            {stock.market === 'hk' ? 'HK$' : '¥'}{stock.price.toFixed(
+              stock.tier === 't0_cash' || stock.tier === 'etf' || (stock.price > 0 && stock.price < 5.0) ? 3 : 2
+            )}
+          </div>
+          <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+            税后实得股息率: {stock.afterTaxDividendYield}%
+          </div>
+        </div>
+      </div>
+
+      {/* 诊断内容区域：平滑 Cross-Fade 动效与防高度抖动 */}
+      <AnimatePresence mode="wait">
+        {loading ? (
+          <motion.div
+            key="skeleton"
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={{ duration: 0.18 }}
+          >
+            <AiDiagnosisSkeleton />
+          </motion.div>
+        ) : result ? (
+          <motion.div
+            key="result"
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={{ duration: 0.22 }}
+            className="space-y-3"
+          >
+            {/* 模型与生成时间栏 */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs px-3.5 py-2 bg-slate-50/80 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span>分析引擎: <strong className="font-semibold text-slate-700 dark:text-slate-200">{result.model}</strong></span>
+                {result.isAiGenerated ? (
+                  <Tag color="purple" className="text-[10px] m-0 rounded-md">大模型生成</Tag>
+                ) : (
+                  <Tag color="blue" className="text-[10px] m-0 rounded-md">严谨量化专家规则</Tag>
+                )}
+              </div>
+              <span className="font-mono text-[11px]">生成时间: {result.generatedAt}</span>
+            </div>
+
+            {/* 结构化与去星号 Markdown 维度研报卡片 */}
+            <AiDiagnosisView text={result.diagnosis} />
+
+            {/* 客观合规提示 */}
+            <motion.div
+              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ ...SPRING.card, delay: prefersReducedMotion ? 0 : 0.3 }}
+              className="p-3 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-900/40 rounded-xl text-[11px] text-amber-800/90 dark:text-amber-400/90 leading-relaxed flex items-start gap-2"
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-500 mt-0.5" />
+              <span>
+                客观合规提示：AI 诊断基于财报客观指标与宏观规则推演，仅供投资参考，不构成任何投资咨询或保本收益承诺。二级市场投资有风险，入市须谨慎。
+              </span>
+            </motion.div>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="py-12"
+          >
+            <Empty description="未能生成诊断结果" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const prefersReducedMotion = useReducedMotion();
+  // 移动端视口检测 (768px 断点)
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [overview, setOverview] = useState<BankOverview | null>(null);
@@ -305,7 +435,8 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const [searchText, setSearchText] = useState<string>('');
   const [sortBy, setSortBy] = useState<string>('dividendYield');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [showNoticeBanner, setShowNoticeBanner] = useState(true);
+  // 辨析 Banner 折叠状态：默认收起以释放首屏高价值资产信息空间，支持渐进式展开
+  const [showNoticeBanner, setShowNoticeBanner] = useState(false);
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
 
   // AI 诊断弹窗状态
@@ -313,6 +444,17 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const [diagnosingStock, setDiagnosingStock] = useState<BankStockItem | null>(null);
   const [diagnoseLoading, setDiagnoseLoading] = useState(false);
   const [diagnoseResult, setDiagnoseResult] = useState<BankAiDiagnoseResult | null>(null);
+
+  // 移动端全屏二级页面打开时，锁定 body 滚动防止背景穿透
+  useEffect(() => {
+    if (isMobile && diagnoseModalOpen) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isMobile, diagnoseModalOpen]);
 
   // 加载全量数据
   const loadData = useCallback(async (isSilent = false) => {
@@ -424,20 +566,23 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   return (
     <div className="space-y-5 pb-16 max-w-7xl mx-auto px-2 sm:px-4">
       {/* 1. 顶部 Header 与操作 */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <span className="text-2xl sm:text-3xl">🏦</span>
-              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/70 dark:border-emerald-800/60 flex items-center justify-center shrink-0">
+                <Landmark className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <h1 className="text-lg sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
                 银行·稳健红利专区
               </h1>
-              <span className="px-2.5 py-0.5 text-xs font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800 rounded-full">
-                金融精算级量化 + 配置大模型诊断
+              <span className="px-2 py-0.5 text-xs font-medium bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 rounded-full shrink-0">
+                <span className="hidden sm:inline">金融精算级量化 + 配置大模型诊断</span>
+                <span className="sm:hidden">精算量化 · 大模型</span>
               </span>
             </div>
-            <p className="mt-2 text-xs sm:text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-              立足金融投资常识与多维客观准则，区分 A 股免税与港股通 20% 红利税实得收益，动态计算 AH 实时折溢价，覆盖国有大行底仓、优质股份行、区域城商行与 T+0 场内货币工具。
+            <p className="mt-1.5 text-xs sm:text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-3xl">
+              立足金融投资常识与客观准则，区分 A 股免税与港股通 20% 红利税实得收益，动态追踪 AH 折溢价，覆盖高股息银行底仓与 T+0 场内货币工具。
             </p>
           </div>
 
@@ -446,56 +591,126 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
               icon={<RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />}
               onClick={() => loadData(true)}
               loading={refreshing}
-              className="rounded-xl flex items-center gap-1.5 border-slate-300 dark:border-slate-700 dark:text-slate-200 hover:border-emerald-500"
+              className="rounded-xl flex items-center gap-1.5 border-slate-300 dark:border-slate-700 dark:text-slate-200 hover:border-emerald-500 text-xs sm:text-sm h-8 sm:h-9 px-3"
             >
               刷新行情与汇率
             </Button>
           </div>
         </div>
 
-        {/* 2. 专业金融常识客观审视与防误导 Banner */}
-        <div className="mt-4 border border-amber-200 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20 rounded-xl p-3.5 transition-all">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 text-amber-800 dark:text-amber-400 font-semibold text-xs sm:text-sm">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <span>专业金融常识与流动性关键辨析（拒绝盲目迎合）</span>
-            </div>
-            <button
-              onClick={() => setShowNoticeBanner(!showNoticeBanner)}
-              className="text-xs text-amber-700 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
-            >
+        {/* 2. 轻量合规与机制微岛（大厂渐进式折叠 + 无障碍防折行） */}
+        <div className="mt-3.5 border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 rounded-xl p-2.5 sm:p-3 transition-colors">
+          <div
+            onClick={() => setShowNoticeBanner(!showNoticeBanner)}
+            className="flex items-center justify-between gap-2 cursor-pointer select-none group"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setShowNoticeBanner(!showNoticeBanner);
+              }
+            }}
+            aria-expanded={showNoticeBanner}
+          >
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className="px-1.5 py-0.5 text-[11px] font-semibold bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 rounded shrink-0 flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+                <span>机制辨析</span>
+              </span>
               {showNoticeBanner ? (
-                <>收起辨析 <ChevronUp className="w-3.5 h-3.5" /></>
+                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+                  专业金融常识与流动性关键辨析（5项核心准则）
+                </span>
               ) : (
-                <>展开辨析 <ChevronDown className="w-3.5 h-3.5" /></>
+                <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                  <span className="hidden sm:inline">①股票非保本波动 · ②港股通扣20%红利税已实折 · ③T+0盘中可用≠可转出 · ④货基机制 · ⑤季报时间戳</span>
+                  <span className="sm:hidden">①非保本 · ②港股通税后实折 · ③T+0转出时效...</span>
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowNoticeBanner(!showNoticeBanner);
+              }}
+              className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white flex items-center gap-1 shrink-0 whitespace-nowrap px-2 py-1 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
+            >
+              <span>{showNoticeBanner ? '收起辨析' : '展开辨析 (5)'}</span>
+              {showNoticeBanner ? (
+                <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
               )}
             </button>
           </div>
 
-          {showNoticeBanner && (
-            <div className="mt-2.5 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-amber-900 dark:text-amber-300/90 leading-relaxed">
-              <div className="flex items-start gap-1.5">
-                <span className="font-bold shrink-0">① 股票非保本：</span>
-                <span>二级市场股价每日波动，极端行情下分红收益无法完全覆盖本金浮亏，严禁等同于保本存款。</span>
-              </div>
-              <div className="flex items-start gap-1.5">
-                <span className="font-bold shrink-0">② 港股通 20% 红利税：</span>
-                <span>港股名义股息虽达 6.5%~7%，但内地个人通过港股通强制扣除 20% 红利税，到手实得约 5.2%~5.6%，本专区已做实得换算。</span>
-              </div>
-              <div className="flex items-start gap-1.5">
-                <span className="font-bold shrink-0">③ 资金可用 ≠ 可转出：</span>
-                <span>T+0 货币 ETF 卖出后盘中在证券账户即刻可用；提现到银行卡受银证转账交易时段（工作日 9:00~16:00）约束，夜间与非交易日无法提现。</span>
-              </div>
-              <div className="flex items-start gap-1.5">
-                <span className="font-bold shrink-0">④ 货基机制差异：</span>
-                <span>华宝添益（面值100元按日结转份额）与银华日利（净值累加年末集中除权分红）机制不同，二级市场买卖存在微小贴水波动。</span>
-              </div>
-              <div className="flex items-start gap-1.5 md:col-span-2">
-                <span className="font-bold shrink-0">⑤ 财报报告期时间戳：</span>
-                <span>不良贷款率、拨备覆盖率均按上市公司季报统一公布（当前为 2024 中报基准），不随二级市场日频刷新。</span>
-              </div>
-            </div>
-          )}
+          <AnimatePresence initial={false}>
+            {showNoticeBanner && (
+              <motion.div
+                key="notice-content"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 dark:border-slate-800/80 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs leading-relaxed">
+                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      1
+                    </span>
+                    <div className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">股票非保本：</span>
+                      二级市场股价每日波动，极端行情下分红收益无法完全覆盖本金浮亏，严禁等同于保本存款。
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      2
+                    </span>
+                    <div className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">港股通 20% 红利税：</span>
+                      港股名义股息虽达 6.5%~7%，但内地个人通过港股通强制扣除 20% 红利税，到手实得约 5.2%~5.6%，本专区已做实得换算。
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      3
+                    </span>
+                    <div className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">资金可用 ≠ 可转出：</span>
+                      T+0 货币 ETF 卖出后盘中在证券账户即刻可用；提现到银行卡受银证转账交易时段（工作日 9:00~16:00）约束，夜间与非交易日无法提现。
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      4
+                    </span>
+                    <div className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">货基机制差异：</span>
+                      华宝添益（面值100元按日结转份额）与银华日利（净值累加年末集中除权分红）机制不同，二级市场买卖存在微小贴水波动。
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-2 rounded-lg bg-white/80 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800/60 shadow-[0_1px_2px_rgba(0,0,0,0.02)] md:col-span-2">
+                    <span className="w-4 h-4 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      5
+                    </span>
+                    <div className="text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">财报报告期时间戳：</span>
+                      不良贷款率、拨备覆盖率均按上市公司季报统一公布（当前为 2024 中报基准），不随二级市场日频刷新。
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -646,7 +861,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
       {isCrossTierMatch && (
         <div className="flex items-center justify-between text-xs bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-xl px-4 py-2.5 shadow-sm">
           <div className="flex items-center gap-1.5">
-            <span className="text-base">💡</span>
+            <Sparkles className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
             <span>当前分类下未找到，已自动为您检索并呈现全量资产库中的匹配标的</span>
           </div>
           <button
@@ -731,8 +946,9 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                           </span>
                         )}
                         {stock.dividendFrequency && (
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50">
-                            💰 {stock.dividendFrequency}
+                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50 flex items-center gap-0.5">
+                            <DollarSign className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
+                            <span>{stock.dividendFrequency}</span>
                           </span>
                         )}
                       </div>
@@ -875,19 +1091,22 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                         ? 'bg-amber-50/90 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800/50'
                         : 'bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-800'
                     }`}>
-                      <span>💡 决策提示：{stock.arbitrageAdvice.text}</span>
+                      <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                      <span>决策提示：{stock.arbitrageAdvice.text}</span>
                     </div>
                   )}
 
                   {/* 针对货基或港股的专业机制提示 */}
                   {isT0 && stock.fundMechanism && (
-                    <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400/90 bg-amber-50/60 dark:bg-amber-950/20 px-2 py-1 rounded-lg">
-                      💡 机制：{stock.fundMechanism}
+                    <div className="mt-2 text-[11px] text-amber-700 dark:text-amber-400/90 bg-amber-50/60 dark:bg-amber-950/20 px-2 py-1 rounded-lg flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span>机制说明：{stock.fundMechanism}</span>
                     </div>
                   )}
                   {isHk && stock.taxNote && (
-                    <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400/90 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1 rounded-lg">
-                      ⚠️ 税负：{stock.taxNote}
+                    <div className="mt-2 text-[11px] text-rose-700 dark:text-rose-400/90 bg-rose-50/60 dark:bg-rose-950/20 px-2 py-1 rounded-lg flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400 shrink-0" />
+                      <span>税负说明：{stock.taxNote}</span>
                     </div>
                   )}
                   {/* 场外联接基金交互区域（外显盘中实时估值净值、A/C 份额持有期精算平衡点与分时联动） */}
@@ -895,7 +1114,8 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                     <div className="mt-2.5 p-3 bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-xl space-y-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-semibold text-indigo-800 dark:text-indigo-300 flex items-center gap-1.5">
-                          <span>🔗 关联场外公募基金</span>
+                          <Layers className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                          <span>关联场外公募基金</span>
                           <span className="text-[10px] font-normal text-indigo-600 dark:text-indigo-400 bg-indigo-100/80 dark:bg-indigo-900/60 px-1.5 py-0.2 rounded">
                             {isT0 ? '货币基金' : '穿透实时估值'}
                           </span>
@@ -979,7 +1199,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                                   {/* 第二行：持有期量化平衡点建议与合规惩罚费提示 */}
                                   <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-between gap-1 pt-1 border-t border-slate-100 dark:border-slate-800/80">
                                     <div className="flex items-center gap-1 min-w-0 truncate">
-                                      <span>⏱️</span>
+                                      <Clock className="w-3 h-3 text-slate-400 shrink-0" />
                                       <span className="truncate">{valuation?.breakevenAdvice || breakevenTip}</span>
                                     </div>
                                     <span className="text-[9px] font-medium text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 px-1 py-0.2 rounded shrink-0 border border-rose-200/60 dark:border-rose-900/50">
@@ -991,7 +1211,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                             })}
                           </div>
                           <div className="text-[10px] text-indigo-700/80 dark:text-indigo-400/80 leading-normal flex items-start gap-1">
-                            <span className="shrink-0">💡</span>
+                            <Sparkles className="w-3 h-3 text-indigo-500 shrink-0 mt-0.5" />
                             <span>规则提示：场外申赎按当日 15:00 净值未知价交收；非货基持有少于 7 日强制扣除不低于 1.5% 赎回费并计入基金财产。</span>
                           </div>
                         </>
@@ -1098,7 +1318,8 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
                   {n.summary}
                 </p>
                 <div className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                  <span>💡 客观影响:</span>
+                  <Sparkles className="w-3 h-3 text-emerald-500 shrink-0" />
+                  <span className="font-semibold">客观影响:</span>
                   <span>{n.impact}</span>
                 </div>
               </div>
@@ -1107,153 +1328,167 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
         </div>
       )}
 
-      {/* 7. AI 深度体检诊断弹窗 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2 text-slate-900 dark:text-white">
-            <Sparkles className="w-5 h-5 text-indigo-500" />
-            <span>标的 AI 投资价值与风险体检</span>
-          </div>
-        }
-        open={diagnoseModalOpen}
-        onCancel={() => setDiagnoseModalOpen(false)}
-        footer={[
-          <Button key="close" onClick={() => setDiagnoseModalOpen(false)} className="rounded-xl">
-            关闭
-          </Button>,
-          diagnosingStock && (
-            <Button
-              key="detail"
-              type="primary"
-              onClick={() => {
-                const stock = diagnosingStock;
-                // 1. 先启动弹窗平滑退出动画
-                setDiagnoseModalOpen(false);
-                // 2. 延迟 90ms 触发右侧抽屉滑入，让视线与遮罩从中心自然流向右侧抽屉，
-                //    彻底消除两个重叠遮罩的瞬间抢占、页面滚动条抖动与闪黑现象！
-                setTimeout(() => {
-                  onOpenDetail?.(
-                    stock.code,
-                    stock.market,
-                    stock.isFund ? 'fund' : 'stock',
-                    {
-                      name: stock.name,
-                      dwjz: String(stock.price),
-                      gsz: String(stock.price),
-                      gszzl: String(stock.changePct),
-                      gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-                      market: stock.market,
-                    }
-                  );
-                }, 90);
-              }}
-              className="rounded-xl bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
+      {/* 7. AI 深度体检双模视图：移动端全屏二级页面 🆚 桌面端 680px 居中 Modal */}
+      {/* A. 移动端全屏二级页面 (必须在 createPortal 内部运行 AnimatePresence 杜绝死锁) */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {isMobile && diagnoseModalOpen && diagnosingStock && (
+            <motion.div
+              key="mobile-diagnose-view"
+              initial={prefersReducedMotion ? { opacity: 0 } : { x: '100%' }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={prefersReducedMotion ? { opacity: 0 } : { x: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+              className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden"
             >
-              查看实时分时/K线
-            </Button>
-          ),
-        ]}
-        width={680}
-        className="dark-modal"
-      >
-        {diagnosingStock && (
-          <div className="space-y-3.5 py-2">
-            {/* 标的基本信息条 */}
-            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/70 rounded-2xl shadow-2xs">
-              <div>
-                <div className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <span>{diagnosingStock.name}</span>
-                  <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
-                    {diagnosingStock.code}
-                  </span>
-                </div>
-                <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
-                  <Tag color="blue" className="text-[11px] m-0 rounded-md">{diagnosingStock.tierName}</Tag>
-                  <span>{diagnosingStock.tradeMechanism || 'A股 T+1'}</span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white font-mono">
-                  {diagnosingStock.market === 'hk' ? 'HK$' : '¥'}{diagnosingStock.price.toFixed(
-                    diagnosingStock.tier === 't0_cash' || diagnosingStock.tier === 'etf' || (diagnosingStock.price > 0 && diagnosingStock.price < 5.0) ? 3 : 2
-                  )}
-                </div>
-                <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
-                  税后实得股息率: {diagnosingStock.afterTaxDividendYield}%
-                </div>
-              </div>
-            </div>
+              {/* 顶部吸顶导航栏：左上角唯一返回锚点，右上角留白对称，彻底根治多重退出混乱 */}
+              <header className="shrink-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-b border-slate-200/80 dark:border-slate-800/80 pt-[calc(0.875rem+env(safe-area-inset-top,0px))] pb-3 px-3.5 flex items-center justify-between shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setDiagnoseModalOpen(false)}
+                  className="flex items-center gap-1 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white px-2 py-1.5 -ml-1 rounded-xl active:bg-slate-100 dark:active:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                  aria-label="返回专区"
+                >
+                  <ChevronLeft className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+                  <span>返回</span>
+                </button>
 
-            {/* 诊断内容区域：平滑 Cross-Fade 动效与防高度抖动 */}
-            <AnimatePresence mode="wait">
-              {diagnoseLoading ? (
-                <motion.div
-                  key="skeleton"
-                  initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={{ duration: 0.18 }}
-                >
-                  <AiDiagnosisSkeleton />
-                </motion.div>
-              ) : diagnoseResult ? (
-                <motion.div
-                  key="result"
-                  initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={{ duration: 0.22 }}
-                  className="space-y-3"
-                >
-                  {/* 模型与生成时间栏 */}
-                  <div className="flex items-center justify-between text-xs px-3.5 py-2 bg-slate-50/80 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
-                    <div className="flex items-center gap-2">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                      </span>
-                      <span>分析引擎: <strong className="font-semibold text-slate-700 dark:text-slate-200">{diagnoseResult.model}</strong></span>
-                      {diagnoseResult.isAiGenerated ? (
-                        <Tag color="purple" className="text-[10px] m-0 rounded-md">大模型生成</Tag>
-                      ) : (
-                        <Tag color="blue" className="text-[10px] m-0 rounded-md">严谨量化专家规则</Tag>
-                      )}
-                    </div>
-                    <span className="font-mono text-[11px]">生成时间: {diagnoseResult.generatedAt}</span>
+                <div className="text-center min-w-0 px-2 flex-1">
+                  <div className="text-base font-bold text-slate-900 dark:text-white truncate tracking-tight">
+                    {diagnosingStock.name}
                   </div>
+                  <div className="text-[11px] font-mono text-slate-400 mt-0.5">
+                    {diagnosingStock.code} · AI 投资价值体检
+                  </div>
+                </div>
 
-                  {/* 结构化与去星号 Markdown 维度研报卡片（支持阶梯微弹簧进场） */}
-                  <AiDiagnosisView text={diagnoseResult.diagnosis} />
+                {/* 右侧等宽对称留白占位，确保标的标题绝对居中 */}
+                <div className="w-14 shrink-0" aria-hidden="true" />
+              </header>
 
-                  {/* 客观合规提示 */}
-                  <motion.div
-                    initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ ...SPRING.card, delay: prefersReducedMotion ? 0 : 0.3 }}
-                    className="p-3 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-900/40 rounded-xl text-[11px] text-amber-800/90 dark:text-amber-400/90 leading-relaxed flex items-start gap-2"
-                  >
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-500 mt-0.5" />
-                    <span>
-                      客观合规提示：AI 诊断基于财报客观指标与宏观规则推演，仅供投资参考，不构成任何投资咨询或保本收益承诺。二级市场投资有风险，入市须谨慎。
-                    </span>
-                  </motion.div>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="empty"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.18 }}
-                  className="py-12"
+              {/* 中间全屏沉浸式原生滚动容器 */}
+              <div
+                className="flex-1 overflow-y-auto overscroll-contain px-3.5 py-3.5 space-y-3.5 touch-pan-y"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                <DiagnoseDetailContent
+                  stock={diagnosingStock}
+                  loading={diagnoseLoading}
+                  result={diagnoseResult}
+                  prefersReducedMotion={prefersReducedMotion}
+                />
+              </div>
+
+              {/* 底部吸底固定操作栏：方案 A — 加自选 + 查看实时分时，双核业务闭环协同 */}
+              <footer className="shrink-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200/80 dark:border-slate-800 p-3 pb-[calc(env(safe-area-inset-bottom,0px)+12px)] flex items-center gap-2.5 shadow-[0_-4px_20px_rgba(0,0,0,0.04)]">
+                {(() => {
+                  const isAdded = !!addedMap[diagnosingStock.code];
+                  return (
+                    <Button
+                      onClick={() => handleAddToWatchlist(diagnosingStock)}
+                      disabled={isAdded}
+                      icon={isAdded ? <Check className="w-4 h-4 text-emerald-500" /> : <Plus className="w-4 h-4" />}
+                      className={`h-10 px-4 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isAdded
+                          ? 'text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-white/5'
+                          : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-emerald-500 hover:text-emerald-500'
+                      }`}
+                    >
+                      {isAdded ? '已在自选' : '加自选'}
+                    </Button>
+                  );
+                })()}
+
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    const stock = diagnosingStock;
+                    setDiagnoseModalOpen(false);
+                    setTimeout(() => {
+                      onOpenDetail?.(
+                        stock.code,
+                        stock.market,
+                        stock.isFund ? 'fund' : 'stock',
+                        {
+                          name: stock.name,
+                          dwjz: String(stock.price),
+                          gsz: String(stock.price),
+                          gszzl: String(stock.changePct),
+                          gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                          market: stock.market,
+                        }
+                      );
+                    }, 120);
+                  }}
+                  className="flex-1 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
                 >
-                  <Empty description="未能生成诊断结果" />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
-      </Modal>
+                  <LineChart className="w-4 h-4" />
+                  <span>查看实时分时/K线</span>
+                </Button>
+              </footer>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
+
+      {/* B. 桌面端 680px 居中优雅 Modal */}
+      {!isMobile && (
+        <Modal
+          title={
+            <div className="flex items-center gap-2 text-slate-900 dark:text-white">
+              <Sparkles className="w-5 h-5 text-indigo-500" />
+              <span>标的 AI 投资价值与风险体检</span>
+            </div>
+          }
+          open={diagnoseModalOpen}
+          onCancel={() => setDiagnoseModalOpen(false)}
+          footer={[
+            <Button key="close" onClick={() => setDiagnoseModalOpen(false)} className="rounded-xl">
+              关闭
+            </Button>,
+            diagnosingStock && (
+              <Button
+                key="detail"
+                type="primary"
+                onClick={() => {
+                  const stock = diagnosingStock;
+                  setDiagnoseModalOpen(false);
+                  setTimeout(() => {
+                    onOpenDetail?.(
+                      stock.code,
+                      stock.market,
+                      stock.isFund ? 'fund' : 'stock',
+                      {
+                        name: stock.name,
+                        dwjz: String(stock.price),
+                        gsz: String(stock.price),
+                        gszzl: String(stock.changePct),
+                        gztime: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                        market: stock.market,
+                      }
+                    );
+                  }, 90);
+                }}
+                className="rounded-xl bg-emerald-600 hover:bg-emerald-500 cursor-pointer"
+              >
+                查看实时分时/K线
+              </Button>
+            ),
+          ]}
+          width={680}
+          className="dark-modal"
+        >
+          {diagnosingStock && (
+            <DiagnoseDetailContent
+              stock={diagnosingStock}
+              loading={diagnoseLoading}
+              result={diagnoseResult}
+              prefersReducedMotion={prefersReducedMotion}
+            />
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

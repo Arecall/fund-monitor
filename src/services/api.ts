@@ -136,6 +136,50 @@ export async function loginUser(
   });
 }
 
+export interface IndexTimelinePoint {
+  t: string;
+  v: number;
+  vol?: number;
+}
+
+export interface RelatedEtfItem {
+  code: string;
+  name: string;
+  reason: string;
+  price: number;
+  changePercent: number;
+}
+
+export interface MarketIndexTrendResponse {
+  code: string;
+  symbol: string;
+  name: string;
+  market: 'domestic' | 'hk' | 'us';
+  price: number;
+  change: number;
+  changePercent: number;
+  status: 'open' | 'closed';
+  open: number;
+  preClose: number;
+  high: number;
+  low: number;
+  amplitude: number;
+  timeline: IndexTimelinePoint[];
+  relatedEtfs: RelatedEtfItem[];
+}
+
+/**
+ * 获取大盘指数深度趋势与分钟分时走势
+ */
+export async function fetchMarketIndexTrend(code: string): Promise<MarketIndexTrendResponse | null> {
+  try {
+    return await request(`/api/market/index/${encodeURIComponent(code)}/trend`);
+  } catch (error) {
+    console.error(`获取大盘指数趋势失败 [${code}]:`, error);
+    return null;
+  }
+}
+
 /**
  * 获取大盘指数数据
  */

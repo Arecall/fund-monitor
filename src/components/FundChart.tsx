@@ -133,11 +133,6 @@ export function FundChart({
     [lastPointTime, timeTick, fundMarket]
   );
 
-  // ─── Geometry ─────────────────────────────────────────────────────
-  const padding = { top: 18, right: 52, bottom: 28, left: 58 };
-  const innerW = width - padding.left - padding.right;
-  const innerH = height - padding.top - padding.bottom;
-
   // Y 轴范围：
   //  - 分时图（intraday）：严格以昨收 previous 为基准中轴对称（0.00% 对应垂直正中线），
   //    保证开盘基准线水平居中，两翼波动幅度严格对称。
@@ -173,6 +168,30 @@ export function FundChart({
   const minV = useMemo(() => (range === 'intraday' ? rangeBounds.lo : rangeBounds.lo * 0.999), [rangeBounds, range]);
   const maxV = useMemo(() => (range === 'intraday' ? rangeBounds.hi : rangeBounds.hi * 1.001), [rangeBounds, range]);
   const range_v = maxV - minV || 1;
+
+  // ─── Dynamic Adaptive Geometry ─────────────────────────────────────
+  // 动态自适应安全边距：根据当前刻度数值的字符长度推导左轴所需净空，杜绝高单价（百元/千元）截断
+  const isCompactScreen = width < 440;
+  const maxPriceDigits = useMemo(() => {
+    const decimals = range === 'intraday' ? 4 : 2;
+    const maxValStr = maxV.toFixed(decimals);
+    const minValStr = minV.toFixed(decimals);
+    return Math.max(maxValStr.length, minValStr.length);
+  }, [maxV, minV, range]);
+
+  const padding = useMemo(() => {
+    // 10px 等宽字体（tabular-nums）单字符宽约 6.2px，距离轴线 6px，再加上左边界 6px 安全净空
+    const calculatedLeft = Math.ceil(maxPriceDigits * 6.3) + 12;
+    return {
+      top: 18,
+      right: isCompactScreen ? 44 : 52,
+      bottom: 28,
+      left: Math.max(isCompactScreen ? 56 : 64, calculatedLeft)
+    };
+  }, [isCompactScreen, maxPriceDigits]);
+
+  const innerW = Math.max(10, width - padding.left - padding.right);
+  const innerH = Math.max(10, height - padding.top - padding.bottom);
 
   const getX = useCallback((p: ChartPoint, i: number) => {
     if (range === 'intraday') {
@@ -451,38 +470,16 @@ export function FundChart({
 
   return (
     <div className="w-full" ref={containerRef}>
-      {/* 顶部降噪一体化控制甲板：整合标题、状态、数据源与时间维度分段胶囊 */}
+      {/* 顶部双层一体化控制甲板：Deck 1（标的属性与交易状态） + Deck 2（周期维度与最新价格） */}
       <div className="flex flex-col gap-2 mb-2.5 px-0.5">
+        {/* Deck 1: 两端严格单行对齐，绝不残缺折行 */}
         <div className="flex items-center justify-between gap-2 min-w-0">
-          {/* 左侧：标题 + 数据源徽章 + 市场状态灵动光斑 */}
-          <div className="flex items-center gap-1.5 sm:gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 flex-wrap">
+          {/* 左侧：标题 + 数据源徽章 */}
+          <div className="flex items-center gap-1.5 sm:gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 shrink-0">
             <span className="shrink-0">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
             <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
 
-            {/* 市场状态胶囊 */}
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100/80 dark:bg-slate-800/60 rounded-full border border-slate-200/50 dark:border-slate-700/50">
-              <motion.span
-                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-                  refreshing
-                    ? 'bg-blue-500'
-                    : isCurrentlyOpen
-                    ? 'bg-emerald-500'
-                    : 'bg-slate-400'
-                }`}
-                animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-              />
-              <span className="truncate">
-                {refreshing
-                  ? '更新中…'
-                  : isCurrentlyOpen
-                  ? `盘中 · ${formatTick(lastPointTime, range)}`
-                  : isPreMarketState
-                  ? `${marketStatus.label}`
-                  : `已休市 · ${formatTick(lastPointTime, range)}`}
-              </span>
-            </span>
-
+            {/* 盘前专属倒计时微标 */}
             {isPreMarketState && (
               <span
                 title={series.note}
@@ -494,7 +491,7 @@ export function FundChart({
             )}
           </div>
 
-          {/* 右侧：日期徽章 + 模拟开盘/刷新按钮 */}
+          {/* 右侧：交易时钟与日期合一微胶囊 + 刷新按钮 */}
           <div className="flex items-center gap-1.5 shrink-0">
             {isDev && (
               <PressableButton
@@ -508,21 +505,41 @@ export function FundChart({
               </PressableButton>
             )}
 
-            {dataDateBadge && (
-              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 ${
-                dataDateBadge.sameDay
-                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-900/40'
-                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/40'
-              }`}>
-                {dataDateBadge.sameDay ? `今日 ${dataDateBadge.dataStr}` : `${dataDateBadge.dataStr} (${dataDateBadge.weekdayStr}) 收盘`}
+            {/* 交易时钟状态 + 数据日期合一微胶囊 (消除双重药丸与被迫折行) */}
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100/90 dark:bg-white/5 rounded-full border border-slate-200/60 dark:border-white/10 whitespace-nowrap shrink-0">
+              <motion.span
+                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+                  refreshing
+                    ? 'bg-blue-500'
+                    : isCurrentlyOpen
+                    ? 'bg-emerald-500'
+                    : 'bg-slate-400'
+                }`}
+                animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+              />
+              <span className="font-mono tabular-nums">
+                {(() => {
+                  const timeStr = formatTick(lastPointTime, range);
+                  if (refreshing) return '更新中…';
+                  if (isCurrentlyOpen) return `盘中 · ${timeStr}`;
+                  if (isPreMarketState) return marketStatus.label;
+                  if (dataDateBadge) {
+                    if (dataDateBadge.sameDay) {
+                      return `已休市 · ${dataDateBadge.dataStr} ${timeStr}`;
+                    }
+                    return `${dataDateBadge.dataStr} 收盘 · ${timeStr}`;
+                  }
+                  return `已休市 · ${timeStr}`;
+                })()}
               </span>
-            )}
+            </span>
 
             <PressableButton
               onClick={() => onRefresh?.()}
               disabled={refreshing}
               title="手动刷新行情"
-              className="p-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50"
+              className="p-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50 shrink-0"
             >
               <RefreshCw size={11} className={refreshing ? 'animate-spin text-blue-500' : ''} />
             </PressableButton>
@@ -608,7 +625,8 @@ export function FundChart({
           height={height}
           onPointerMove={onMove}
           onPointerLeave={onLeave}
-          className="block touch-none select-none"
+          style={{ touchAction: 'pan-y' }}
+          className="block select-none"
         >
           <defs>
             {/* 极轻微风晨雾渐变（Apple Atmospheric Gradient）：顶轻底隐，通透高呼吸感 */}
@@ -656,9 +674,9 @@ export function FundChart({
                     strokeDasharray={i === 0 || i === yTicks.length - 1 ? '0' : '2 3'}
                   />
                 )}
-                {/* 左轴：价格 */}
+                {/* 左轴：价格（动态安全留白，永不截断） */}
                 <text
-                  x={padding.left - 8}
+                  x={padding.left - 6}
                   y={t.y + 3}
                   textAnchor="end"
                   fontSize="10"
@@ -671,7 +689,7 @@ export function FundChart({
                 {/* 右轴：相对基准价的涨跌幅 %（水上水下着色分界；基准线重合处由专用微胶囊承接，杜绝重影） */}
                 {!isCloseToBaseline && (
                   <text
-                    x={padding.left + innerW + 8}
+                    x={padding.left + innerW + 6}
                     y={t.y + 3}
                     textAnchor="start"
                     fontSize="10"
@@ -917,28 +935,33 @@ export function FundChart({
                   strokeOpacity="0.18"
                   strokeDasharray="2 3"
                 />
-                {/* 左轴价格跟随标签（彩色色块 + 当前价格） */}
-                <g>
-                  <rect
-                    x={padding.left - 44}
-                    y={hoverY - 8}
-                    width={40}
-                    height={16}
-                    rx={3}
-                    fill={colorVar}
-                  />
-                  <text
-                    x={padding.left - 4}
-                    y={hoverY + 3.5}
-                    textAnchor="end"
-                    fontSize="10"
-                    fontWeight="600"
-                    fill="white"
-                    className="font-mono tabular-nums"
-                  >
-                    {hoverPoint.v.toFixed(range === 'intraday' ? 4 : 2)}
-                  </text>
-                </g>
+                {/* 左轴价格跟随标签（彩色色块 + 当前价格，宽度自适应） */}
+                {(() => {
+                  const tagW = Math.max(42, Math.ceil(maxPriceDigits * 6.3) + 8);
+                  return (
+                    <g>
+                      <rect
+                        x={padding.left - tagW - 2}
+                        y={hoverY - 8}
+                        width={tagW}
+                        height={16}
+                        rx={3}
+                        fill={colorVar}
+                      />
+                      <text
+                        x={padding.left - 4}
+                        y={hoverY + 3.5}
+                        textAnchor="end"
+                        fontSize="10"
+                        fontWeight="600"
+                        fill="white"
+                        className="font-mono tabular-nums"
+                      >
+                        {hoverPoint.v.toFixed(range === 'intraday' ? 4 : 2)}
+                      </text>
+                    </g>
+                  );
+                })()}
                 {/* 右轴 % 跟随标签 */}
                 {(() => {
                   const base = baselineValue > 0 ? baselineValue : (points[0]?.v || 0);
@@ -1194,50 +1217,56 @@ export function FundChart({
         </AnimatePresence>
       </div>
 
-      {/* Footer — 日内极值与振幅金融微岛（High/Low/Amplitude Financial Ribbon） */}
+      {/* Footer — 日内极值与振幅金融微岛（移动端 2x2 舒展响应式布局） */}
       {dayStats ? (
-        <div className="mt-2.5 grid grid-cols-4 gap-1.5 sm:gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
-          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
-            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最高</div>
-            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+        <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2.5 border-t border-slate-100 dark:border-slate-800/80">
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2.5 border border-slate-100/80 dark:border-slate-800/80 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
+              <span>区间最高</span>
+              <span className="font-mono text-[10px] text-[var(--color-up)] font-semibold">
+                +{dayStats.highPct.toFixed(2)}%
+              </span>
+            </div>
+            <div className="font-mono text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 tabular-nums">
               {dayStats.high.toFixed(range === 'intraday' ? 4 : 2)}
             </div>
-            <div className="text-[9px] font-mono text-rose-500 font-semibold mt-0.5">
-              +{dayStats.highPct.toFixed(2)}%
-            </div>
           </div>
 
-          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
-            <div className="text-[10px] text-slate-400 dark:text-slate-500">区间最低</div>
-            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2.5 border border-slate-100/80 dark:border-slate-800/80 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
+              <span>区间最低</span>
+              <span className="font-mono text-[10px] text-[var(--color-down)] font-semibold">
+                {dayStats.lowPct.toFixed(2)}%
+              </span>
+            </div>
+            <div className="font-mono text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 tabular-nums">
               {dayStats.low.toFixed(range === 'intraday' ? 4 : 2)}
             </div>
-            <div className="text-[9px] font-mono text-emerald-500 font-semibold mt-0.5">
-              {dayStats.lowPct.toFixed(2)}%
-            </div>
           </div>
 
-          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
-            <div className="text-[10px] text-slate-400 dark:text-slate-500">日内振幅</div>
-            <div className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 mt-0.5">
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2.5 border border-slate-100/80 dark:border-slate-800/80 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
+              <span>日内振幅</span>
+              <span className="text-[9px] text-slate-400">
+                {dayStats.amplitude < 1.0 ? '窄幅整固' : dayStats.amplitude < 2.5 ? '温和波动' : '宽幅博弈'}
+              </span>
+            </div>
+            <div className="font-mono text-sm font-bold text-blue-600 dark:text-blue-400 mt-1 tabular-nums">
               {dayStats.amplitude.toFixed(2)}%
             </div>
-            <div className="text-[9px] text-slate-400 mt-0.5">
-              {dayStats.amplitude < 1.0 ? '窄幅整固' : dayStats.amplitude < 2.5 ? '温和波动' : '宽幅博弈'}
-            </div>
           </div>
 
-          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2 text-center border border-slate-100/80 dark:border-slate-800/80">
-            <div className="text-[10px] text-slate-400 dark:text-slate-500">
-              {vwapSeries.last > 0 ? (vwapSeries.estimated ? '估算均价' : '全日均价') : '昨收基准'}
+          <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2.5 border border-slate-100/80 dark:border-slate-800/80 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
+              <span>{vwapSeries.last > 0 ? (vwapSeries.estimated ? '估算均价' : '全日均价') : '昨收基准'}</span>
+              <span className="text-[9px] text-slate-400">
+                {vwapSeries.last > 0
+                  ? (vwapSeries.last >= baselineValue ? '多头占优' : '空头占优')
+                  : '平盘基线'}
+              </span>
             </div>
-            <div className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200 mt-0.5">
+            <div className="font-mono text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 tabular-nums">
               {(vwapSeries.last > 0 ? vwapSeries.last : baselineValue).toFixed(range === 'intraday' ? 4 : 2)}
-            </div>
-            <div className="text-[9px] text-slate-400 mt-0.5">
-              {vwapSeries.last > 0
-                ? (vwapSeries.last >= baselineValue ? '多头占优' : '空头占优')
-                : '平盘基线'}
             </div>
           </div>
         </div>
