@@ -321,13 +321,15 @@ body {
   background: var(--text-secondary);
 }
 
-/* Hide scrollbar utility (for market ticker strip) */
+/* Hide scrollbar utility (for touch carousels, ticker strips & tabs) */
+.no-scrollbar::-webkit-scrollbar,
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+.no-scrollbar,
 .scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }
 
 /* === Spring keyframes — for non-Motion fallback === */

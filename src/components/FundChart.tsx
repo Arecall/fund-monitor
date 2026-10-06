@@ -1,6 +1,18 @@
 import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion, type HTMLMotionProps } from 'motion/react';
-import { RefreshCw, TrendingUp, TrendingDown, Minus, Database, Info, Clock } from 'lucide-react';
+import {
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Database,
+  Info,
+  Clock,
+  Maximize2,
+  ChevronLeft
+} from 'lucide-react';
+import { useModalHistory } from '../utils/modalHistory';
 import {
   buildSeries,
   buildMonotoneSplinePath,
@@ -58,28 +70,87 @@ interface FundChartProps {
   /** Optional refresh button state */
   refreshing?: boolean;
   onRefresh?: () => void;
+  /** 全屏视图模式标识（内部专用，避免全屏内嵌全屏递归） */
+  isFullscreenView?: boolean;
+  initialRange?: RangeKey;
+  /** 受控周期范围（可选，用于全屏模式或父级受控） */
+  range?: RangeKey;
+  /** 周期范围变更回调 */
+  onRangeChange?: (range: RangeKey) => void;
 }
 
-export function FundChart({
-  fundCode,
-  fundName,
-  current,
-  previous,
-  openPrice,
-  highPrice,
-  lowPrice,
-  minuteFeed,
-  market,
-  kind = 'fund',
-  height = 280,
-  history = [],
-  refreshing = false,
-  onRefresh
-}: FundChartProps) {
+export function FundChart(props: FundChartProps) {
+  const {
+    fundCode,
+    fundName,
+    current,
+    previous,
+    openPrice,
+    highPrice,
+    lowPrice,
+    minuteFeed,
+    market,
+    kind = 'fund',
+    height = 280,
+    history = [],
+    refreshing = false,
+    onRefresh,
+    isFullscreenView = false,
+    initialRange = 'intraday',
+    range: controlledRange,
+    onRangeChange,
+  } = props;
   const { isDev } = useAppEnv();
-  const [range, setRange] = useState<RangeKey>('intraday');
+
+  // 双模受控状态机（Controlled / Uncontrolled Hybrid）：
+  // 确保在全屏 Portal 内嵌渲染时，主控甲板与子图表共享单一事实来源 (Single Source of Truth)
+  const isControlled = controlledRange !== undefined;
+  const [internalRange, setInternalRange] = useState<RangeKey>(controlledRange ?? initialRange);
+  const range = isControlled ? controlledRange : internalRange;
+
+  const setRange = useCallback((nextRange: RangeKey) => {
+    if (!isControlled) {
+      setInternalRange(nextRange);
+    }
+    onRangeChange?.(nextRange);
+  }, [isControlled, onRangeChange]);
+
+  // 当 initialRange 或 controlledRange 改变时同步内部状态
+  useEffect(() => {
+    if (controlledRange !== undefined) {
+      setInternalRange(controlledRange);
+    } else if (initialRange) {
+      setInternalRange(initialRange);
+    }
+  }, [controlledRange, initialRange]);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [showDataNote, setShowDataNote] = useState(false);
+
+  // 全屏大图查看状态机
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // 智能横屏感知：当屏幕处于物理竖屏（宽度 < 高度）且为移动触控设备时，启动 90° 虚拟横屏以兼容系统竖屏锁定；物理横屏或桌面端则原生充满
+  const [needsVirtualLandscape, setNeedsVirtualLandscape] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window);
+  });
+
+  useEffect(() => {
+    const handleCheck = () => {
+      setNeedsVirtualLandscape(
+        window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window)
+      );
+    };
+    window.addEventListener('resize', handleCheck);
+    window.addEventListener('orientationchange', handleCheck);
+    return () => {
+      window.removeEventListener('resize', handleCheck);
+      window.removeEventListener('orientationchange', handleCheck);
+    };
+  }, []);
+
+  // 接入 Android 系统物理返回 / 侧滑退出手势闭环
+  useModalHistory(isFullscreen, () => setIsFullscreen(false), { id: 'fund-chart-fullscreen-modal' });
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
   const prefersReducedMotion = useReducedMotion();
@@ -341,8 +412,18 @@ export function FundChart({
   // ─── Hover ───────────────────────────────────────────────────────
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (pts.length < 2) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const px = e.clientX - rect.left;
+    let px: number;
+    const ctm = e.currentTarget.getScreenCTM();
+    if (ctm) {
+      const pt = e.currentTarget.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const local = pt.matrixTransform(ctm.inverse());
+      px = local.x;
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect();
+      px = e.clientX - rect.left;
+    }
     if (px < padding.left || px > padding.left + innerW) {
       setHoverIdx(null);
       return;
@@ -450,6 +531,19 @@ export function FundChart({
     return { high, low, highPct, lowPct, amplitude, base };
   }, [points, baselineValue]);
 
+  // 动态计算右侧颗粒度/时段标签（对标 Apple Stocks / Bloomberg 标准金融时钟）
+  const rangeDescription = useMemo(() => {
+    if (range === 'intraday') {
+      if (fundMarket === 'us') return '390分钟全景分时';
+      if (fundMarket === 'hk') return '330分钟全景分时';
+      return '240分钟全景分时';
+    }
+    if (range === '1D') return '近5日收盘走势';
+    if (range === '1W') return '近7日收盘走势';
+    if (range === '1M') return '近30日收盘走势';
+    return '历史收盘走势';
+  }, [range, fundMarket]);
+
   // ─── 锚点动态跟手与大厂级防遮挡探针定位 (Anchor-Following Anti-Occlusion Tooltip) ───
   // 1. 悬浮窗水平方向紧跟定位锚点 (hoverX) 实时移动，依据中轴线动态在锚点左右侧切换；
   // 2. 绝对防遮挡机制：
@@ -470,134 +564,146 @@ export function FundChart({
 
   return (
     <div className="w-full" ref={containerRef}>
-      {/* 顶部双层一体化控制甲板：Deck 1（标的属性与交易状态） + Deck 2（周期维度与最新价格） */}
-      <div className="flex flex-col gap-2 mb-2.5 px-0.5">
-        {/* Deck 1: 两端严格单行对齐，绝不残缺折行 */}
-        <div className="flex items-center justify-between gap-2 min-w-0">
-          {/* 左侧：标题 + 数据源徽章 */}
-          <div className="flex items-center gap-1.5 sm:gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 shrink-0">
-            <span className="shrink-0">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
-            <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
+      {/* 顶部双层一体化控制甲板：仅在非全屏内嵌时渲染；全屏模式下由顶层主模态统一接管 */}
+      {!isFullscreenView && (
+        <div className="flex flex-col gap-2 mb-2.5 px-0.5">
+          {/* Deck 1: 两端严格单行对齐，绝不残缺折行 */}
+          <div className="flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
+            {/* 左侧：标题 + 数据源徽章 */}
+            <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 shrink-0">
+              <span className="shrink-0">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
+              <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
 
-            {/* 盘前专属倒计时微标 */}
-            {isPreMarketState && (
-              <span
-                title={series.note}
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-xs"
-              >
-                <Clock size={10} className="text-blue-500 animate-pulse" />
-                <OpenCountdown market={fundMarket} showTargetTime={true} />
-              </span>
-            )}
-          </div>
-
-          {/* 右侧：交易时钟与日期合一微胶囊 + 刷新按钮 */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            {isDev && (
-              <PressableButton
-                onClick={() => setMockSecLeft(60)}
-                disabled={mockSecLeft !== null}
-                title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
-                className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
-              >
-                <Clock size={10} className={mockSecLeft !== null ? 'animate-spin' : ''} />
-                {mockSecLeft !== null ? `${mockSecLeft}s` : '🧪 模拟'}
-              </PressableButton>
-            )}
-
-            {/* 交易时钟状态 + 数据日期合一微胶囊 (消除双重药丸与被迫折行) */}
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100/90 dark:bg-white/5 rounded-full border border-slate-200/60 dark:border-white/10 whitespace-nowrap shrink-0">
-              <motion.span
-                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-                  refreshing
-                    ? 'bg-blue-500'
-                    : isCurrentlyOpen
-                    ? 'bg-emerald-500'
-                    : 'bg-slate-400'
-                }`}
-                animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-              />
-              <span className="font-mono tabular-nums">
-                {(() => {
-                  const timeStr = formatTick(lastPointTime, range);
-                  if (refreshing) return '更新中…';
-                  if (isCurrentlyOpen) return `盘中 · ${timeStr}`;
-                  if (isPreMarketState) return marketStatus.label;
-                  if (dataDateBadge) {
-                    if (dataDateBadge.sameDay) {
-                      return `已休市 · ${dataDateBadge.dataStr} ${timeStr}`;
-                    }
-                    return `${dataDateBadge.dataStr} 收盘 · ${timeStr}`;
-                  }
-                  return `已休市 · ${timeStr}`;
-                })()}
-              </span>
-            </span>
-
-            <PressableButton
-              onClick={() => onRefresh?.()}
-              disabled={refreshing}
-              title="手动刷新行情"
-              className="p-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50 shrink-0"
-            >
-              <RefreshCw size={11} className={refreshing ? 'animate-spin text-blue-500' : ''} />
-            </PressableButton>
-          </div>
-        </div>
-
-        {/* 维度切换胶囊栏 */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="relative inline-flex bg-slate-100 dark:bg-white/5 rounded-xl p-0.5">
-            {RANGES.map(r => {
-              const active = r.key === range;
-              return (
-                <PressableButton
-                  key={r.key}
-                  onClick={() => { setRange(r.key); setHoverIdx(null); }}
-                  className={`relative px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
-                    active
-                      ? 'text-white'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                  }`}
+              {/* 盘前专属倒计时微标 */}
+              {isPreMarketState && (
+                <span
+                  title={series.note}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-xs"
                 >
-                  {active && (
-                    <motion.span
-                      layoutId="fund-chart-tab"
-                      transition={SPRING_FLIP}
-                      className="absolute inset-0 rounded-lg shadow-xs"
-                      style={{ background: 'var(--primary-accent)' }}
-                    />
-                  )}
-                  <span className="relative z-10">{r.label}</span>
+                  <Clock size={9} className="text-blue-500 animate-pulse" />
+                  <OpenCountdown market={fundMarket} showTargetTime={true} />
+                </span>
+              )}
+            </div>
+
+            {/* 右侧：交易时钟与日期合一微胶囊 + 刷新按钮 + 全屏查看按钮 */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              {isDev && (
+                <PressableButton
+                  onClick={() => setMockSecLeft(60)}
+                  disabled={mockSecLeft !== null}
+                  title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
+                  className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
+                >
+                  <Clock size={10} className={mockSecLeft !== null ? 'animate-spin' : ''} />
+                  {mockSecLeft !== null ? `${mockSecLeft}s` : '🧪 模拟'}
                 </PressableButton>
-              );
-            })}
+              )}
+
+              {/* 交易时钟状态 + 数据日期合一微胶囊 */}
+              <span className="inline-flex items-center gap-1 px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100/90 dark:bg-white/5 rounded-full border border-slate-200/60 dark:border-white/10 whitespace-nowrap shrink-0">
+                <motion.span
+                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+                    refreshing
+                      ? 'bg-blue-500'
+                      : isCurrentlyOpen
+                      ? 'bg-emerald-500'
+                      : 'bg-slate-400'
+                  }`}
+                  animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+                  transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+                />
+                <span className="font-mono tabular-nums">
+                  {(() => {
+                    const timeStr = formatTick(lastPointTime, range);
+                    if (refreshing) return '更新中…';
+                    if (isCurrentlyOpen) return `盘中 · ${timeStr}`;
+                    if (isPreMarketState) return marketStatus.label;
+                    if (dataDateBadge) {
+                      if (dataDateBadge.sameDay) {
+                        return `已休市 · ${dataDateBadge.dataStr} ${timeStr}`;
+                      }
+                      return `${dataDateBadge.dataStr} · ${timeStr}`;
+                    }
+                    return `已休市 · ${timeStr}`;
+                  })()}
+                </span>
+              </span>
+
+              {/* 刷新按钮：固定 24px × 24px (w-6 h-6)，杜绝溢出 */}
+              <PressableButton
+                onClick={() => onRefresh?.()}
+                disabled={refreshing}
+                title="手动刷新行情"
+                className="w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50 shrink-0 cursor-pointer"
+              >
+                <RefreshCw size={11} className={refreshing ? 'animate-spin text-blue-500' : ''} />
+              </PressableButton>
+
+              {/* 一键全屏大图查看按钮 */}
+              <PressableButton
+                onClick={() => setIsFullscreen(true)}
+                title="全屏查看大图"
+                className="w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all shrink-0 cursor-pointer"
+              >
+                <Maximize2 size={11} />
+              </PressableButton>
+            </div>
           </div>
 
-          {/* 右侧微副标：展示当前定位点/最新价格与涨跌幅 */}
-          {lastPoint && (
-            <div className="flex items-baseline gap-1.5 font-mono text-xs">
-              <span className="font-bold text-slate-800 dark:text-slate-100 text-sm">
-                ¥{(hoverPoint ? hoverPoint.v : lastPoint.v).toFixed(range === 'intraday' ? 4 : 2)}
-              </span>
-              <span
-                className="font-semibold text-[11px]"
-                style={{
-                  color: (hoverPoint ? hoverChangeAmt > 0 : isUp)
-                    ? 'var(--color-up)'
-                    : (hoverPoint ? hoverChangeAmt < 0 : isDown)
-                    ? 'var(--color-down)'
-                    : 'var(--color-flat)'
-                }}
-              >
-                {(hoverPoint ? hoverChangePct : changePercent) > 0 ? '+' : ''}
-                {(hoverPoint ? hoverChangePct : changePercent).toFixed(2)}%
-              </span>
+          {/* Deck 2: 维度切换胶囊栏 */}
+          <div className="flex items-center justify-between gap-1.5 min-w-0">
+            <div className="relative inline-flex bg-slate-100 dark:bg-white/5 rounded-xl p-0.5 shrink-0">
+              {RANGES.map(r => {
+                const active = r.key === range;
+                return (
+                  <PressableButton
+                    key={r.key}
+                    onClick={() => { setRange(r.key); setHoverIdx(null); }}
+                    className={`relative px-2 sm:px-2.5 md:px-3 py-0.5 sm:py-1 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 select-none ${
+                      active
+                        ? 'text-white'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="fund-chart-tab"
+                        transition={SPRING_FLIP}
+                        className="absolute inset-0 rounded-lg shadow-xs"
+                        style={{ background: 'var(--primary-accent)' }}
+                      />
+                    )}
+                    <span className="relative z-10 whitespace-nowrap">{r.label}</span>
+                  </PressableButton>
+                );
+              })}
             </div>
-          )}
+
+            {/* 右侧微副标：展示当前定位点/最新价格与涨跌幅 */}
+            {lastPoint && (
+              <div className="flex items-baseline gap-1 sm:gap-1.5 font-mono text-xs shrink-0 pl-1">
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-xs sm:text-sm tabular-nums whitespace-nowrap">
+                  ¥{(hoverPoint ? hoverPoint.v : lastPoint.v).toFixed(range === 'intraday' ? 4 : 2)}
+                </span>
+                <span
+                  className="font-semibold text-[10px] sm:text-[11px] tabular-nums whitespace-nowrap"
+                  style={{
+                    color: (hoverPoint ? hoverChangeAmt > 0 : isUp)
+                      ? 'var(--color-up)'
+                      : (hoverPoint ? hoverChangeAmt < 0 : isDown)
+                      ? 'var(--color-down)'
+                      : 'var(--color-flat)'
+                  }}
+                >
+                  {(hoverPoint ? hoverChangePct : changePercent) > 0 ? '+' : ''}
+                  {(hoverPoint ? hoverChangePct : changePercent).toFixed(2)}%
+                </span>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Data-source note (expandable) */}
       <AnimatePresence>
@@ -1217,8 +1323,8 @@ export function FundChart({
         </AnimatePresence>
       </div>
 
-      {/* Footer — 日内极值与振幅金融微岛（移动端 2x2 舒展响应式布局） */}
-      {dayStats ? (
+      {/* Footer — 日内极值与振幅金融微岛（仅在非全屏内嵌时渲染；全屏模式下由底部统一单行指标条接管） */}
+      {!isFullscreenView && (dayStats ? (
         <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2.5 border-t border-slate-100 dark:border-slate-800/80">
           <div className="bg-slate-50/80 dark:bg-slate-800/40 rounded-xl p-2.5 border border-slate-100/80 dark:border-slate-800/80 flex flex-col justify-between">
             <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
@@ -1286,6 +1392,189 @@ export function FundChart({
             )}
           </span>
         </div>
+      ))}
+
+      {/* ── 工业级全屏模态：支持系统竖屏锁定兼容的虚拟横屏 (Virtual Landscape) ── */}
+      {!isFullscreenView && isFullscreen && typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          <motion.div
+            key="fund-chart-fullscreen-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="走势图沉浸大图横屏模式"
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="fixed z-[10001] bg-[#090a0f] text-white flex flex-col overflow-hidden select-none"
+            style={{
+              ...(needsVirtualLandscape
+                ? {
+                    /* 竖屏锁定兼容：中心旋转 90° 虚拟横屏 */
+                    top: '50%',
+                    left: '50%',
+                    width: '100dvh',
+                    height: '100dvw',
+                    maxWidth: '100dvh',
+                    maxHeight: '100dvw',
+                    transform: 'translate(-50%, -50%) rotate(90deg)',
+                    transformOrigin: 'center center',
+                    /* 旋转后安全区跨轴映射：左侧对应原底部 Home 条，右侧对应原顶部灵动岛/刘海 */
+                    paddingLeft: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+                    paddingRight: 'calc(env(safe-area-inset-top, 0px) + 16px)',
+                    paddingTop: '6px',
+                    paddingBottom: '6px',
+                  }
+                : {
+                    /* 物理横屏或桌面端：原生充满视口，无需旋转 */
+                    top: 0,
+                    left: 0,
+                    width: '100vw',
+                    height: '100vh',
+                    transform: 'none',
+                    paddingLeft: 'calc(env(safe-area-inset-left, 0px) + 16px)',
+                    paddingRight: 'calc(env(safe-area-inset-right, 0px) + 16px)',
+                    paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)',
+                    paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)',
+                  }),
+            }}
+          >
+            {/* ── 统一全屏主控甲板 (Single Master Landscape Deck，高度严格控制在 42px) ── */}
+            <header className="h-[42px] min-h-[42px] max-h-[42px] flex items-center justify-between gap-3 border-b border-white/10 shrink-0 px-1">
+              {/* 左翼：返回/退出按钮 (44px 舒适触控区) + 标的识别 + 数据源徽章 */}
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setIsFullscreen(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/10 hover:bg-white/20 active:bg-white/30 text-white transition-all cursor-pointer shrink-0 select-none"
+                  aria-label="退出全屏"
+                >
+                  <ChevronLeft size={15} />
+                  <span>退出</span>
+                </button>
+
+                <div className="h-4 w-px bg-white/15 shrink-0" />
+
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="font-bold text-sm text-white truncate max-w-[150px] sm:max-w-[220px]">
+                    {fundName}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-400 shrink-0 px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
+                    {fundCode}
+                  </span>
+                  <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
+                </div>
+              </div>
+
+              {/* 中轴：大字号现价 + 涨跌幅微岛 */}
+              <div className="flex items-baseline gap-2 font-mono shrink-0">
+                <span className="text-xl sm:text-2xl font-extrabold text-white tabular-nums tracking-tight">
+                  ¥{current.toFixed(range === 'intraday' ? 4 : 2)}
+                </span>
+                <span
+                  className="font-bold text-xs sm:text-sm tabular-nums"
+                  style={{
+                    color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)',
+                  }}
+                >
+                  {isUp ? '+' : ''}{changePercent.toFixed(2)}%
+                </span>
+              </div>
+
+              {/* 右翼：周期切换胶囊栏 + 交易状态微标 */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-0.5">
+                  {RANGES.map(r => {
+                    const active = r.key === range;
+                    return (
+                      <button
+                        key={r.key}
+                        type="button"
+                        onClick={() => { setRange(r.key); setHoverIdx(null); }}
+                        className={`relative px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors select-none cursor-pointer ${
+                          active ? 'text-white' : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {active && (
+                          <motion.span
+                            layoutId="master-deck-range-active"
+                            transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                            className="absolute inset-0 rounded-lg shadow-sm"
+                            style={{ background: 'var(--primary-accent)' }}
+                          />
+                        )}
+                        <span className="relative z-10 whitespace-nowrap">{r.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 状态呼吸灯微标 */}
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium text-slate-300 bg-white/5 rounded-full border border-white/10 shrink-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      isCurrentlyOpen ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
+                    }`}
+                  />
+                  <span className="font-mono">{isCurrentlyOpen ? '盘中' : '休市'}</span>
+                </span>
+              </div>
+            </header>
+
+            {/* ── 中间核心走势图：绝对净空撑满视口，受控绑定外层 range 状态 ── */}
+            <div className="flex-1 w-full min-h-0 pt-1 overflow-hidden flex flex-col justify-center">
+              <FundChart
+                {...props}
+                key={`fullscreen-fund-chart-${range}`}
+                isFullscreenView={true}
+                range={range}
+                onRangeChange={setRange}
+                height={Math.max(220, (needsVirtualLandscape ? window.innerWidth : window.innerHeight) - 42 - 34 - 20)}
+              />
+            </div>
+
+            {/* ── 底部单行极简金融指标条 (Bottom Metrics Strip，高度 34px) ── */}
+            {dayStats && (
+              <footer className="h-[34px] min-h-[34px] max-h-[34px] flex items-center justify-between border-t border-white/10 px-2 text-[11px] font-mono text-slate-400 shrink-0">
+                <div className="flex items-center gap-3 sm:gap-6 tabular-nums flex-wrap overflow-hidden">
+                  <span>
+                    {range === 'intraday' ? '昨收' : '基准'}{' '}
+                    <strong className="text-white">
+                      {(baselineValue > 0 ? baselineValue : previous).toFixed(range === 'intraday' ? 4 : 2)}
+                    </strong>
+                  </span>
+                  <span>
+                    最高{' '}
+                    <strong className="text-[var(--color-up)]">
+                      {dayStats.high.toFixed(range === 'intraday' ? 4 : 2)} (+{dayStats.highPct.toFixed(2)}%)
+                    </strong>
+                  </span>
+                  <span>
+                    最低{' '}
+                    <strong className="text-[var(--color-down)]">
+                      {dayStats.low.toFixed(range === 'intraday' ? 4 : 2)} ({dayStats.lowPct.toFixed(2)}%)
+                    </strong>
+                  </span>
+                  {range === 'intraday' && vwapSeries.last > 0 && (
+                    <span>
+                      均价 <strong className="text-slate-200">{vwapSeries.last.toFixed(4)}</strong>
+                    </span>
+                  )}
+                  {(range === '1W' || range === '1M') && maSeries.last > 0 && (
+                    <span>
+                      MA10 <strong className="text-amber-400">{maSeries.last.toFixed(2)}</strong>
+                    </span>
+                  )}
+                  <span>振幅 <strong className="text-blue-400">{dayStats.amplitude.toFixed(2)}%</strong></span>
+                </div>
+                <span className="text-[10px] text-slate-500 shrink-0 hidden sm:inline">
+                  {rangeDescription}
+                </span>
+              </footer>
+            )}
+          </motion.div>
+        </AnimatePresence>,
+        document.body
       )}
     </div>
   );

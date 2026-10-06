@@ -195,6 +195,20 @@ function parseUsEasternDateTime(value) {
   return parseZonedDateTime(value, US_EASTERN_TIME_ZONE, [-4, -5]);
 }
 
+/**
+ * 获取指定市场的当前权威交易日（YYYY-MM-DD）。
+ * 美股按纽约本地交易日历与夏/冬令时，A股与港股按北京时间交易日历；
+ * 若当前为周末或休市日，平滑回溯至最近一个已结算的有效交易日。
+ */
+function getMarketTradingDay(market = 'domestic', date = new Date()) {
+  const m = market === 'hk' ? 'hk' : (market === 'us' ? 'us' : 'domestic');
+  if (isMarketTradingDay(m, date)) {
+    return m === 'us' ? formatUsEasternYmd(date) : formatBeijingYmd(date);
+  }
+  const lastDate = getLastTradingDay(m, date);
+  return m === 'us' ? formatUsEasternYmd(lastDate) : formatBeijingYmd(lastDate);
+}
+
 module.exports = {
   BEIJING_TIME_ZONE,
   formatBeijingYmd,
@@ -210,4 +224,5 @@ module.exports = {
   isMarketHoliday,
   isMarketTradingDay,
   getLastTradingDay,
+  getMarketTradingDay,
 };

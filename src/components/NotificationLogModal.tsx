@@ -809,7 +809,7 @@ export const NotificationLogModal: React.FC<NotificationLogModalProps> = ({
               <div className="space-y-3 pt-1 flex-1 flex flex-col min-h-0 overflow-y-auto">
                 <div className="flex items-center justify-between bg-slate-50 dark:bg-white/[0.02] p-2.5 rounded-xl border border-[var(--hairline-border)] shrink-0">
                   <span className="text-xs text-slate-500 dark:text-slate-400">
-                    当前共创建 <strong className="text-slate-700 dark:text-slate-200">{alerts.length}</strong> 条价格水位线监控规则
+                    当前共创建 <strong className="text-slate-700 dark:text-slate-200">{alerts.length}</strong> 条价格与涨跌监控规则
                   </span>
                   <Button
                     size="small"

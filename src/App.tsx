@@ -2691,7 +2691,7 @@ function App() {
                 <div
                   ref={mobileIndexScrollRef}
                   onScroll={handleIndexScroll}
-                  className="flex overflow-x-auto snap-x snap-mandatory no-scrollbar w-full"
+                  className="flex overflow-x-auto snap-x snap-mandatory no-scrollbar w-full overscroll-x-contain touch-pan-x"
                 >
                   {pages.map((group, pageIdx) => (
                     <div key={pageIdx} className="w-full shrink-0 snap-center px-3">

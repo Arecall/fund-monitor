@@ -23,6 +23,7 @@ import {
   saveAlertSettings,
   type EmailStatus
 } from '../services/api';
+import { EmailPreviewModal } from './EmailPreviewModal';
 
 const SPRING = {
   panel: { type: 'spring' as const, bounce: 0.05, duration: 0.4 },
@@ -146,6 +147,7 @@ function ConfigModal({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testEmail, setTestEmail] = useState('');
+  const [previewOpen, setPreviewOpen] = useState(false);
   // 提醒全局行为：非交易时段停止通知（默认开）
   const [stopAfterClose, setStopAfterClose] = useState(true);
   const prefersReducedMotion = useReducedMotion();
@@ -511,9 +513,22 @@ function ConfigModal({
           {/* Divider */}
           <div className="border-t border-[var(--hairline-border)]" />
 
-          {/* Test email */}
+          {/* Test email & Style Preview */}
           <div>
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-2">测试发送</div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">测试发送与样式验证</div>
+              <motion.button
+                type="button"
+                onClick={() => setPreviewOpen(true)}
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
+                transition={SPRING.snap}
+                className="px-2.5 py-1 text-[11px] font-semibold rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 dark:bg-blue-950/40 dark:hover:bg-blue-900/50 dark:text-blue-400 transition-all flex items-center gap-1 cursor-pointer"
+                title="预览真实邮件呈现样式"
+              >
+                <Eye size={12} />
+                <span>预览邮件样式</span>
+              </motion.button>
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="email"
@@ -535,7 +550,7 @@ function ConfigModal({
               </motion.button>
             </div>
             <div className="text-[10px] text-slate-400 mt-1.5">
-              提示：dev 模式仅打印到后端控制台，可访问 <code className="font-mono">/tmp/output</code> 查看实时输出。
+              提示：点击“预览邮件样式”无需网络请求即可实时检验排版。
             </div>
           </div>
 
@@ -550,6 +565,14 @@ function ConfigModal({
           </div>
         </motion.div>
       </div>
+
+      {/* 邮件推送样式高保真预览浮层 */}
+      <EmailPreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        appName={appName}
+        mailFrom={mailFrom}
+      />
     </motion.div>,
     document.body
   );

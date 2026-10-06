@@ -644,6 +644,11 @@ export interface AlertItem {
   is_active: number;                       // 0 / 1
   last_triggered_at: string | null;
   last_triggered_change_pct: number | null;
+  kind?: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
+  last_trading_day?: string | null;
+  triggered_today_up?: number;
+  triggered_today_down?: number;
   created_at: string;
 }
 
@@ -739,6 +744,8 @@ export async function createAlert(params: {
   email: string;
   up_threshold?: number | null;
   down_threshold?: number | null;
+  kind?: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
 }): Promise<{ success: boolean; id: number; reference_price: number | null; message: string }> {
   return request('/api/alerts', {
     method: 'POST',

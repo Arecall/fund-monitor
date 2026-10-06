@@ -1,7 +1,7 @@
 {
   "name": "tmp-project",
   "private": true,
-  "version": "1.6.005",
+  "version": "1.6.006",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,19 +9,20 @@
     "start": "npm run server",
     "build": "tsc -b && vite build",
     "check-market-time": "node scripts/verify-market-time.cjs",
+    "check-security-deps": "node --test scripts/verify-security-deps.cjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "dependencies": {
     "antd": "^6.6.0",
-    "axios": "^1.18.1",
+    "axios": "^1.20.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "iconv-lite": "^0.7.3",
     "lucide-react": "^1.25.0",
     "motion": "^12.42.2",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.0.6",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "sqlite3": "^6.0.1"

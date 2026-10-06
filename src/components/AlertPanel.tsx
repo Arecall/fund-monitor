@@ -33,11 +33,13 @@ const SPRING = {
 interface AlertPanelProps {
   fundCode: string;
   fundName: string;
+  kind?: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
   onToast?: (msg: string) => void;
   onOpenNotificationLogs?: () => void;
 }
 
-export function AlertPanel({ fundCode, fundName, onToast, onOpenNotificationLogs }: AlertPanelProps) {
+export function AlertPanel({ fundCode, fundName, kind = 'fund', market = 'domestic', onToast, onOpenNotificationLogs }: AlertPanelProps) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [history, setHistory] = useState<AlertHistoryItem[]>([]);
   const [ethereal, setEthereal] = useState(false);
@@ -110,6 +112,8 @@ export function AlertPanel({ fundCode, fundName, onToast, onOpenNotificationLogs
               <CreateAlertForm
                 fundCode={fundCode}
                 fundName={fundName}
+                kind={kind}
+                market={market}
                 onCreated={reload}
                 onToast={onToast}
               />
@@ -203,11 +207,15 @@ export function AlertPanel({ fundCode, fundName, onToast, onOpenNotificationLogs
 function CreateAlertForm({
   fundCode,
   fundName,
+  kind,
+  market,
   onCreated,
   onToast
 }: {
   fundCode: string;
   fundName: string;
+  kind?: 'fund' | 'stock';
+  market?: 'domestic' | 'hk' | 'us' | 'other';
   onCreated: () => void;
   onToast?: (msg: string) => void;
 }) {
@@ -230,6 +238,8 @@ function CreateAlertForm({
         email,
         up_threshold: up ? parseFloat(up) : null,
         down_threshold: down ? parseFloat(down) : null,
+        kind,
+        market
       });
       onToast?.(r.message || '已创建提醒');
       setEmail(''); setUp(''); setDown('');

@@ -414,13 +414,216 @@ export function FundDetailPanel({
     setTimeout(() => setRefreshing(false), 1200);
   }, []);
 
+  // 8格核心与深度指标矩阵渲染器（响应式复用：PC在顶栏卡片内展示，移动端下沉至图表下方）
+  const renderTradingMatrixGrid = () => (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 sm:gap-x-6 gap-y-2.5 sm:gap-y-3">
+      {kind === 'stock' ? (
+        <>
+          {/* 格子 1：昨收 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">昨收</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {previous > 0 ? formatAssetPrice(previous, kind, 2) : '—'}
+            </div>
+            {prevCloseDate && <span className="text-[10px] text-slate-400 font-mono">{prevCloseDate}</span>}
+          </div>
+
+          {/* 格子 2：今开 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">今开</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+              openPrice && previous
+                ? (openPrice > previous ? 'text-[var(--color-up)]' : openPrice < previous ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                : 'text-slate-800 dark:text-slate-100'
+            }`}>
+              {openPrice != null && openPrice > 0 ? formatAssetPrice(openPrice, kind, 2) : '—'}
+            </div>
+          </div>
+
+          {/* 格子 3：最高 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">最高</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+              highPrice && previous && highPrice > previous ? 'text-[var(--color-up)]' : 'text-slate-800 dark:text-slate-100'
+            }`}>
+              {highPrice != null && highPrice > 0 ? formatAssetPrice(highPrice, kind, 2) : '—'}
+            </div>
+          </div>
+
+          {/* 格子 4：最低 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">最低</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${
+              lowPrice && previous && lowPrice < previous ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100'
+            }`}>
+              {lowPrice != null && lowPrice > 0 ? formatAssetPrice(lowPrice, kind, 2) : '—'}
+            </div>
+          </div>
+
+          {/* 格子 5：换手率 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">换手率</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {(fund as any).stockSpecific?.turnoverRate != null ? `${(fund as any).stockSpecific.turnoverRate.toFixed(2)}%` : '—'}
+            </div>
+          </div>
+
+          {/* 格子 6：振幅 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">日内振幅</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {amplitude != null ? `${amplitude.toFixed(2)}%` : '—'}
+            </div>
+          </div>
+
+          {/* 格子 7：总市值 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">总市值</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {(fund as any).stockSpecific?.totalMarketCap ? formatMarketCap((fund as any).stockSpecific.totalMarketCap, fund.market) : '—'}
+            </div>
+          </div>
+
+          {/* 格子 8：持有资产 (可点击编辑持仓) */}
+          <div className="flex flex-col min-w-0 cursor-pointer group" onClick={onEditPosition}>
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider flex items-center justify-between">
+              持有资产 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+            </span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+              {position ? `${currencyPrefix}${holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '未持仓'}
+            </div>
+            {position ? (
+              <span className={`text-[10px] font-mono truncate ${holdingProfit > 0 ? 'text-[var(--color-up)]' : holdingProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'}`}>
+                {position.shares}股 · 盈亏 {holdingProfit >= 0 ? '+' : ''}{currencyPrefix}{holdingProfit.toFixed(2)}
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 font-mono opacity-60">点击录入</span>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {/* 基金格子 1：官方基准净值（权威披露） */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">官方净值</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {fund.dwjz ? parseFloat(fund.dwjz).toFixed(4) : (previous > 0 ? previous.toFixed(4) : '—')}
+            </div>
+            {(fund.officialNavDate || fund.jzrq) && (
+              <span className="text-[10px] text-slate-400 font-mono">
+                {fund.officialNavDate || fund.jzrq} 披露
+              </span>
+            )}
+          </div>
+
+          {/* 基金格子 2：今日估算变动 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">估算变动</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums ${dirColor}`}>
+              {cleanChangeAmt >= 0 ? '+' : ''}{formatAssetPrice(cleanChangeAmt, kind, 4)}
+            </div>
+            <span className={`text-[10px] font-mono ${dirColor}`}>
+              {cleanChangePct >= 0 ? '+' : ''}{cleanChangePct.toFixed(2)}%
+            </span>
+          </div>
+
+          {/* 基金格子 3：基金规模 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">基金规模</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums">
+              {basic?.scale?.size != null ? `${basic.scale.size}亿` : '—'}
+            </div>
+            {basic?.scale?.reportDate && (
+              <span className="text-[10px] text-slate-400 font-mono">{basic.scale.reportDate}</span>
+            )}
+          </div>
+
+          {/* 基金格子 4：基金经理 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">基金经理</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+              {basic?.manager?.name || '—'}
+            </div>
+            {basic?.manager?.workTime && (
+              <span className="text-[10px] text-slate-400 font-mono truncate">{basic.manager.workTime}</span>
+            )}
+          </div>
+
+          {/* 基金格子 5：持有金额 */}
+          <div className="flex flex-col min-w-0 cursor-pointer group" onClick={onEditPosition}>
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider flex items-center justify-between">
+              持有资产 <Pencil size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+            </span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate">
+              {position ? `${currencyPrefix}${holdingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '未持仓'}
+            </div>
+            {position ? (
+              <span className="text-[10px] text-slate-400 font-mono truncate">
+                {parseFloat(position.shares.toFixed(4))}份 · @{position.cost.toFixed(4)}
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 font-mono opacity-60">点击录入</span>
+            )}
+          </div>
+
+          {/* 基金格子 6：估算收益 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">估算收益</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums truncate ${
+              position
+                ? (holdingProfit > 0 ? 'text-[var(--color-up)]' : holdingProfit < 0 ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                : 'text-slate-800 dark:text-slate-100'
+            }`}>
+              {position ? `${holdingProfit >= 0 ? '+' : ''}${currencyPrefix}${Math.abs(holdingProfit).toFixed(2)}` : '—'}
+            </div>
+            {position ? (
+              <span className={`text-[10px] font-mono ${holdingProfitPct >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                {holdingProfitPct >= 0 ? '+' : ''}{holdingProfitPct.toFixed(2)}%
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 font-mono opacity-60">无持仓数据</span>
+            )}
+          </div>
+
+          {/* 基金格子 7：近1月表现 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">近1月表现</span>
+            <div className={`font-mono font-bold text-sm sm:text-base tabular-nums truncate ${
+              basic?.returns?.m1 != null
+                ? (basic.returns.m1 > 0 ? 'text-[var(--color-up)]' : basic.returns.m1 < 0 ? 'text-[var(--color-down)]' : 'text-slate-800 dark:text-slate-100')
+                : 'text-slate-800 dark:text-slate-100'
+            }`}>
+              {basic?.returns?.m1 != null ? `${basic.returns.m1 >= 0 ? '+' : ''}${basic.returns.m1.toFixed(2)}%` : '—'}
+            </div>
+            {basic?.returns?.y1 != null && (
+              <span className="text-[10px] text-slate-400 font-mono truncate">
+                近1年 {basic.returns.y1 >= 0 ? '+' : ''}{basic.returns.y1.toFixed(2)}%
+              </span>
+            )}
+          </div>
+
+          {/* 基金格子 8：业绩基准/底层跟踪 */}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 tracking-wider">业绩基准</span>
+            <div className="font-mono font-bold text-sm sm:text-base text-slate-800 dark:text-slate-100 tabular-nums truncate" title={getFundBenchmark(fund)}>
+              {getFundBenchmark(fund)}
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono truncate">
+              {fund.proxyTicker ? '底层ETF穿透' : (fund.market === 'us' ? '全球海外权益' : fund.market === 'hk' ? '港股互联' : '标的指数')}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <motion.div
       initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
       transition={SPRING.panel}
-      className="apple-card p-5 md:p-6 flex flex-col gap-5"
+      className="apple-card p-3.5 sm:p-5 md:p-6 flex flex-col gap-4 sm:gap-5"
     >
       {/* ── Title row ─────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -462,13 +665,14 @@ export function FundDetailPanel({
         const unifiedTradingCard = (
           <Card
             size="small"
-            className="rounded-2xl border border-[var(--hairline-border)] shadow-sm bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-2xl overflow-hidden"
+            className="rounded-2xl border border-[var(--hairline-border)] shadow-xs bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-2xl overflow-hidden"
             styles={{
-              body: { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }
+              body: { padding: 0 }
             }}
           >
-            {/* 上部：核心行情主报价区 */}
-            <div className="flex items-start justify-between gap-4 flex-wrap sm:flex-nowrap">
+            <div className="p-3.5 sm:p-5 flex flex-col gap-2.5 sm:gap-3.5">
+              {/* 上部：核心行情主报价区 (移动端极致瘦身至约 64px) */}
+              <div className="flex items-start justify-between gap-3 flex-wrap sm:flex-nowrap">
               {/* 左侧：现价 / 净值 与 涨跌幅 */}
               <div className="flex flex-col min-w-0">
                 <div className="flex items-baseline gap-2 flex-wrap">
@@ -512,11 +716,10 @@ export function FundDetailPanel({
               </div>
             </div>
 
-            {/* 分割线 */}
-            <Divider className="my-0 border-slate-100 dark:border-white/10" />
-
-            {/* 下部：多维指标矩阵网格 (2行4列 / 响应式 2~4 列) */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3">
+            {/* 仅在桌面端/平板展示 (hidden sm:block)，移动端彻底剥离并下沉至走势图下方 */}
+            <div className="hidden sm:block">
+              <Divider className="my-0 mb-3 border-slate-100 dark:border-white/10" />
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3">
               {kind === 'stock' ? (
                 <>
                   {/* 格子 1：昨收 */}
@@ -715,14 +918,16 @@ export function FundDetailPanel({
                 </>
               )}
             </div>
-          </Card>
-        );
+          </div>
+        </div>
+      </Card>
+    );
 
-        return isTrading ? <BorderBeam size={80} duration={8}>{unifiedTradingCard}</BorderBeam> : unifiedTradingCard;
-      })()}
+    return isTrading ? <BorderBeam size={80} duration={8}>{unifiedTradingCard}</BorderBeam> : unifiedTradingCard;
+  })()}
 
       {/* ── Chart card ───────────────────────────────────────── */}
-      <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-2.5 sm:p-4">
+      <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/40 dark:bg-white/[0.02] p-2 sm:p-3.5">
         <Suspense fallback={
           <div className={`${isExpanded ? 'h-[400px]' : 'h-[300px]'} rounded-xl bg-slate-100/50 dark:bg-white/5 flex flex-col items-center justify-center gap-3`}>
             <Spin size="large" tip="正在加载图表模块..." />
@@ -755,6 +960,19 @@ export function FundDetailPanel({
         </Suspense>
       </section>
 
+      {/* ── 移动端下沉展示：标的概况与深度指标 (sm:hidden，实现分时图首屏直出) ── */}
+      <div className="sm:hidden rounded-2xl border border-[var(--hairline-border)] p-3.5 bg-white/85 dark:bg-[#1c1c1e]/85 backdrop-blur-md shadow-2xs space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+            {kind === 'stock' ? '股票核心指标与盘口' : '标的概况与深度档案'}
+          </span>
+          <span className="text-[10px] text-slate-400 font-mono">
+            {kind === 'stock' ? '交易所撮合' : '定期报告披露'}
+          </span>
+        </div>
+        {renderTradingMatrixGrid()}
+      </div>
+
       {/* ── Daily candlestick chart (仅股票，位于分时图下方，视口滚入懒加载) ── */}
       {kind === 'stock' && (
         <div ref={klineContainerRef}>
@@ -766,6 +984,7 @@ export function FundDetailPanel({
             }>
               <StockKLineChart
                 code={fund.fundcode}
+                name={fund.name}
                 market={fund.market}
                 data={klineData}
                 period={klinePeriod}
@@ -809,6 +1028,8 @@ export function FundDetailPanel({
         <AlertPanel
           fundCode={fund.fundcode}
           fundName={fund.name}
+          kind={kind}
+          market={fund.market}
           onToast={onToast}
           onOpenNotificationLogs={onOpenNotificationLogs}
         />

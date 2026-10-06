@@ -937,7 +937,8 @@ app.get('/api/alerts', async (req, res) => {
   try {
     const rows = await dbHelper.all(
       `SELECT id, fund_code, fund_name, email, up_threshold, down_threshold,
-              reference_price, is_active, last_triggered_at, last_triggered_change_pct, created_at
+              reference_price, is_active, last_triggered_at, last_triggered_change_pct, created_at,
+              kind, market, last_trading_day, triggered_today_up, triggered_today_down
        FROM alerts WHERE user_id = ? ORDER BY id DESC`,
       [req.userId]
     );
@@ -1040,7 +1041,7 @@ app.delete('/api/alerts/history/:id', async (req, res) => {
 
 // 创建提醒
 app.post('/api/alerts', async (req, res) => {
-  const { fund_code, fund_name, email, up_threshold, down_threshold } = req.body || {};
+  const { fund_code, fund_name, email, up_threshold, down_threshold, kind, market } = req.body || {};
   if (!fund_code || !/^(\d{6}|\d{4,5}|[A-Za-z]{1,5}|(HK|hk|US|us|gb_|\w+)[\w]{1,6})$/.test(fund_code)) {
     return res.status(400).json({ error: '代码格式不正确' });
   }
@@ -1060,15 +1061,32 @@ app.post('/api/alerts', async (req, res) => {
   }
 
   try {
-    // 用昨日单位净值(dwjz)作为涨跌基准，而不是当日实时估算(gsz)。
-    // 原因：QDII/老基金日间 gsz 是基于持仓成分股的"实时估算"，与次日才公布的
-    // 官方净值之间会有 1-2% 的回归差。以 gsz 为基准会把这次"回归"误判为
-    // "下跌触发"。dwjz 是用户对"涨/跌"心理预期的基准（相对昨日收盘）。
-    const fund = await marketHelper.getFundValuation(fund_code);
+    // 1. 确定标的属性 (kind: 'stock' | 'fund', market: 'domestic' | 'hk' | 'us' | 'other')
+    // 解决股票与基金代码重叠导致的查询 Bug (如 000001 平安银行 vs 华夏成长混合)
+    let finalKind = kind;
+    let finalMarket = market;
+    if (!finalKind || !finalMarket) {
+      const watchItem = await dbHelper.get(
+        'SELECT kind, market FROM watchlist WHERE user_id = ? AND fund_code = ?',
+        [req.userId, fund_code]
+      );
+      if (watchItem) {
+        if (!finalKind) finalKind = watchItem.kind;
+        if (!finalMarket) finalMarket = watchItem.market;
+      }
+    }
+    if (!finalKind) {
+      const detected = marketHelper.detectCodeKind(fund_code);
+      finalKind = (detected === 'stock_a' || detected === 'fund_hk' || detected === 'fund_us') ? 'stock' : 'fund';
+    }
+    if (!finalMarket) {
+      const detected = marketHelper.detectCodeKind(fund_code);
+      finalMarket = detected === 'fund_us' ? 'us' : (detected === 'fund_hk' ? 'hk' : 'domestic');
+    }
 
-    // 防御：如果数据源只返回了昨日净值（navOnly=true）而没有今日估算，
-    // 直接以 dwjz 为基准会导致日后 gsz 第一次刷新时看起来像"涨跌"。
-    // 这种基金建议稍后再试，或用户主动接受"以 dwjz 为基准"才能创建。
+    // 2. 根据明确的 finalKind 提取报价
+    const fund = await marketHelper.getFundValuation(fund_code, finalKind);
+
     if (fund && fund.navOnly) {
       return res.status(503).json({
         error: '当前数据源仅能获取昨日官方净值（QDII/老基金常见），无法建立准确涨跌基准。请稍后到行情页面刷新一次后再创建提醒，或改用持仓成分股相对稳定的基金。'
@@ -1077,33 +1095,33 @@ app.post('/api/alerts', async (req, res) => {
 
     const dwjzParsed = fund ? parseFloat(fund.dwjz) : NaN;
     const gszParsed = fund ? parseFloat(fund.gsz) : NaN;
-    // 优先 dwjz（昨日净值），回退到 gsz（极少数情况 dwjz 为 0）
+    // 股票优先昨收盘价，场外基金优先昨日单位净值
     const ref = Number.isFinite(dwjzParsed) && dwjzParsed > 0
       ? dwjzParsed
       : (Number.isFinite(gszParsed) && gszParsed > 0 ? gszParsed : null);
 
-    // 水位线初始值 = ref（昨收），这样从创建那一刻起，
-    // 高位触发要求 current ≥ ref * (1 + up/100)，
-    // 低位触发要求 current ≤ ref * (1 - down/100)。
     const highWater = ref;
     const lowWater  = ref;
-
     const navDate = fund ? (fund.jzrq || '') : '';
+    const currentTradingDay = marketTime.getMarketTradingDay(finalMarket, new Date());
 
     const result = await dbHelper.run(
       `INSERT INTO alerts
          (user_id, fund_code, fund_name, email, up_threshold, down_threshold,
-          reference_price, high_water_price, low_water_price, last_nav_date, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          reference_price, high_water_price, low_water_price, last_nav_date,
+          kind, market, last_trading_day, triggered_today_up, triggered_today_down, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
       [req.userId, fund_code, fund_name || fund?.name || fund_code, email, up, down,
-       ref, highWater, lowWater, navDate]
+       ref, highWater, lowWater, navDate, finalKind, finalMarket, currentTradingDay]
     );
+
+    const benchmarkDesc = finalKind === 'stock' ? '昨日收盘价' : '昨日单位净值';
     res.json({
       success: true,
       id: result.lastID,
       message: ref
-        ? `已创建提醒，基准净值 ${ref.toFixed(4)}（基于昨日单位净值，水位线模式）`
-        : '已创建提醒（暂未获取到基准净值，触发判断会在首次刷新时建立）',
+        ? `已创建提醒，基准价 ${ref.toFixed(4)}（基于${benchmarkDesc}，日内涨跌幅监控）`
+        : '已创建提醒（暂未获取到基准价，将在首次开盘刷新时建立）',
       reference_price: ref
     });
   } catch (error) {
@@ -1175,16 +1193,23 @@ app.put('/api/alerts/:id', async (req, res) => {
   const sets = [];
   const params = [];
   if (typeof is_active === 'boolean' || is_active === 0 || is_active === 1) {
+    const activeVal = is_active ? 1 : 0;
     sets.push('is_active = ?');
-    params.push(is_active ? 1 : 0);
+    params.push(activeVal);
+    if (activeVal === 1) {
+      sets.push('triggered_today_up = 0');
+      sets.push('triggered_today_down = 0');
+    }
   }
   if (up_threshold !== undefined) {
     sets.push('up_threshold = ?');
     params.push(up_threshold === null ? null : Number(up_threshold));
+    sets.push('triggered_today_up = 0');
   }
   if (down_threshold !== undefined) {
     sets.push('down_threshold = ?');
     params.push(down_threshold === null ? null : Number(down_threshold));
+    sets.push('triggered_today_down = 0');
   }
   if (!sets.length) return res.status(400).json({ error: '无有效更新字段' });
 
@@ -1306,7 +1331,6 @@ app.get('/api/email/config/reveal', requireAdmin, async (req, res) => {
    ───────────────────────────────────────────────────────────────── */
 
 const ALERT_POLL_MS = 30 * 1000;
-const COOLDOWN_MS = 30 * 60 * 1000;          // 同一提醒 30 分钟内最多触发一次
 const MEMO_PRICE = new Map();                // fund_code -> last gsz (供历史展示用)
 
 async function pollAlerts() {
@@ -1321,103 +1345,125 @@ async function pollAlerts() {
 
     for (const alert of rows) {
       try {
-        const fund = await marketHelper.getFundValuation(alert.fund_code);
+        const alertMarket = alert.market || 'domestic';
+        const alertKind = alert.kind || 'fund';
+        const now = new Date();
+
+        // 1. 非交易时段跳过：结合品种/市场属性判断（A股/港股/美股/QDII）
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, now, alertMarket)) {
+          continue;
+        }
+
+        // 2. 严格传入 alertKind 提取行情，彻底杜绝股票代码与基金代码重叠混淆
+        const fund = await marketHelper.getFundValuation(alert.fund_code, alertKind);
         if (!fund) continue;
 
-        // 非交易时段跳过：结合品种/基金市场属性判断（A股/港股/美股/QDII）
-        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, undefined, fund.market)) {
+        const effectiveMarket = fund.market || alertMarket;
+
+        // 非交易时段再次防御校验（结合真实行情源解析出的 market）
+        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, now, effectiveMarket)) {
           continue;
         }
 
-        // ⚠️ 防御：数据源只回退到昨日净值（navOnly=true）时没有"今日实时价"，
-        // 此时计算出来的 changePct 没有意义，跳过本轮不触发。
+        // ⚠️ 防御：数据源只回退到昨日净值（navOnly=true）时没有"今日实时价"，跳过
         if (fund.navOnly) {
-          console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — data source navOnly-only (gsz==dwjz), wait for realtime source`);
           continue;
         }
-        // 代理行情的上游时间是事实来源，不能因服务器刚抓到旧报价而触发告警。
+        // 代理行情的上游时间是事实来源，不能因服务器刚抓到旧报价而触发告警
         if (fund.quoteFreshness === 'stale' || fund.quoteFreshness === 'unknown') {
-          console.log(`[alerts] skip #${alert.id} ${alert.fund_code} — proxy quote ${fund.quoteFreshness}`);
           continue;
         }
 
         const current = parseFloat(fund.gsz) || parseFloat(fund.dwjz);
-        if (current <= 0) continue;
+        if (!Number.isFinite(current) || current <= 0) continue;
 
-        // ============================================================
-        // 跨日水位线自动重置逻辑
-        // ------------------------------------------------------------
-        // 当进入新交易日，最新官方净值日期 (fund.jzrq) 变动，或者上一步
-        // 拿到了新的 dwjz (昨收价)，将高低水位线均重置为当天的基准 dwjz。
-        // ============================================================
-        let highWater = alert.high_water_price;
-        let lowWater  = alert.low_water_price;
         const currentDwjz = parseFloat(fund.dwjz);
         const navDate = fund.jzrq || '';
 
-        // 从 1.2.14 升级的提醒已有水位线但没有 last_nav_date。首次拿到有效净值日期时，
-        // 先以当前官方净值建立明确的日基准，避免旧水位线一直无法进入跨日重置逻辑。
-        if (navDate && !alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
-          highWater = currentDwjz;
-          lowWater = currentDwjz;
+        // 3. 权威交易日跨日状态机驱动 (Session-driven Rollover Engine)
+        const currentTradingDay = marketTime.getMarketTradingDay(effectiveMarket, now);
+        let refPrice = alert.reference_price;
+        let triggeredUp = alert.triggered_today_up || 0;
+        let triggeredDown = alert.triggered_today_down || 0;
+
+        // 判定是否跨入新交易日（由交易所权威日历驱动，杜绝依赖滞后的第三方净值披露字符串）
+        if (alert.last_trading_day && alert.last_trading_day !== currentTradingDay) {
+          console.log(`[alerts] 跨交易日重置提醒 #${alert.id} ${alert.fund_code} (${effectiveMarket}): ${alert.last_trading_day} -> ${currentTradingDay}`);
+          const newRef = Number.isFinite(currentDwjz) && currentDwjz > 0 ? currentDwjz : (refPrice || current);
+          refPrice = newRef;
+          triggeredUp = 0;
+          triggeredDown = 0;
           await dbHelper.run(
-            'UPDATE alerts SET high_water_price = ?, low_water_price = ?, reference_price = ?, last_nav_date = ? WHERE id = ?',
-            [highWater, lowWater, currentDwjz, navDate, alert.id]
+            `UPDATE alerts SET
+               last_trading_day = ?,
+               triggered_today_up = 0,
+               triggered_today_down = 0,
+               reference_price = ?,
+               high_water_price = ?,
+               low_water_price = ?,
+               last_nav_date = COALESCE(NULLIF(?, ''), last_nav_date)
+             WHERE id = ?`,
+            [currentTradingDay, newRef, newRef, newRef, navDate, alert.id]
           );
-        // 跨日重置判断：如果记录了上次净值日期且与最新日期不符，重置水位线为新 dwjz
-        } else if (navDate && alert.last_nav_date && navDate !== alert.last_nav_date && Number.isFinite(currentDwjz) && currentDwjz > 0) {
-          console.log(`[alerts] 跨日重置提醒 #${alert.id} ${alert.fund_code}: ${alert.last_nav_date} -> ${navDate}, 新昨收=${currentDwjz}`);
-          highWater = currentDwjz;
-          lowWater = currentDwjz;
+          alert.last_trading_day = currentTradingDay;
+          alert.reference_price = newRef;
+          alert.triggered_today_up = 0;
+          alert.triggered_today_down = 0;
+        } else if (!alert.last_trading_day) {
+          // 冷启动赋初值
+          const initRef = Number.isFinite(currentDwjz) && currentDwjz > 0 ? currentDwjz : (refPrice || current);
+          refPrice = initRef;
           await dbHelper.run(
-            'UPDATE alerts SET high_water_price = ?, low_water_price = ?, reference_price = ?, last_nav_date = ? WHERE id = ?',
-            [highWater, lowWater, currentDwjz, navDate, alert.id]
+            `UPDATE alerts SET last_trading_day = ?, reference_price = COALESCE(reference_price, ?) WHERE id = ?`,
+            [currentTradingDay, initRef, alert.id]
           );
+          alert.last_trading_day = currentTradingDay;
+          alert.reference_price = initRef;
         }
 
-        // 冷启动：水位线未初始化（NULL）→ 用当前 dwjz 作起点
-        if (highWater == null || lowWater == null) {
-          const initWater = Number.isFinite(currentDwjz) && currentDwjz > 0 ? currentDwjz : current;
-          highWater = highWater == null ? initWater : highWater;
-          lowWater  = lowWater  == null ? initWater : lowWater;
-          await dbHelper.run(
-            'UPDATE alerts SET high_water_price = COALESCE(high_water_price, ?), low_water_price = COALESCE(low_water_price, ?), last_nav_date = COALESCE(last_nav_date, ?) WHERE id = ?',
-            [highWater, lowWater, navDate, alert.id]
-          );
+        if (!refPrice || refPrice <= 0) {
+          refPrice = Number.isFinite(currentDwjz) && currentDwjz > 0 ? currentDwjz : current;
+          if (refPrice > 0) {
+            await dbHelper.run('UPDATE alerts SET reference_price = ? WHERE id = ?', [refPrice, alert.id]);
+            alert.reference_price = refPrice;
+          }
         }
-        if (highWater <= 0 || lowWater <= 0) continue;
+        if (!refPrice || refPrice <= 0) continue;
 
-        // 计算本轮"涨幅"和"跌幅"（相对各自水位线）
-        const upMovePct   = ((current - highWater) / highWater) * 100;
-        const downMovePct = ((current - lowWater)  / lowWater)  * 100;
+        // 4. 标准日内相对昨收/昨净值涨跌幅 (Daily Change %，严格对齐投资者心智模型)
+        const dailyChangePct = ((current - refPrice) / refPrice) * 100;
 
+        // 5. 交易所合法极值与除权除息安全熔断 (Circuit Breaker)
+        const isAStock = effectiveMarket === 'domestic' && alertKind === 'stock';
+        const legalLimit = isAStock
+          ? (alert.fund_code.startsWith('688') || alert.fund_code.startsWith('30') || alert.fund_code.startsWith('8') || alert.fund_code.startsWith('4') ? 20.5 : 10.5)
+          : 50.0;
+
+        if (Math.abs(dailyChangePct) > legalLimit) {
+          console.warn(`[alerts-circuit-breaker] 熔断拦截: #${alert.id} ${alert.fund_code} 涨跌幅 ${dailyChangePct.toFixed(2)}% 超出极值限制 (±${legalLimit}%)，疑似除权除息或脏数据，暂缓推送`);
+          continue;
+        }
+
+        // 6. 判定触发条件 (当日同方向单次触发，杜绝日内轰炸)
         let triggered = null;        // 'up' | 'down'
         let changePct = 0;
-        if (alert.up_threshold != null   && upMovePct   >= alert.up_threshold)   { triggered = 'up';   changePct = upMovePct; }
-        if (alert.down_threshold != null && downMovePct <= -alert.down_threshold) { triggered = 'down'; changePct = downMovePct; }
+        if (alert.up_threshold != null && dailyChangePct >= alert.up_threshold && triggeredUp === 0) {
+          triggered = 'up';
+          changePct = dailyChangePct;
+        } else if (alert.down_threshold != null && dailyChangePct <= -alert.down_threshold && triggeredDown === 0) {
+          triggered = 'down';
+          changePct = dailyChangePct;
+        }
 
         if (!triggered) {
           MEMO_PRICE.set(alert.fund_code, current);
           continue;
         }
 
-        // 冷却：上次触发 < 30 分钟则不重发
-        if (alert.last_triggered_at) {
-          const lastTs = Date.parse(alert.last_triggered_at);
-          if (Number.isFinite(lastTs) && Date.now() - lastTs < COOLDOWN_MS) {
-            continue;
-          }
-        }
-
-        // 发送 + 落库 — 防御性：再次确认非交易时间，防止未来的回归
-        if (ALERT_STOP_AFTER_CLOSE && !marketHelper.isInTradingTime(alert.fund_code, undefined, fund.market)) {
-          console.log(`[alerts] safety-skip #${alert.id} market=${fund.market || 'unknown'} (defensive double-check) at BJT=${new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}`);
-          continue;
-        }
-
-        // 计算本轮邮件里展示用的"参考价"（用户在邮件里看到的是相对哪个值的涨跌）
-        const displayRef = triggered === 'up' ? highWater : lowWater;
-        const openPrice = (fund.open ? parseFloat(fund.open) : undefined) || (fund.stockSpecific && typeof fund.stockSpecific.open === 'number' ? fund.stockSpecific.open : undefined) || parseFloat(fund.dwjz) || displayRef;
+        // 7. 组装开盘价与参考价
+        const openPrice = (fund.open ? parseFloat(fund.open) : undefined) ||
+                          (fund.stockSpecific && typeof fund.stockSpecific.open === 'number' ? fund.stockSpecific.open : undefined) ||
+                          refPrice;
 
         const sendResult = await mailer.sendAlertEmail({
           to: alert.email,
@@ -1426,8 +1472,10 @@ async function pollAlerts() {
           direction: triggered,
           changePct,
           currentPrice: current,
-          referencePrice: displayRef,
-          openPrice
+          referencePrice: refPrice,
+          openPrice,
+          kind: alertKind,
+          market: effectiveMarket
         }).catch(e => ({ error: e.message, messageId: null, previewUrl: null }));
 
         const nowIso = new Date().toISOString();
@@ -1440,27 +1488,32 @@ async function pollAlerts() {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             alert.id, alert.user_id, alert.fund_code, alert.fund_name, alert.email,
-            triggered, changePct, current, displayRef,
+            triggered, changePct, current, refPrice,
             sendResult?.messageId || null, sentOk, sendResult?.error || null
           ]
         );
 
-        // 触发后更新对应方向的水位线及最新官方净值日期 (last_nav_date)
-        const newHighWater = triggered === 'up'   ? current : highWater;
-        const newLowWater  = triggered === 'down' ? current : lowWater;
+        // 8. 触发后更新当日触发标记与审计记录
+        const newTriggeredUp = triggered === 'up' ? 1 : triggeredUp;
+        const newTriggeredDown = triggered === 'down' ? 1 : triggeredDown;
+        const newHighWater = triggered === 'up' ? Math.max(alert.high_water_price || current, current) : (alert.high_water_price || current);
+        const newLowWater  = triggered === 'down' ? Math.min(alert.low_water_price || current, current) : (alert.low_water_price || current);
+
         await dbHelper.run(
           `UPDATE alerts SET
              last_triggered_at = ?,
              last_triggered_change_pct = ?,
              last_triggered_direction = ?,
+             triggered_today_up = ?,
+             triggered_today_down = ?,
              high_water_price = ?,
              low_water_price  = ?,
              last_nav_date    = COALESCE(NULLIF(?, ''), last_nav_date)
            WHERE id = ?`,
-          [nowIso, changePct, triggered, newHighWater, newLowWater, navDate, alert.id]
+          [nowIso, changePct, triggered, newTriggeredUp, newTriggeredDown, newHighWater, newLowWater, navDate, alert.id]
         );
 
-        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref_basis=water ${displayRef.toFixed(4)} → cur=${current.toFixed(4)}, new high_water=${newHighWater.toFixed(4)} low_water=${newLowWater.toFixed(4)})`);
+        console.log(`[alerts] ✓ triggered #${alert.id} ${alert.fund_code} ${triggered} ${changePct.toFixed(2)}% (ref=${refPrice.toFixed(4)} → cur=${current.toFixed(4)}, kind=${alertKind}, market=${effectiveMarket})`);
       } catch (innerErr) {
         console.error(`[alerts] error on #${alert.id}:`, innerErr.message);
       }

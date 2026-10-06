@@ -151,52 +151,49 @@ async function sendViaSmtp({ cfg, from, to, subject, html }) {
 
 /* ─────── Dev mode 邮件模板 ─────── */
 
-function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, currentPrice, referencePrice, openPrice }) {
+function buildAlertHtml({ appName, fundName, fundCode, direction, changePct, currentPrice, referencePrice, openPrice, kind = 'fund', market = 'domestic' }) {
+  const isStock = kind === 'stock';
   const dirText = direction === 'up' ? '上涨' : '下跌';
   const dirColor = direction === 'up' ? '#ff453a' : '#30d158';
   const dirBg = direction === 'up' ? '#fff1f0' : '#f0fff4';
   const dirBorder = direction === 'up' ? '#ffccc7' : '#b7eb8f';
 
-  // 相对开盘价的累计涨跌
-  const op = typeof openPrice === 'number' && Number.isFinite(openPrice) && openPrice > 0 ? openPrice : referencePrice;
-  const cumDiff = currentPrice - op;
-  const cumPct = op > 0 ? (cumDiff / op) * 100 : 0;
+  const refLabel = isStock ? '昨日收盘价' : '昨日单位净值';
+  const curLabel = isStock ? '最新撮合成交价' : '盘中实时估算净值';
+  const changeTitle = isStock ? '当日涨跌幅' : '当日估算涨跌幅';
+  const categoryTag = isStock
+    ? (market === 'us' ? '美股' : market === 'hk' ? '港股' : 'A股')
+    : '场外公募';
 
-  let cumText = '';
-  let cumColor = '#1d1d1f';
-  if (cumDiff > 0) {
-    cumText = `累计涨 +${cumDiff.toFixed(4)} (+${cumPct.toFixed(2)}%)`;
-    cumColor = '#ff453a';
-  } else if (cumDiff < 0) {
-    cumText = `累计跌 -${Math.abs(cumDiff).toFixed(4)} (-${Math.abs(cumPct).toFixed(2)}%)`;
-    cumColor = '#30d158';
-  } else {
-    cumText = `累计平 0.0000 (0.00%)`;
-    cumColor = '#86868b';
-  }
+  const disclaimer = isStock
+    ? '行情提示：行情数据可能存在交易所网络时延，最终撮合结果以券商实际成交回报为准。市场有风险，投资需谨慎。'
+    : '合规提示：场外基金盘中估算净值系基于成分股实时走势的模型测算，与基金公司晚间公布的官方清算净值可能存在偏差。估算数据仅供参考，不构成任何投资依据与交易指令。';
 
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${dirText}提醒</title></head>
 <body style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f5f7;padding:24px;margin:0;">
 <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:18px;border:1px solid #e5e5e7;padding:28px;">
-  <div style="font-size:12px;color:#86868b;margin-bottom:8px;">${appName} · 价格提醒</div>
+  <div style="font-size:12px;color:#86868b;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+    <span>${appName} · 价格监控提醒</span>
+    <span style="font-size:11px;background:#f0f0f2;padding:2px 8px;border-radius:10px;color:#636366;">${categoryTag}</span>
+  </div>
   <h2 style="font-size:18px;margin:0 0 4px 0;color:#1d1d1f;font-weight:600;">
     ${fundName || fundCode} <span style="font-family:monospace;font-size:12px;color:#86868b;font-weight:400;">${fundCode}</span>
   </h2>
   <div style="margin-top:16px;padding:16px;background:${dirBg};border-radius:12px;border:1px solid ${dirBorder};">
-    <div style="font-size:12px;color:#86868b;margin-bottom:4px;">${dirText}幅度</div>
+    <div style="font-size:12px;color:#86868b;margin-bottom:4px;">${changeTitle}</div>
     <div style="font-size:28px;font-weight:700;color:${dirColor};font-feature-settings:'tnum';">
       ${changePct > 0 ? '+' : ''}${changePct.toFixed(2)}%
     </div>
   </div>
   <table style="width:100%;margin-top:16px;border-collapse:collapse;font-size:13px;">
-    <tr><td style="color:#86868b;padding:6px 0;">最新价格</td><td style="text-align:right;font-family:monospace;font-weight:600;color:#1d1d1f;padding:6px 0;">${currentPrice.toFixed(4)}</td></tr>
-    <tr><td style="color:#86868b;padding:6px 0;">开盘价格</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${op.toFixed(4)}</td></tr>
-    <tr><td style="color:#86868b;padding:6px 0;">较开盘涨跌</td><td style="text-align:right;font-family:monospace;font-weight:600;color:${cumColor};padding:6px 0;">${cumText}</td></tr>
-    <tr><td style="color:#86868b;padding:6px 0;">基准参考价</td><td style="text-align:right;font-family:monospace;color:#86868b;padding:6px 0;">${referencePrice.toFixed(4)}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">${curLabel}</td><td style="text-align:right;font-family:monospace;font-weight:600;color:#1d1d1f;padding:6px 0;">${currentPrice.toFixed(4)}</td></tr>
+    <tr><td style="color:#86868b;padding:6px 0;">${refLabel}（基准）</td><td style="text-align:right;font-family:monospace;color:#86868b;padding:6px 0;">${referencePrice.toFixed(4)}</td></tr>
+    ${openPrice ? `<tr><td style="color:#86868b;padding:6px 0;">开盘价格</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${Number(openPrice).toFixed(4)}</td></tr>` : ''}
     <tr><td style="color:#86868b;padding:6px 0;">触发时间</td><td style="text-align:right;font-family:monospace;color:#1d1d1f;padding:6px 0;">${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</td></tr>
   </table>
-  <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f0f0f0;font-size:11px;color:#86868b;">
+  <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f0f0f0;font-size:11px;color:#86868b;line-height:1.6;">
+    ${disclaimer}<br/>
     本邮件由 ${appName} 自动发送。如不再需要提醒，请登录系统关闭对应规则。
   </div>
 </div></body></html>`;
@@ -211,18 +208,19 @@ function escapeHtml(s) {
 /* ─────── 公共发送入口 ─────── */
 
 async function sendAlertEmail({
-  to, fundCode, fundName, direction, changePct, currentPrice, referencePrice, openPrice
+  to, fundCode, fundName, direction, changePct, currentPrice, referencePrice, openPrice, kind = 'fund', market = 'domestic'
 }) {
   const cfg = await loadConfig();
   const mode = effectiveMode(cfg);
 
   const dirText = direction === 'up' ? '上涨' : '下跌';
-  const subject = `【${dirText}提醒】${fundName || fundCode} 净值${dirText} ${Math.abs(changePct).toFixed(2)}%`;
+  const targetLabel = kind === 'stock' ? '股价' : '估算净值';
+  const subject = `【${dirText}提醒】${fundName || fundCode} ${targetLabel}${dirText} ${Math.abs(changePct).toFixed(2)}%`;
   const html = buildAlertHtml({
     appName: cfg.appName,
     fundName: escapeHtml(fundName),
     fundCode,
-    direction, changePct, currentPrice, referencePrice, openPrice
+    direction, changePct, currentPrice, referencePrice, openPrice, kind, market
   });
 
   /* ── dev mode: 直接 console.log 完整邮件 ── */
@@ -316,6 +314,7 @@ async function saveConfig(updates) {
 }
 
 module.exports = {
+  buildAlertHtml,
   sendAlertEmail,
   getStatus,
   getRevealedSecrets,

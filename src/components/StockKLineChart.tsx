@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type PointerEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { Spin, Tooltip } from 'antd';
-import { BarChart3, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { BarChart3, ZoomIn, ZoomOut, RotateCcw, Maximize2, ChevronLeft } from 'lucide-react';
 import type { StockKLinePoint, StockKLinePeriod } from '../services/api';
+import { useModalHistory } from '../utils/modalHistory';
 
 export interface StockKLineChartProps {
   code: string;
+  name?: string;
   market?: string;
   data: StockKLinePoint[];
   period: StockKLinePeriod;
   loading?: boolean;
   onPeriodChange: (period: StockKLinePeriod) => void;
   height?: number;
+  /** 全屏视图模式标识（内部专用，避免全屏递归嵌套） */
+  isFullscreenView?: boolean;
 }
 
 interface CandleWithMA extends StockKLinePoint {
@@ -79,20 +85,49 @@ function formatPeriodLabel(date: string, period: StockKLinePeriod) {
   return date.length >= 10 ? date.slice(5, 10) : date;
 }
 
-export function StockKLineChart({
-  code,
-  market,
-  data,
-  period,
-  loading = false,
-  onPeriodChange,
-  height = 380,
-}: StockKLineChartProps) {
+export function StockKLineChart(props: StockKLineChartProps) {
+  const {
+    code,
+    name,
+    market,
+    data,
+    period,
+    loading = false,
+    onPeriodChange,
+    height = 380,
+    isFullscreenView = false
+  } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [width, setWidth] = useState(640);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [hoverPrice, setHoverPrice] = useState<number | null>(null);
+
+  // 全屏大图查看状态机
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const prefersReducedMotion = useReducedMotion();
+
+  // 智能横屏感知（兼容系统竖屏锁定）
+  const [needsVirtualLandscape, setNeedsVirtualLandscape] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window);
+  });
+
+  useEffect(() => {
+    const handleCheck = () => {
+      setNeedsVirtualLandscape(
+        window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window)
+      );
+    };
+    window.addEventListener('resize', handleCheck);
+    window.addEventListener('orientationchange', handleCheck);
+    return () => {
+      window.removeEventListener('resize', handleCheck);
+      window.removeEventListener('orientationchange', handleCheck);
+    };
+  }, []);
+
+  useModalHistory(isFullscreen, () => setIsFullscreen(false), { id: 'stock-kline-fullscreen-modal' });
 
   // Zoom & Pan Range: [startIdx, endIdx) in allBars
   const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -317,9 +352,17 @@ export function StockKLineChart({
     } catch {
       // Ignore if pointer capture fails
     }
+    let startX = e.clientX;
+    const ctm = e.currentTarget.getScreenCTM();
+    if (ctm) {
+      const pt = e.currentTarget.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      startX = pt.matrixTransform(ctm.inverse()).x;
+    }
     dragRef.current = {
       isDragging: false,
-      startX: e.clientX,
+      startX,
       origStart: visibleRange.start,
       origEnd: visibleRange.end,
       pointerId: e.pointerId,
@@ -329,9 +372,25 @@ export function StockKLineChart({
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
     if (visibleBars.length === 0) return;
 
+    let localX = e.clientX;
+    let localY = e.clientY;
+    const ctm = e.currentTarget.getScreenCTM();
+    if (ctm) {
+      const pt = e.currentTarget.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const local = pt.matrixTransform(ctm.inverse());
+      localX = local.x;
+      localY = local.y;
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect();
+      localX = e.clientX - rect.left;
+      localY = e.clientY - rect.top;
+    }
+
     // Handle Drag / Pan
     if (dragRef.current) {
-      const deltaX = e.clientX - dragRef.current.startX;
+      const deltaX = localX - dragRef.current.startX;
       if (!dragRef.current.isDragging && Math.abs(deltaX) > 3) {
         dragRef.current.isDragging = true;
         setIsGrabbing(true);
@@ -363,9 +422,8 @@ export function StockKLineChart({
     }
 
     // Normal Hover Crosshair
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const mouseX = localX;
+    const mouseY = localY;
 
     const relative = (mouseX - geometry.padding.left) / geometry.drawableWidth;
     const localIdx = Math.max(0, Math.min(visibleBars.length - 1, Math.floor(relative * visibleBars.length)));
@@ -459,84 +517,129 @@ export function StockKLineChart({
   const isZoomed = allBars.length > 0 && (visibleRange.end - visibleRange.start < allBars.length || visibleRange.end < allBars.length);
 
   return (
-    <section className="rounded-2xl border border-[var(--hairline-border)] bg-white/60 dark:bg-white/[0.03] p-4 shadow-sm backdrop-blur-sm">
-      {/* Top Header Bar */}
-      <div className="mb-2 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <BarChart3 size={15} className="text-[var(--primary-accent)]" />
-          <h4 className="apple-display-heading text-sm font-bold text-slate-800 dark:text-slate-100">
-            {periodLabel}线
-          </h4>
-          <span className="text-[10px] text-slate-400 font-mono">
-            {marketLabel} · 前复权
-          </span>
-          {allBars.length > 0 && (
-            <span className="text-[10px] text-slate-400/80 font-mono hidden sm:inline">
-              (显示 {visibleBars.length}/{allBars.length} 根)
-            </span>
-          )}
-        </div>
+    <section className={isFullscreenView ? "w-full select-none" : "rounded-2xl border border-[var(--hairline-border)] bg-white/60 dark:bg-white/[0.03] p-3 sm:p-4 shadow-sm backdrop-blur-sm"}>
+      {/* Top Header Deck (全屏内嵌时隐藏，由全屏专属主控甲板接管；标准化双甲板架构，对标分时图) */}
+      {!isFullscreenView && (
+        <div className="flex flex-col gap-2 mb-2.5 px-0.5">
+          {/* Deck 1: 元信息与全局视图控制 (两端对齐，全屏按钮右上角绝对锚定) */}
+          <div className="flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
+            {/* 左侧：K线标题 + 市场标的复权状态 */}
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <BarChart3 size={15} className="text-[var(--primary-accent)] shrink-0" />
+              <h4 className="apple-display-heading text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
+                {periodLabel}线
+              </h4>
+              <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                {marketLabel} · 前复权
+              </span>
+              {allBars.length > 0 && (
+                <span className="text-[10px] text-slate-400/80 font-mono hidden md:inline shrink-0">
+                  (显示 {visibleBars.length}/{allBars.length} 根)
+                </span>
+              )}
+            </div>
 
-        {/* Action Controls & Period Tabs */}
-        <div className="flex items-center gap-2">
-          {/* Zoom In / Out / Reset buttons */}
-          <div className="flex items-center gap-1 bg-slate-100/70 dark:bg-white/5 p-0.5 rounded-full border border-[var(--hairline-border)]">
-            <Tooltip title="滚轮向上或点击放大 (Zoom In)" placement="top">
+            {/* 右侧：缩放控制器组 (桌面端) + 一键全屏查看按钮 (绝对靠右对齐) */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              {/* 滚轮缩放与复位组 (移动端隐藏，桌面端展开) */}
+              <div className="hidden sm:flex items-center gap-0.5 bg-slate-100/70 dark:bg-white/5 p-0.5 rounded-full border border-[var(--hairline-border)]">
+                <Tooltip title="滚轮向上或点击放大 (Zoom In)" placement="top">
+                  <button
+                    type="button"
+                    onClick={() => handleZoom(-1)}
+                    disabled={visibleBars.length <= MIN_VISIBLE_BARS}
+                    className="p-1 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 disabled:opacity-30 cursor-pointer"
+                    aria-label="放大K线"
+                  >
+                    <ZoomIn size={13} />
+                  </button>
+                </Tooltip>
+                <Tooltip title="滚轮向下或点击缩小 (Zoom Out)" placement="top">
+                  <button
+                    type="button"
+                    onClick={() => handleZoom(1)}
+                    disabled={visibleBars.length >= allBars.length}
+                    className="p-1 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 disabled:opacity-30 cursor-pointer"
+                    aria-label="缩小K线"
+                  >
+                    <ZoomOut size={13} />
+                  </button>
+                </Tooltip>
+                {isZoomed && (
+                  <Tooltip title="重置视角 (查看最新K线)" placement="top">
+                    <button
+                      type="button"
+                      onClick={handleResetZoom}
+                      className="p-1 rounded-full text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer"
+                      aria-label="重置缩放"
+                    >
+                      <RotateCcw size={13} />
+                    </button>
+                  </Tooltip>
+                )}
+              </div>
+
+              {/* 一键全屏大图查看按钮 (尺寸与分时图统一: w-6 h-6 sm:w-7 sm:h-7) */}
               <button
                 type="button"
-                onClick={() => handleZoom(-1)}
-                disabled={visibleBars.length <= MIN_VISIBLE_BARS}
-                className="p-1 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 disabled:opacity-30 cursor-pointer"
-                aria-label="放大K线"
+                onClick={() => setIsFullscreen(true)}
+                title="全屏查看K线大图"
+                aria-label="全屏查看K线大图"
+                className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all shrink-0 cursor-pointer"
               >
-                <ZoomIn size={13} />
+                <Maximize2 size={12} />
               </button>
-            </Tooltip>
-            <Tooltip title="滚轮向下或点击缩小 (Zoom Out)" placement="top">
-              <button
-                type="button"
-                onClick={() => handleZoom(1)}
-                disabled={visibleBars.length >= allBars.length}
-                className="p-1 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 disabled:opacity-30 cursor-pointer"
-                aria-label="缩小K线"
-              >
-                <ZoomOut size={13} />
-              </button>
-            </Tooltip>
-            {isZoomed && (
-              <Tooltip title="重置视角 (查看最新K线)" placement="top">
+            </div>
+          </div>
+
+          {/* Deck 2: 维度切换与度量指示层 */}
+          <div className="flex items-center justify-between gap-1.5 min-w-0">
+            {/* 左侧：K线周期切换胶囊栏 */}
+            <div className="inline-flex rounded-full bg-slate-100/80 dark:bg-white/5 p-0.5 sm:p-1 border border-[var(--hairline-border)] shrink-0">
+              {KLINE_PERIODS.map(item => (
                 <button
+                  key={item.key}
                   type="button"
-                  onClick={handleResetZoom}
-                  className="p-1 rounded-full text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer"
-                  aria-label="重置缩放"
+                  disabled={loading}
+                  onClick={() => onPeriodChange(item.key)}
+                  className={`whitespace-nowrap shrink-0 select-none rounded-full px-2 sm:px-3 py-0.5 sm:py-1 text-[11px] sm:text-xs font-semibold transition-all duration-200 disabled:opacity-50 cursor-pointer ${
+                    period === item.key
+                      ? 'bg-[var(--primary-accent)] text-white shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                  }`}
                 >
-                  <RotateCcw size={13} />
+                  <span className="whitespace-nowrap">{item.label}</span>
                 </button>
-              </Tooltip>
+              ))}
+            </div>
+
+            {/* 右侧微副标：展示当前定位K线或最新K线收盘价与涨跌幅 (消除右侧负空间死白) */}
+            {activeBar && (
+              <div className="flex items-baseline gap-1 sm:gap-1.5 font-mono text-xs shrink-0 pl-1">
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-xs sm:text-sm tabular-nums whitespace-nowrap">
+                  {formatPrice(activeBar.close)}
+                </span>
+                {(() => {
+                  const chgAmt = activeBar.close - activeBar.open;
+                  const chgPct = activeBar.open > 0 ? (chgAmt / activeBar.open) * 100 : 0;
+                  const isUp = chgAmt > 0;
+                  const isDown = chgAmt < 0;
+                  return (
+                    <span
+                      className="font-semibold text-[10px] sm:text-[11px] tabular-nums whitespace-nowrap"
+                      style={{
+                        color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)'
+                      }}
+                    >
+                      {chgPct > 0 ? '+' : ''}{chgPct.toFixed(2)}%
+                    </span>
+                  );
+                })()}
+              </div>
             )}
           </div>
-
-          {/* Period Selector Tabs */}
-          <div className="inline-flex rounded-full bg-slate-100/80 dark:bg-white/5 p-1 border border-[var(--hairline-border)]">
-            {KLINE_PERIODS.map(item => (
-              <button
-                key={item.key}
-                type="button"
-                disabled={loading}
-                onClick={() => onPeriodChange(item.key)}
-                className={`rounded-full px-2.5 sm:px-3 py-1 text-xs font-semibold transition-all duration-200 disabled:opacity-50 ${
-                  period === item.key
-                    ? 'bg-[var(--primary-accent)] text-white shadow-sm'
-                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
         </div>
-      </div>
+      )}
 
       {/* SVG Canvas Area */}
       <div
@@ -952,6 +1055,158 @@ export function StockKLineChart({
           </>
         )}
       </div>
+
+      {/* ── 沉浸式K线全屏大图模态 (支持系统竖屏锁定兼容的虚拟横屏) ── */}
+      {!isFullscreenView && isFullscreen && typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          <motion.div
+            key="stock-kline-fullscreen-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${name || code} K线图全屏大图`}
+            initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="fixed z-[10001] bg-[#090a0f] text-white flex flex-col overflow-hidden select-none"
+            style={{
+              ...(needsVirtualLandscape
+                ? {
+                    top: '50%',
+                    left: '50%',
+                    width: '100dvh',
+                    height: '100dvw',
+                    maxWidth: '100dvh',
+                    maxHeight: '100dvw',
+                    transform: 'translate(-50%, -50%) rotate(90deg)',
+                    transformOrigin: 'center center',
+                    paddingLeft: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+                    paddingRight: 'calc(env(safe-area-inset-top, 0px) + 16px)',
+                    paddingTop: '6px',
+                    paddingBottom: '6px',
+                  }
+                : {
+                    top: 0,
+                    left: 0,
+                    width: '100vw',
+                    height: '100vh',
+                    transform: 'none',
+                    paddingLeft: 'calc(env(safe-area-inset-left, 0px) + 16px)',
+                    paddingRight: 'calc(env(safe-area-inset-right, 0px) + 16px)',
+                    paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)',
+                    paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)',
+                  }),
+            }}
+          >
+            {/* ── 顶部 Single Master Landscape Deck (高度锁定 42px) ── */}
+            <header className="h-[42px] min-h-[42px] max-h-[42px] flex items-center justify-between gap-3 border-b border-white/10 shrink-0 px-2">
+              {/* 左翼：退出控制 + 标的识别 */}
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setIsFullscreen(false)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/10 hover:bg-white/20 active:bg-white/30 text-white transition-all cursor-pointer shrink-0 select-none"
+                  aria-label="退出全屏"
+                >
+                  <ChevronLeft size={14} />
+                  <span>退出</span>
+                </button>
+
+                <div className="h-4 w-px bg-white/15 shrink-0" />
+
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="font-bold text-sm text-white truncate max-w-[150px] sm:max-w-[220px]">
+                    {name || code}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-400 shrink-0 px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
+                    {code}
+                  </span>
+                  <span className="text-[10px] text-slate-400/80 font-mono shrink-0">
+                    {marketLabel} · 前复权
+                  </span>
+                </div>
+              </div>
+
+              {/* 中轴：最新收盘价与涨跌幅微岛 */}
+              {latestGlobalBar && (
+                <div className="flex items-baseline gap-2 font-mono shrink-0">
+                  <span className="text-xl sm:text-2xl font-extrabold text-white tabular-nums tracking-tight">
+                    ¥{formatPrice(latestGlobalBar.close)}
+                  </span>
+                  <span
+                    className="font-bold text-xs sm:text-sm tabular-nums"
+                    style={{ color: currentPriceColor }}
+                  >
+                    {isLastUp ? '+' : ''}{prevClose !== null && prevClose > 0 ? (((latestGlobalBar.close - prevClose) / prevClose) * 100).toFixed(2) : '0.00'}%
+                  </span>
+                </div>
+              )}
+
+              {/* 右翼：全屏周期切换胶囊栏 */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-0.5">
+                  {KLINE_PERIODS.map(item => {
+                    const active = item.key === period;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => onPeriodChange(item.key)}
+                        className={`relative px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors select-none cursor-pointer ${
+                          active ? 'text-white' : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {active && (
+                          <motion.span
+                            layoutId="master-deck-kline-active"
+                            transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                            className="absolute inset-0 rounded-lg shadow-sm"
+                            style={{ background: 'var(--primary-accent)' }}
+                          />
+                        )}
+                        <span className="relative z-10 whitespace-nowrap">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </header>
+
+            {/* ── 中间图表画布：净空撑满视口 ── */}
+            <div className="flex-1 w-full min-h-0 pt-1 overflow-hidden flex flex-col justify-center">
+              <StockKLineChart
+                {...props}
+                isFullscreenView={true}
+                height={Math.max(220, (needsVirtualLandscape ? (typeof window !== 'undefined' ? window.innerWidth : 390) : (typeof window !== 'undefined' ? window.innerHeight : 844)) - 42 - 34 - 16)}
+              />
+            </div>
+
+            {/* ── 底栏指标条 (Bottom Metrics Strip，高度锁定 34px) ── */}
+            <footer className="h-[34px] min-h-[34px] max-h-[34px] flex items-center justify-between border-t border-white/10 px-3 text-[11px] font-mono text-slate-400 shrink-0">
+              <div className="flex items-center gap-3 sm:gap-6 tabular-nums overflow-hidden whitespace-nowrap">
+                {activeBar ? (
+                  <>
+                    <span className="text-slate-300 font-bold">{activeBar.dateStr}</span>
+                    <span>开 <strong className="text-white">{formatPrice(activeBar.open)}</strong></span>
+                    <span>高 <strong className="text-[var(--color-up)]">{formatPrice(activeBar.high)}</strong></span>
+                    <span>低 <strong className="text-[var(--color-down)]">{formatPrice(activeBar.low)}</strong></span>
+                    <span>收 <strong className="text-white">{formatPrice(activeBar.close)}</strong></span>
+                    <span>量 <strong className="text-blue-400">{formatVolumeDisplay(activeBar.volume, market)}</strong></span>
+                  </>
+                ) : (
+                  <span>滑动或悬浮蜡烛查看详细点位与量价指标</span>
+                )}
+              </div>
+              <div className="hidden sm:flex items-center gap-3 text-[10px] text-slate-500">
+                <span>MA5: {activeBar?.ma1 ? formatPrice(activeBar.ma1) : '—'}</span>
+                <span>MA10: {activeBar?.ma2 ? formatPrice(activeBar.ma2) : '—'}</span>
+                <span>MA20: {activeBar?.ma3 ? formatPrice(activeBar.ma3) : '—'}</span>
+              </div>
+            </footer>
+          </motion.div>
+        </AnimatePresence>,
+        document.body
+      )}
     </section>
   );
 }
