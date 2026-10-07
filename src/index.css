@@ -35,6 +35,11 @@
   --sab: env(safe-area-inset-bottom, 0px);
   --sal: env(safe-area-inset-left, 0px);
   --sar: env(safe-area-inset-right, 0px);
+
+  /* Mobile Floating TabBar Safe Clearance (对标富途/老虎/Apple HIG) */
+  --mobile-tabbar-height: 58px;
+  --mobile-tabbar-float: 10px;
+  --mobile-tabbar-clearance: calc(5.5rem + var(--sab));
 }
 
 :root.intl-color {
@@ -504,6 +509,17 @@ html, body {
 
 .pt-safe {
   padding-top: calc(0.5rem + var(--sat));
+}
+
+/* 移动端底部悬浮导航栏安全避让类 (移动端 88px+安全区，桌面端自动归零) */
+.pb-mobile-nav {
+  padding-bottom: var(--mobile-tabbar-clearance);
+}
+
+@media (min-width: 768px) {
+  .pb-mobile-nav {
+    padding-bottom: 0px !important;
+  }
 }
 
 /* 优雅的横向滚动遮罩（左右渐隐流体提示） */

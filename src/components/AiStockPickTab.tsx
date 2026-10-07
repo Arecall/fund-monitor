@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
   Button,
@@ -37,9 +37,9 @@ import {
   Trash2,
   LineChart,
   Target,
-  ArrowLeft,
   ArrowUpRight,
   ArrowDownRight,
+  ChevronDown,
   X,
 } from 'lucide-react';
 import {
@@ -143,6 +143,179 @@ function AiStockRecommendationsSkeleton() {
   );
 }
 
+/* ───────────────────────────────────────────────────────────────────
+   高密精选历史研报卡片 (对标彭博终端 / 老虎证券 Tiger AI)
+   消除臃肿外卖订单感，将原本 110px 粗暴堆叠压缩为 62px 高屏效流体徽章
+   ─────────────────────────────────────────────────────────────────── */
+
+interface CompactReportItemProps {
+  report: AiStockPickReport;
+  isSelected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}
+
+function CompactReportItem({
+  report,
+  isSelected,
+  onSelect,
+  onDelete,
+}: CompactReportItemProps) {
+  const triggerLabel =
+    report.trigger_type === 'pre_market'
+      ? '盘前'
+      : report.trigger_type === 'close'
+      ? '尾盘'
+      : '手动';
+
+  const stratObj = STRATEGY_OPTIONS.find((s) => s.value === report.strategy);
+  const strategyShort = stratObj ? stratObj.label.split(' ')[1] || stratObj.label : (report.strategy || '选股');
+
+  const stockTokens = report.stock_names
+    ? report.stock_names.split(/[、,，\/]/).map((s) => s.trim()).filter(Boolean).slice(0, 4)
+    : [];
+
+  const marketsLabel = report.markets?.map((m) => (m === 'us' ? '美股' : m === 'hk' ? '港股' : 'A股')).join('+');
+
+  return (
+    <div
+      onClick={onSelect}
+      className={`group relative p-3 rounded-2xl border transition-all cursor-pointer flex flex-col gap-1.5 overflow-hidden ${
+        isSelected
+          ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/40 shadow-xs ring-1 ring-blue-500/25'
+          : 'border-[var(--hairline-border)] bg-white/70 dark:bg-[#18181a]/80 hover:bg-slate-50 dark:hover:bg-white/[0.04] hover:border-slate-300 dark:hover:border-slate-700 shadow-2xs'
+      }`}
+    >
+      {/* 选中高亮左边条 */}
+      {isSelected && (
+        <div className="absolute left-0 top-2 bottom-2 w-1 bg-blue-500 rounded-r" />
+      )}
+
+      {/* 楼层 1 (顶行)：策略微标 + 触发方式 + 市场 + 时间 + 优雅删除 */}
+      <div className="flex items-center justify-between gap-1.5 pl-1">
+        <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-100/90 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 shrink-0">
+            {strategyShort}
+          </span>
+          <span
+            className={`text-[9px] font-medium px-1.5 py-0.2 rounded shrink-0 ${
+              report.trigger_type === 'manual'
+                ? 'bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300'
+                : 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300'
+            }`}
+          >
+            {triggerLabel}
+          </span>
+          {marketsLabel && (
+            <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500 shrink-0">
+              {marketsLabel}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 tabular-nums">
+            {report.created_at.slice(5, 16)}
+          </span>
+          <Popconfirm
+            title="确认删除该分析报告？"
+            onConfirm={(e) => {
+              e?.stopPropagation();
+              onDelete();
+            }}
+            okText="删除"
+            cancelText="取消"
+          >
+            <button
+              type="button"
+              className="w-6 h-6 rounded-md flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors opacity-70 group-hover:opacity-100"
+              title="删除此研报"
+            >
+              <Trash2 size={12} />
+            </button>
+          </Popconfirm>
+        </div>
+      </div>
+
+      {/* 楼层 2 (底行)：精选标的微徽章横向流 (彻底消灭臃肿长句折行与外卖订单感) */}
+      <div className="flex items-center justify-between gap-2 pl-1 pt-0.5">
+        <div className="flex items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
+          {stockTokens.length > 0 ? (
+            stockTokens.map((name, idx) => (
+              <span
+                key={idx}
+                className="text-[11px] font-bold text-slate-800 dark:text-slate-200 bg-slate-200/50 dark:bg-white/[0.08] px-1.5 py-0.5 rounded-md truncate max-w-[130px]"
+              >
+                {name}
+              </span>
+            ))
+          ) : (
+            <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+              综合量化精选组合
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-slate-400 shrink-0 font-medium font-mono">
+          {report.rec_count || 3}只标的
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────────
+   移动端专属研报期数切换微胶囊 (对标老虎证券 Tiger AI / 富途牛牛)
+   ─────────────────────────────────────────────────────────────────── */
+
+function MobileReportSelectorBar({
+  currentReport,
+  totalReports,
+  onOpenHistoryDrawer,
+}: {
+  currentReport: AiStockPickReport | null;
+  totalReports: number;
+  onOpenHistoryDrawer: () => void;
+}) {
+  const triggerLabel = currentReport
+    ? currentReport.trigger_type === 'pre_market'
+      ? '盘前'
+      : currentReport.trigger_type === 'close'
+      ? '尾盘'
+      : '即时'
+    : '';
+
+  return (
+    <div className="lg:hidden flex items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-white/90 dark:bg-[#18181a]/90 backdrop-blur-xl border border-[var(--hairline-border)] shadow-2xs">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0">当前研报:</span>
+        {currentReport ? (
+          <button
+            type="button"
+            onClick={onOpenHistoryDrawer}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 dark:bg-blue-400/15 border border-blue-500/25 text-blue-600 dark:text-blue-400 text-xs font-bold shadow-2xs active:scale-95 transition-transform truncate cursor-pointer"
+          >
+            <span className="font-mono">{currentReport.created_at.slice(5, 16)}</span>
+            <span className="text-[10px] font-normal opacity-85 shrink-0">({triggerLabel})</span>
+            <ChevronDown size={13} className="text-blue-500 shrink-0" />
+          </button>
+        ) : (
+          <span className="text-xs text-slate-400">暂无历史研报</span>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={onOpenHistoryDrawer}
+        className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-1 shrink-0 px-2 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 transition-colors cursor-pointer"
+      >
+        <Clock size={13} />
+        <span>往期 ({totalReports})</span>
+      </button>
+    </div>
+  );
+}
+
 export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail }: AiStockPickTabProps) {
   const isUserAdmin = isAdmin || currentUser.toLowerCase() === 'admin';
   const prefersReducedMotion = useReducedMotion();
@@ -179,8 +352,13 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
   const [currentReport, setCurrentReport] = useState<AiStockPickReport | null>(null);
   const [recommendations, setRecommendations] = useState<AiStockRecommendation[]>([]);
   const [loadingReportDetail, setLoadingReportDetail] = useState(false);
-  // 移动端分层下钻状态机：'list' 历史列表 | 'detail' 二级研报详情
-  const [mobileView, setMobileView] = useState<'list' | 'detail'>('list');
+
+  // 移动端历史期数回溯抽屉状态
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+
+  // 研报快照级内存缓存与网络竞态锁（防重复加载与乱序覆盖）
+  const reportDetailCacheRef = useRef<Map<number, { report: AiStockPickReport; recommendations: AiStockRecommendation[] }>>(new Map());
+  const fetchSeqRef = useRef<number>(0);
 
   // Analysis job state
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -193,7 +371,7 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
   // 接入 Android 系统物理返回 / 边缘侧滑手势感知
   useModalHistory(adminModalOpen, () => setAdminModalOpen(false), { id: 'ai-admin-modal' });
   useModalHistory(prefModalOpen, () => setPrefModalOpen(false), { id: 'ai-pref-modal' });
-  useModalHistory(mobileView === 'detail', () => setMobileView('list'), { id: 'ai-report-detail' });
+  useModalHistory(historyDrawerOpen, () => setHistoryDrawerOpen(false), { id: 'ai-history-drawer' });
 
   // 1. Load System AI Status
   const loadSystemStatus = useCallback(async () => {
@@ -247,17 +425,36 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
     }
   }, []);
 
-  // 5. Load Report Detail
+  // 5. Load Report Detail (带内存快照缓存与序号锁，防乱序与骨架闪烁)
   const loadReportDetail = useCallback(async (id: number) => {
+    const cached = reportDetailCacheRef.current.get(id);
+    if (cached) {
+      setCurrentReport(cached.report);
+      setRecommendations(cached.recommendations);
+      setLoadingReportDetail(false);
+      return;
+    }
+
+    const currentSeq = ++fetchSeqRef.current;
     setLoadingReportDetail(true);
     try {
       const data = await fetchAiReportDetail(id);
-      setCurrentReport(data.report);
-      setRecommendations(data.recommendations);
+      if (currentSeq === fetchSeqRef.current) {
+        reportDetailCacheRef.current.set(id, {
+          report: data.report,
+          recommendations: data.recommendations,
+        });
+        setCurrentReport(data.report);
+        setRecommendations(data.recommendations);
+      }
     } catch (err: any) {
-      message.error('加载报告详情失败: ' + err.message);
+      if (currentSeq === fetchSeqRef.current) {
+        message.error('加载报告详情失败: ' + err.message);
+      }
     } finally {
-      setLoadingReportDetail(false);
+      if (currentSeq === fetchSeqRef.current) {
+        setLoadingReportDetail(false);
+      }
     }
   }, []);
 
@@ -296,7 +493,7 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
           await loadReports(false);
           if (res.reportId) {
             setSelectedReportId(res.reportId);
-            setMobileView('detail'); // 移动端自动推入研报详情页
+            setHistoryDrawerOpen(false); // 移动端自动聚焦在最新生成的研报
           }
         } else if (res.status === 'failed') {
           clearInterval(timer);
@@ -358,18 +555,25 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
     }
   };
 
-  // 9. Delete report
+  // 9. Delete report (级联安全 Fallback 与缓存清理)
   const handleDeleteReport = async (reportId: number) => {
     try {
       await deleteAiReport(reportId);
       message.success('报告已删除');
+      reportDetailCacheRef.current.delete(reportId);
+
       const nextReports = reports.filter(r => r.id !== reportId);
       setReports(nextReports);
+      setTotalReports(prev => Math.max(0, prev - 1));
+
       if (selectedReportId === reportId) {
-        const nextId = nextReports.length > 0 ? nextReports[0].id : null;
-        setSelectedReportId(nextId);
-        if (!nextId) {
-          setMobileView('list');
+        if (nextReports.length > 0) {
+          setSelectedReportId(nextReports[0].id);
+        } else {
+          setSelectedReportId(null);
+          setCurrentReport(null);
+          setRecommendations([]);
+          setHistoryDrawerOpen(false);
         }
       }
     } catch (err: any) {
@@ -379,8 +583,8 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
   return (
     <div className="flex flex-col gap-5">
-      {/* ── Top Header Card (移动端进入二级研报时收起，释放全部视口给正文) ── */}
-      <section className={`${mobileView === 'detail' ? 'hidden lg:flex' : 'flex'} apple-card p-4 sm:p-5 flex-col md:flex-row items-start md:items-center justify-between gap-4`}>
+      {/* ── Top Header Card (全局常驻，随时配置偏好与触发选股) ── */}
+      <section className="apple-card p-4 sm:p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0 w-full md:w-auto">
           <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center shadow-md shrink-0">
             <Sparkles size={22} className="animate-pulse" />
@@ -508,8 +712,8 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
 
       {/* ── Main Content Grid ── */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
-        {/* Left Column: History Reports List (移动端在 detail 视图时隐藏，list 视图时全宽展现) */}
-        <div className={`${mobileView === 'detail' ? 'hidden lg:flex' : 'flex'} lg:col-span-1 flex-col gap-3`}>
+        {/* Left Column: History Reports List (桌面端常驻分栏，移动端收进底部抽屉) */}
+        <div className="hidden lg:flex lg:col-span-1 flex-col gap-3">
           <div className="flex items-center justify-between px-1">
             <span className="apple-eyebrow flex items-center gap-1.5">
               <Clock size={13} className="text-slate-400" /> 我的分析历史 ({totalReports})
@@ -523,146 +727,34 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
             />
           </div>
 
-          <div className="space-y-2 lg:max-h-[640px] lg:overflow-y-auto pr-1">
+          <div className="space-y-2 lg:max-h-[680px] lg:overflow-y-auto pr-1">
             {reports.length === 0 ? (
               <div className="p-6 text-center text-slate-400 text-xs border border-[var(--hairline-border)] rounded-2xl bg-white/40 dark:bg-white/[0.02]">
                 暂无分析历史，点击上方“立即智能选股”生成首份研报。
               </div>
             ) : (
-              reports.map(report => {
-                const isSelected = selectedReportId === report.id;
-                const triggerLabel =
-                  report.trigger_type === 'pre_market' ? '盘前'
-                    : report.trigger_type === 'close' ? '尾盘' : '手动';
-
-                const stratObj = STRATEGY_OPTIONS.find(s => s.value === report.strategy);
-                const strategyShort = stratObj ? stratObj.label.split(' ')[1] || stratObj.label : '';
-
-                // 核心标的标题：若有推荐股票名称则展示股票名称，否则展示策略与只数
-                const displayTitle = report.stock_names && report.stock_names.trim()
-                  ? report.stock_names
-                  : strategyShort
-                  ? `【${strategyShort}】精选 ${report.rec_count || report.stock_count || 3} 只标的`
-                  : `推荐 ${report.rec_count || report.stock_count || 3} 只精选标的`;
-
-                const marketsLabel = report.markets.map(m => (m === 'us' ? '美股' : m === 'hk' ? '港股' : 'A股')).join('+');
-
-                return (
-                  <div
-                    key={report.id}
-                    onClick={() => {
-                      setSelectedReportId(report.id);
-                      setMobileView('detail'); // 移动端点击直达二级研报页面
-                    }}
-                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col gap-2 relative overflow-hidden ${
-                      isSelected
-                        ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/50 shadow-sm ring-1 ring-blue-500/30'
-                        : 'border-[var(--hairline-border)] bg-white/60 dark:bg-white/[0.02] hover:bg-slate-50 dark:hover:bg-white/5 hover:border-slate-300 dark:hover:border-slate-700'
-                    }`}
-                  >
-                    {/* 选中指示高亮边条 */}
-                    {isSelected && (
-                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 rounded-r" />
-                    )}
-
-                    {/* 卡片顶行：策略标签 + 触发方式 + 市场 + 时间与删除 */}
-                    <div className="flex items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {strategyShort && (
-                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100/80 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
-                            {strategyShort}
-                          </span>
-                        )}
-                        <Tag
-                          color={report.trigger_type === 'manual' ? 'blue' : 'purple'}
-                          className="text-[9px] rounded px-1.5 py-0 m-0 font-medium"
-                        >
-                          {triggerLabel}
-                        </Tag>
-                        {marketsLabel && (
-                          <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.2 rounded">
-                            {marketsLabel}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1 shrink-0">
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {report.created_at.slice(5, 16)}
-                        </span>
-                        <Popconfirm
-                          title="确认删除该分析报告？"
-                          onConfirm={(e) => {
-                            e?.stopPropagation();
-                            handleDeleteReport(report.id);
-                          }}
-                          onPopupClick={(e) => e.stopPropagation()}
-                        >
-                          <Button
-                            type="text"
-                            size="small"
-                            onClick={(e) => e.stopPropagation()}
-                            icon={<Trash2 size={11} className="text-slate-300 hover:text-red-500 transition-colors" />}
-                            className="p-0.5 h-auto"
-                          />
-                        </Popconfirm>
-                      </div>
-                    </div>
-
-                    {/* 卡片主标题：核心推荐标的名称（彻底解决标题无法区分痛点！） */}
-                    <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-snug line-clamp-1">
-                      {displayTitle}
-                    </div>
-
-                    {/* 卡片副信息：标的数量提示与下钻指示 */}
-                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800/60">
-                      <span>甄选 {report.rec_count || report.stock_count || 3} 只标的</span>
-                      <span className="text-blue-600 dark:text-blue-400 font-semibold text-[11px] flex items-center gap-0.5">
-                        查看研报 <ArrowUpRight size={12} />
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
+              reports.map(report => (
+                <CompactReportItem
+                  key={report.id}
+                  report={report}
+                  isSelected={selectedReportId === report.id}
+                  onSelect={() => setSelectedReportId(report.id)}
+                  onDelete={() => handleDeleteReport(report.id)}
+                />
+              ))
             )}
           </div>
         </div>
 
-        {/* Right Column: Recommendations Stream (移动端在 list 视图时隐藏，detail 视图时独占全宽展开) */}
-        <div className={`${mobileView === 'list' ? 'hidden lg:flex' : 'flex'} lg:col-span-3 flex-col gap-4`}>
-          {/* 移动端专属：二级页面吸顶返回导航条 (Level-2 Sticky Top Bar) */}
-          <div className="lg:hidden flex items-center justify-between p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-xl border border-[var(--hairline-border)] shadow-xs sticky top-2 z-20">
-            <Button
-              type="text"
-              size="small"
-              icon={<ArrowLeft size={16} className="text-blue-600 dark:text-blue-400" />}
-              onClick={() => setMobileView('list')}
-              className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1 px-2 h-8 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5"
-            >
-              返回分析历史
-            </Button>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] sm:text-[11px] font-mono text-slate-400">
-                {currentReport ? currentReport.created_at.slice(5, 16) : ''}
-              </span>
-              {currentReport && (
-                <Popconfirm
-                  title="确认删除该报告？"
-                  onConfirm={() => {
-                    handleDeleteReport(currentReport.id);
-                    setMobileView('list');
-                  }}
-                >
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<Trash2 size={13} className="text-slate-400 hover:text-red-500" />}
-                    className="p-1 h-8 w-8 flex items-center justify-center rounded-xl"
-                  />
-                </Popconfirm>
-              )}
-            </div>
-          </div>
+        {/* Right Column: Recommendations Stream (移动端全宽直显，桌面端占 3 列) */}
+        <div className="flex lg:col-span-3 flex-col gap-4 w-full min-w-0">
+          {/* 移动端专属：当前研报期数微胶囊 (点击底部滑出往期回溯抽屉) */}
+          <MobileReportSelectorBar
+            currentReport={currentReport}
+            totalReports={totalReports}
+            onOpenHistoryDrawer={() => setHistoryDrawerOpen(true)}
+          />
+
           <AnimatePresence mode="wait">
             {loadingReportDetail ? (
               <motion.div
@@ -686,10 +778,7 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                 <Empty description="暂未选择或生成分析报告" />
                 <Button
                   type="primary"
-                  onClick={() => {
-                    setMobileView('list');
-                    handleStartAnalysis();
-                  }}
+                  onClick={handleStartAnalysis}
                   className="rounded-full text-xs font-semibold mt-2"
                 >
                   立即生成精选股票报告
@@ -715,6 +804,20 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
                     </div>
                     <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
                       <span>生成时间: {currentReport.created_at}</span>
+                      <Popconfirm
+                        title="确认删除该分析报告？"
+                        onConfirm={() => handleDeleteReport(currentReport.id)}
+                        okText="删除"
+                        cancelText="取消"
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<Trash2 size={13} className="text-slate-400 hover:text-red-500 transition-colors" />}
+                          className="p-1 h-7 w-7 flex items-center justify-center rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                          title="删除当前报告"
+                        />
+                      </Popconfirm>
                     </div>
                   </div>
 
@@ -954,6 +1057,54 @@ export function AiStockPickTab({ isAdmin = false, currentUser = '', onOpenDetail
           }}
         />
       )}
+
+      {/* ── 3. 移动端专属：历史研报期数回溯底部抽屉 (Bottom Sheet) ── */}
+      <Drawer
+        title={
+          <div className="flex items-center justify-between pr-2">
+            <div className="flex items-center gap-2">
+              <Clock size={16} className="text-blue-500" />
+              <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                历史研报期数回溯
+              </span>
+            </div>
+            <span className="text-xs text-slate-400 font-mono">共 {totalReports} 期</span>
+          </div>
+        }
+        placement="bottom"
+        open={historyDrawerOpen}
+        onClose={() => setHistoryDrawerOpen(false)}
+        height="72vh"
+        className="rounded-t-[28px] overflow-hidden shadow-2xl"
+        styles={{
+          body: {
+            padding: '14px 16px',
+            paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
+            backgroundColor: 'var(--canvas-bg, #f5f5f7)',
+          },
+        }}
+      >
+        <div className="space-y-2.5 pb-safe">
+          {reports.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 text-xs">
+              暂无分析历史，点击主屏“立即智能选股”生成首份研报。
+            </div>
+          ) : (
+            reports.map(report => (
+              <CompactReportItem
+                key={report.id}
+                report={report}
+                isSelected={selectedReportId === report.id}
+                onSelect={() => {
+                  setSelectedReportId(report.id);
+                  setHistoryDrawerOpen(false);
+                }}
+                onDelete={() => handleDeleteReport(report.id)}
+              />
+            ))
+          )}
+        </div>
+      </Drawer>
     </div>
   );
 }

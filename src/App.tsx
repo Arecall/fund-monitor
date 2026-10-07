@@ -2402,7 +2402,7 @@ function App() {
      ─────────────────────────────────────────────────────────────────── */
 
   return (
-    <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 pb-18 md:pb-0">
+    <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 pb-mobile-nav md:pb-0">
 
       {/* Toast — spring slide-in top-center (z-50 高于 Modal 与 Navbar，阴影与深度对比增强) */}
       <AnimatePresence>
@@ -3339,17 +3339,27 @@ function App() {
                       />
                     </div>
                   ) : (
-                    /* 底部已加载全部与金融数据合规提示条 (对标蚂蚁财富/雪球/富途牛牛) */
-                    <div className="py-6 sm:py-8 px-4 flex flex-col items-center justify-center gap-1.5 text-center select-none border-t border-[var(--hairline-border)] bg-slate-50/20 dark:bg-white/[0.01]">
-                      <div className="flex items-center gap-2.5 text-slate-400 dark:text-slate-500 text-[11px]">
-                        <span className="w-8 sm:w-12 h-px bg-slate-200 dark:bg-white/10" />
-                        <span className="font-medium tracking-wide">
-                          已加载全部 {visibleList.length} 只自选{selfTab === 'stock' ? '股票' : '基金'}
-                        </span>
-                        <span className="w-8 sm:w-12 h-px bg-slate-200 dark:bg-white/10" />
+                    /* 底部已加载全部与金融数据合规提示条 (对标富途牛牛/老虎证券/蚂蚁财富) */
+                    <div className="pt-6 sm:pt-8 pb-5 sm:pb-6 px-4 flex flex-col items-center justify-center gap-2.5 text-center select-none border-t border-[var(--hairline-border)] bg-gradient-to-b from-transparent via-slate-50/30 to-slate-100/20 dark:via-white/[0.005] dark:to-white/[0.01]">
+                      {/* 导轨线与已加载状态微胶囊 */}
+                      <div className="flex items-center justify-center w-full max-w-sm gap-2.5 sm:gap-3">
+                        {/* 左侧向内渐显发丝微导轨 */}
+                        <span className="flex-1 h-px bg-gradient-to-r from-transparent via-slate-300/60 dark:via-white/10 to-slate-300 dark:to-white/20" />
+
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100/90 dark:bg-white/[0.05] border border-slate-200/70 dark:border-white/[0.08] text-slate-500 dark:text-slate-400 text-[11px] font-medium tracking-wide shadow-2xs">
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600 inline-block" />
+                          <span>
+                            已加载全部 <span className="font-mono font-semibold tabular-nums text-slate-700 dark:text-slate-200">{visibleList.length}</span> 只自选{selfTab === 'stock' ? '股票' : '基金'}
+                          </span>
+                        </div>
+
+                        {/* 右侧向外渐隐发丝微导轨 */}
+                        <span className="flex-1 h-px bg-gradient-to-l from-transparent via-slate-300/60 dark:via-white/10 to-slate-300 dark:to-white/20" />
                       </div>
-                      <p className="text-[10px] text-slate-400/80 dark:text-slate-500/80 font-mono">
-                        实时行情与估值数据仅供参考 · 实际净值以基金公司/交易所官方披露为准
+
+                      {/* 金融合规与官方清算披露声明 */}
+                      <p className="text-[11px] text-slate-400 dark:text-slate-500 max-w-md leading-relaxed tracking-tight px-2">
+                        实时行情与估值数据仅供参考 · 实际净值以基金公司与交易所官方披露为准
                       </p>
                     </div>
                   )}

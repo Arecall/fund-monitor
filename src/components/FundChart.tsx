@@ -550,6 +550,15 @@ export function FundChart(props: FundChartProps) {
     return '历史收盘走势';
   }, [range, fundMarket]);
 
+  // 标的计价货币与金融报价精度自适应
+  const currencyPrefix = useMemo(() => {
+    if (fundMarket === 'us') return '$';
+    if (fundMarket === 'hk') return 'HK$';
+    return '¥';
+  }, [fundMarket]);
+
+  const displayDecimals = (kind === 'stock' || range !== 'intraday') ? 2 : 4;
+
   // ─── 锚点动态跟手与大厂级防遮挡探针定位 (Anchor-Following Anti-Occlusion Tooltip) ───
   // 1. 悬浮窗水平方向紧跟定位锚点 (hoverX) 实时移动，依据中轴线动态在锚点左右侧切换；
   // 2. 绝对防遮挡机制：
@@ -572,19 +581,19 @@ export function FundChart(props: FundChartProps) {
     <div className="w-full" ref={containerRef}>
       {/* 顶部双层一体化控制甲板：仅在非全屏内嵌时渲染；全屏模式下由顶层主模态统一接管 */}
       {!isFullscreenView && (
-        <div className="flex flex-col gap-2 mb-2.5 px-0.5">
-          {/* Deck 1: 两端严格单行对齐，绝不残缺折行 */}
+        <div className="flex flex-col gap-2 mb-2 px-0.5">
+          {/* Deck 1: 两端严格单行对齐，右侧动作组定宽，彻底杜绝移动端溢出截断 */}
           <div className="flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
             {/* 左侧：标题 + 数据源徽章 */}
-            <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0 shrink-0">
-              <span className="shrink-0">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
+            <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 min-w-0">
+              <span className="truncate">{range === 'intraday' ? '分时走势' : '历史走势'}</span>
               <DataSourceBadge source={series.source} onInfo={() => setShowDataNote(v => !v)} />
 
-              {/* 盘前专属倒计时微标 */}
+              {/* 盘前专属倒计时微标 (大屏保留，移动端已有中心遮罩与上方卡片，不在此处过度挤占空间) */}
               {isPreMarketState && (
                 <span
                   title={series.note}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-xs"
+                  className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/50 whitespace-nowrap shrink-0 shadow-xs"
                 >
                   <Clock size={9} className="text-blue-500 animate-pulse" />
                   <OpenCountdown market={fundMarket} showTargetTime={true} />
@@ -592,14 +601,14 @@ export function FundChart(props: FundChartProps) {
               )}
             </div>
 
-            {/* 右侧：交易时钟与日期合一微胶囊 + 刷新按钮 + 全屏查看按钮 */}
+            {/* 右侧：交易时钟状态微胶囊 + 刷新按钮 + 全屏查看按钮 (紧凑定宽排布) */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               {isDev && (
                 <PressableButton
                   onClick={() => setMockSecLeft(60)}
                   disabled={mockSecLeft !== null}
                   title="模拟测试盘前 1 分钟倒计时清零开盘动画（开发环境专属）"
-                  className="text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
+                  className="hidden sm:inline-flex text-[10px] font-bold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/70 dark:border-blue-800/50 px-2 py-0.5 rounded-full items-center gap-1 whitespace-nowrap hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-50 shrink-0"
                 >
                   <Clock size={10} className={mockSecLeft !== null ? 'animate-spin' : ''} />
                   {mockSecLeft !== null ? `${mockSecLeft}s` : '🧪 模拟'}
@@ -614,17 +623,19 @@ export function FundChart(props: FundChartProps) {
                       ? 'bg-blue-500'
                       : isCurrentlyOpen
                       ? 'bg-emerald-500'
+                      : isPreMarketState
+                      ? 'bg-amber-500'
                       : 'bg-slate-400'
                   }`}
-                  animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
+                  animate={prefersReducedMotion || (!refreshing && !isCurrentlyOpen && !isPreMarketState) ? { opacity: 1 } : { opacity: [0.3, 1, 0.3] }}
                   transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
                 />
-                <span className="font-mono tabular-nums">
+                <span className="font-mono tabular-nums text-[9px] sm:text-[10px]">
                   {(() => {
                     const timeStr = formatTick(lastPointTime, range);
                     if (refreshing) return '更新中…';
                     if (isCurrentlyOpen) return `盘中 · ${timeStr}`;
-                    if (isPreMarketState) return marketStatus.label;
+                    if (isPreMarketState) return fundMarket === 'us' ? '美股盘前' : '盘前等待';
                     if (dataDateBadge) {
                       if (dataDateBadge.sameDay) {
                         return `已休市 · ${dataDateBadge.dataStr} ${timeStr}`;
@@ -636,28 +647,28 @@ export function FundChart(props: FundChartProps) {
                 </span>
               </span>
 
-              {/* 刷新按钮：固定 24px × 24px (w-6 h-6)，杜绝溢出 */}
+              {/* 刷新按钮：带 40px 隐形扩热区的大厂工效标准 */}
               <PressableButton
                 onClick={() => onRefresh?.()}
                 disabled={refreshing}
                 title="手动刷新行情"
-                className="w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50 shrink-0 cursor-pointer"
+                className="relative w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all disabled:opacity-50 shrink-0 cursor-pointer before:absolute before:-inset-2 before:content-['']"
               >
                 <RefreshCw size={11} className={refreshing ? 'animate-spin text-blue-500' : ''} />
               </PressableButton>
 
-              {/* 一键全屏大图查看按钮 */}
+              {/* 一键全屏大图查看按钮：带 40px 隐形扩热区 */}
               <PressableButton
                 onClick={handleEnterFullscreen}
                 title="全屏查看大图"
-                className="w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all shrink-0 cursor-pointer"
+                className="relative w-6 h-6 flex items-center justify-center p-0 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all shrink-0 cursor-pointer before:absolute before:-inset-2 before:content-['']"
               >
                 <Maximize2 size={11} />
               </PressableButton>
             </div>
           </div>
 
-          {/* Deck 2: 维度切换胶囊栏 */}
+          {/* Deck 2: 维度切换胶囊栏 + 金融精确微副标 */}
           <div className="flex items-center justify-between gap-1.5 min-w-0">
             <div className="relative inline-flex bg-slate-100 dark:bg-white/5 rounded-xl p-0.5 shrink-0">
               {RANGES.map(r => {
@@ -686,11 +697,11 @@ export function FundChart(props: FundChartProps) {
               })}
             </div>
 
-            {/* 右侧微副标：展示当前定位点/最新价格与涨跌幅 */}
+            {/* 右侧微副标：展示当前定位点/最新价格与涨跌幅 (自适应货币符号与资产精度) */}
             {lastPoint && (
               <div className="flex items-baseline gap-1 sm:gap-1.5 font-mono text-xs shrink-0 pl-1">
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-xs sm:text-sm tabular-nums whitespace-nowrap">
-                  ¥{(hoverPoint ? hoverPoint.v : lastPoint.v).toFixed(range === 'intraday' ? 4 : 2)}
+                  {currencyPrefix}{(hoverPoint ? hoverPoint.v : lastPoint.v).toFixed(displayDecimals)}
                 </span>
                 <span
                   className="font-semibold text-[10px] sm:text-[11px] tabular-nums whitespace-nowrap"

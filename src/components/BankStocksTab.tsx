@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
@@ -35,6 +35,7 @@ import {
   X,
   List,
   LayoutGrid,
+  Coins,
 } from 'lucide-react';
 import {
   fetchBankStocksOverview,
@@ -463,10 +464,7 @@ interface BankStockCompactRowProps {
 function BankStockCompactRow({
   stock,
   sortBy,
-  isAdded: _isAdded,
   onOpenDrawer,
-  onOpenDetail: _onOpenDetail,
-  onAddToWatchlist: _onAddToWatchlist,
 }: BankStockCompactRowProps) {
   const isUp = stock.changePct > 0;
   const isDown = stock.changePct < 0;
@@ -484,66 +482,78 @@ function BankStockCompactRow({
   return (
     <div
       onClick={() => onOpenDrawer(stock)}
-      className="flex items-center justify-between px-3.5 py-2.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors cursor-pointer select-none active:bg-slate-100/70"
+      className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-2.5 px-3.5 py-2.5 h-[54px] hover:bg-slate-50/80 dark:hover:bg-slate-800/60 active:bg-slate-100/70 dark:active:bg-slate-800 transition-colors cursor-pointer select-none"
     >
-      {/* 标的名称与代码市场 (左侧 42% 宽度) */}
-      <div className="flex flex-col min-w-0 flex-1 pr-2">
+      {/* 1. 标的识别主轴 (左列：自适应宽度，严禁换行) */}
+      <div className="min-w-0 pr-1 flex flex-col justify-center">
+        {/* 标的名称 + 极简市场微胶囊 */}
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="font-semibold text-sm text-slate-900 dark:text-slate-100 truncate tracking-tight">
+          <span className="font-semibold text-[13.5px] text-slate-900 dark:text-slate-100 truncate tracking-tight">
             {stock.name}
           </span>
-          <Tag
-            color={isT0 ? 'gold' : isHk ? 'magenta' : 'blue'}
-            className="text-[9px] rounded-md m-0 px-1 py-0 leading-tight shrink-0 font-sans"
+          <span
+            className={`text-[9px] font-sans font-medium px-1 py-0.2 rounded shrink-0 leading-tight ${
+              isT0
+                ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200/60 dark:border-amber-800/60'
+                : isHk
+                ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200/60 dark:border-purple-800/60'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+            }`}
           >
             {stock.tierName.slice(0, 3)}
-          </Tag>
+          </span>
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-mono">
-          <span>{stock.code}</span>
+
+        {/* 标的代码 + 市场税制 (彻底砍掉冗长长句，确保 100% 单行不折断) */}
+        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-mono whitespace-nowrap overflow-hidden">
+          <span className="tabular-nums">{stock.code}</span>
           <span className="text-slate-300 dark:text-slate-600">·</span>
-          <span>{isHk ? '20%税' : '免税'}</span>
-          {stock.dividendFrequency && (
-            <>
-              <span className="text-slate-300 dark:text-slate-600">·</span>
-              <span className="text-emerald-600 dark:text-emerald-400 font-medium">{stock.dividendFrequency}</span>
-            </>
-          )}
+          <span className="text-slate-500 dark:text-slate-400 font-sans">
+            {isHk ? '港股' : stock.market === 'domestic' ? 'A股' : '场内'}
+          </span>
+          <span className="text-slate-300 dark:text-slate-600">·</span>
+          <span className={isHk ? 'text-rose-500 dark:text-rose-400 text-[10px] font-sans font-medium' : 'text-slate-500 dark:text-slate-400 text-[10px] font-sans'}>
+            {isHk ? '20%税' : '免税'}
+          </span>
         </div>
       </div>
 
-      {/* 红利与估值核心指标 (中间 30% 宽度，根据当前排序动态高亮) */}
-      <div className="flex flex-col items-end pr-3 shrink-0 min-w-[85px]">
+      {/* 2. 估值核心锚点轴 (中列：固定宽度，右对齐，纯净数字) */}
+      <div className="flex flex-col items-end shrink-0 min-w-[78px] text-right justify-center">
         <div className="flex items-baseline gap-1 font-mono">
           <span className="text-[10px] text-slate-400 font-normal">股息</span>
-          <span className={`text-sm font-bold tabular-nums ${
-            sortBy.toLowerCase().includes('dividend') ? 'text-emerald-600 dark:text-emerald-400 font-extrabold' : 'text-slate-800 dark:text-slate-200'
-          }`}>
+          <span
+            className={`text-[13.5px] font-bold tabular-nums ${
+              sortBy.toLowerCase().includes('dividend')
+                ? 'text-emerald-600 dark:text-emerald-400 font-extrabold'
+                : 'text-slate-800 dark:text-slate-200'
+            }`}
+          >
             {isHk ? stock.afterTaxDividendYield.toFixed(2) : stock.dividendYield.toFixed(2)}%
           </span>
         </div>
         <div className="text-[11px] font-mono text-slate-400 tabular-nums mt-0.5">
           {isT0 ? (
-            <span className="text-amber-600 dark:text-amber-400 font-medium">T+0活钱</span>
+            <span className="text-amber-600 dark:text-amber-400 font-medium font-sans">T+0活钱</span>
           ) : stock.pb ? (
             <span className={stock.pb < 1.0 ? 'text-blue-600 dark:text-blue-400 font-medium' : ''}>
-              PB {stock.pb}倍
+              PB {stock.pb.toFixed(2)}
             </span>
           ) : (
-            `稳健度 ${stock.stabilityScore}`
+            `稳健 ${stock.stabilityScore}`
           )}
         </div>
       </div>
 
-      {/* 现价与今日涨跌药丸 (右侧 28% 宽度) */}
-      <div className="flex flex-col items-end shrink-0 min-w-[72px]">
-        <span className="font-mono font-bold text-sm text-slate-900 dark:text-slate-100 tabular-nums">
+      {/* 3. 交易价格与涨跌药丸 (右列：固定宽度，大厂标准操作胶囊) */}
+      <div className="flex flex-col items-end shrink-0 min-w-[66px] text-right justify-center">
+        <span className="font-mono font-bold text-[13.5px] text-slate-900 dark:text-slate-100 tabular-nums">
           {stock.price > 0 ? (
             `${isHk ? 'HK$' : '¥'}${stock.price.toFixed(isLowPrice ? 3 : 2)}`
           ) : '--'}
         </span>
         <div
-          className={`w-[68px] h-[22px] mt-0.5 rounded-lg font-mono font-bold text-[11px] flex items-center justify-center tabular-nums shadow-2xs ${changeBg}`}
+          className={`w-[64px] h-[22px] mt-0.5 rounded-lg font-mono font-bold text-[11px] flex items-center justify-center tabular-nums shadow-2xs ${changeBg}`}
         >
           {isUp ? '+' : ''}{stock.changePct.toFixed(2)}%
         </div>
@@ -603,6 +613,9 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   // 机制辨析抽屉状态（替代侵占首屏的大横幅，渐进式披露）
   const [rulesDrawerOpen, setRulesDrawerOpen] = useState(false);
   const [addedMap, setAddedMap] = useState<Record<string, boolean>>({});
+  const [newsRefreshing, setNewsRefreshing] = useState(false);
+  const [newsLastUpdated, setNewsLastUpdated] = useState<string>('');
+  const stockListRef = useRef<HTMLDivElement | null>(null);
 
   // AI 诊断弹窗状态
   const [diagnoseModalOpen, setDiagnoseModalOpen] = useState(false);
@@ -656,6 +669,9 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
       }
       if (newsRes.status === 'fulfilled' && newsRes.value.success) {
         setNews(newsRes.value.data);
+        if (newsRes.value.lastUpdated) {
+          setNewsLastUpdated(newsRes.value.lastUpdated);
+        }
       }
     } catch (err: any) {
       message.error('加载银行红利数据失败: ' + (err.message || '未知错误'));
@@ -664,6 +680,25 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
       setRefreshing(false);
     }
   }, [sortBy, sortOrder]);
+
+  const handleRefreshNews = useCallback(async () => {
+    if (newsRefreshing) return;
+    setNewsRefreshing(true);
+    try {
+      const res = await fetchBankMacroNews(true);
+      if (res.success && Array.isArray(res.data)) {
+        setNews(res.data);
+        if (res.lastUpdated) {
+          setNewsLastUpdated(res.lastUpdated);
+        }
+        message.success('已同步最新银行业宏观资讯！');
+      }
+    } catch (err: any) {
+      message.error('刷新资讯失败: ' + (err.message || '网络错误'));
+    } finally {
+      setNewsRefreshing(false);
+    }
+  }, [newsRefreshing]);
 
   useEffect(() => {
     loadData();
@@ -744,7 +779,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   }, [stocks, selectedTier, searchText]);
 
   return (
-    <div className="space-y-4 pb-16 max-w-7xl mx-auto px-2 sm:px-4">
+    <div className="space-y-4 max-w-7xl mx-auto px-2 sm:px-4">
       {/* 1. 顶部 Header 与操作微岛 */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-5 shadow-2xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -982,8 +1017,9 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
         </div>
       )}
 
-      {/* 5. 标的资产矩阵列表 */}
-      {loading ? (
+      {/* 5. 标的资产矩阵列表 (支持由事及券平滑锚定) */}
+      <div ref={stockListRef}>
+        {loading ? (
         <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
           <Spin size="large" />
           <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">正在拉取全市场银行实时报价与精算财报指标...</p>
@@ -1410,39 +1446,120 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
           })}
         </div>
       )}
+      </div>
 
-      {/* 6. 宏观政策与银行行业观察 */}
+      {/* 6. 宏观政策与银行行业观察 (移动端横向物理吸附手势流 🆚 桌面端双列网格，支持动态时钟同步) */}
       {news.length > 0 && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-          <div className="flex items-center gap-2">
-            <FileText className="w-5 h-5 text-indigo-500" />
-            <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-              银行业宏观资讯与政策动向（客观研判）
-            </h2>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3.5 sm:space-y-4 overflow-hidden">
+          {/* 模块头部：标题 + 移动端横滑手势引导 + 动态更新状态与刷新按钮 */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-500 shrink-0" />
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white truncate">
+                银行业宏观资讯与政策动向（客观研判）
+              </h2>
+            </div>
+            {/* 状态、数量与刷新微岛 */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {newsLastUpdated && (
+                <span className="hidden sm:inline text-[10px] text-slate-400 font-mono">
+                  更新于 {newsLastUpdated}
+                </span>
+              )}
+              <span className="sm:hidden text-[10px] text-slate-400 font-mono">
+                左右滑动
+              </span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60">
+                {news.length} 篇
+              </span>
+              <button
+                type="button"
+                onClick={handleRefreshNews}
+                disabled={newsRefreshing}
+                className="p-1 rounded-full text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer disabled:opacity-40"
+                title="手动同步银行业最新动态资讯"
+                aria-label="手动同步银行业最新动态资讯"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${newsRefreshing ? 'animate-spin text-indigo-600' : ''}`} />
+              </button>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {/*
+            内容容器架构：
+            - 移动端 (<768px): flex + overflow-x-auto + snap-x + 穿透边距 (-mx-4 px-4)，单卡宽 84vw 并露出下一张 16% 边缘
+            - 桌面端 (>=768px): 自动还原为 md:grid md:grid-cols-2 md:gap-3.5 经典双列等高网格
+          */}
+          <div className="flex md:grid md:grid-cols-2 gap-3 md:gap-3.5 overflow-x-auto md:overflow-x-visible snap-x snap-mandatory no-scrollbar overscroll-x-contain touch-pan-x -mx-4 px-4 md:mx-0 md:px-0 pb-1.5 md:pb-0">
             {news.map(n => (
               <div
-                key={n.id}
-                className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/80 dark:border-slate-800"
+                key={n.id || n.title}
+                className="shrink-0 w-[84vw] max-w-[328px] md:w-auto md:max-w-none snap-center flex flex-col justify-between bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3.5 border border-slate-200/80 dark:border-slate-800 transition-colors"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <Tag color="blue" className="text-[11px] rounded m-0">
-                    {n.category}
-                  </Tag>
-                  <span className="text-[11px] text-slate-400">{n.time}</span>
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Tag color="blue" className="text-[11px] rounded m-0 font-medium">
+                        {n.category}
+                      </Tag>
+                      {n.is_seed ? (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded font-medium bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/40 shrink-0">
+                          核心基石
+                        </span>
+                      ) : (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded font-medium bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/40 shrink-0">
+                          动态最新
+                        </span>
+                      )}
+                      {n.source && (
+                        <span className="text-[10px] text-slate-400 truncate hidden sm:inline">
+                          · {n.source}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-slate-400 font-mono shrink-0">{n.time}</span>
+                  </div>
+                  <h3 className="mt-2 text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-200 leading-snug line-clamp-2">
+                    {n.title}
+                  </h3>
+                  <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-3 md:line-clamp-none">
+                    {n.summary}
+                  </p>
                 </div>
-                <h3 className="mt-2 text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-200 leading-snug">
-                  {n.title}
-                </h3>
-                <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                  {n.summary}
-                </p>
-                <div className="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-emerald-500 shrink-0" />
-                  <span className="font-semibold">客观影响:</span>
-                  <span>{n.impact}</span>
+
+                {/* 客观影响高亮条微岛 + 由事及券联动直达按钮 */}
+                <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 space-y-1.5">
+                  <div className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 flex items-start gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="font-semibold mr-1">客观影响:</span>
+                      <span className="line-clamp-2 md:line-clamp-none">{n.impact}</span>
+                    </div>
+                  </div>
+
+                  {n.relatedTier && (
+                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800">
+                      <span className="text-[10px] text-slate-400 truncate max-w-[170px]" title={n.beneficiaryDesc}>
+                        {n.beneficiaryDesc || '宏观驱动受益理财'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (n.relatedTier) {
+                            setSelectedTier(n.relatedTier);
+                            message.info(`已为您联动筛选【${n.relatedTierName || '相关理财'}】`);
+                            stockListRef.current?.scrollIntoView({ behavior: 'smooth' });
+                          }
+                        }}
+                        className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900 border border-indigo-200/60 dark:border-indigo-800 transition-colors flex items-center gap-0.5 cursor-pointer shrink-0 ml-1"
+                        title={`直达 ${n.relatedTierName || '相关理财'}`}
+                      >
+                        <span>{n.suggestedAction || n.relatedTierName || '直达相关标的'}</span>
+                        <ArrowUpRight className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -1777,6 +1894,51 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
               <span className="font-bold text-slate-900 dark:text-white mr-1">💡 研选逻辑：</span>
               {drawerStock.advantage || '长期稳健分红，具备较厚估值安全边际。'}
             </div>
+
+            {/* 分红安排与税制结构透视卡片 (长文本沉淀至抽屉，释放列表行呼吸感) */}
+            {(drawerStock.dividendFrequency || drawerStock.reportPeriod) && (
+              <div className="p-3 rounded-2xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40 text-xs flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-emerald-950 dark:text-emerald-200 min-w-0">
+                  <Coins className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span className="font-semibold shrink-0">分红安排：</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-300 truncate">
+                    {drawerStock.dividendFrequency || '年度稳定现金分红'}
+                  </span>
+                </div>
+                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono shrink-0 ml-2">
+                  {drawerStock.tier === 'hk' ? '港股通20%税' : '持股>1年免税'}
+                </span>
+              </div>
+            )}
+
+            {/* 宏观政策驱动主线关联卡片 (由券溯源，打通理财标的与动态资讯) */}
+            {(() => {
+              const matchedNews = news.find(n =>
+                n.relatedTier === drawerStock.tier ||
+                (n.relatedCodes && n.relatedCodes.includes(drawerStock.code))
+              );
+              if (!matchedNews) return null;
+              return (
+                <div className="p-3.5 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      <span>当前宏观政策驱动主线</span>
+                    </span>
+                    <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-mono">
+                      {matchedNews.category}
+                    </span>
+                  </div>
+                  <p className="font-semibold text-slate-800 dark:text-slate-200 leading-snug">
+                    {matchedNews.title}
+                  </p>
+                  <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium flex items-start gap-1 pt-1 border-t border-indigo-100/60 dark:border-indigo-900/30">
+                    <span className="shrink-0 font-bold">🚀 传导效应:</span>
+                    <span className="leading-relaxed">{matchedNews.impact}</span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* 题材与标签 */}
             {drawerStock.tags && drawerStock.tags.length > 0 && (

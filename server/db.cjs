@@ -452,6 +452,74 @@ function initTables() {
       WHERE current IS NULL OR current <= 0
     `);
 
+    // 10. 银行与宏观资讯动态表（含哈希指纹去重与滚动淘汰）
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bank_news (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hash TEXT UNIQUE NOT NULL,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        publish_time TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        impact TEXT NOT NULL,
+        source TEXT,
+        is_seed INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_news_hash ON bank_news (hash)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bank_news_time ON bank_news (publish_time DESC)`);
+
+    // 预填核心四大宏观研选基石条目 (确保离线或冷启动时绝对具备高品质金融底仓参考)
+    const SEED_NEWS = [
+      {
+        hash: 'seed-pboc-liquidity',
+        title: '央行持续优化流动性结构，支持长钱长投增配高股息权益资产',
+        category: '政策宏观',
+        publish_time: '宏观政策导向',
+        summary: '中央金融工作会议及监管政策明确支持险资、社保、养老金提高权益投资上限，高股息、低估值、稳健现金流的国有大行成为中长期配置压舱石。',
+        impact: '夯实高股息大行与红利 ETF 估值中枢。',
+        source: '政策导向',
+        is_seed: 1
+      },
+      {
+        hash: 'seed-nim-bottoming',
+        title: '商业银行净息差企稳筑底，负债端定期存款挂牌利率多轮调降对冲资产端压力',
+        category: '息差与盈利',
+        publish_time: '2024 中报跟踪',
+        summary: '随着各大行持续下调存款挂牌利率，负债成本改善为应对存量房贷与对公收益下行提供有效缓冲，净息差（NIM）收窄速度已明显边际放缓。',
+        impact: '银行业盈利韧性提升，保障现金分红持续性。',
+        source: '行业分析',
+        is_seed: 1
+      },
+      {
+        hash: 'seed-debt-resolution',
+        title: '一揽子化债方案深入推进，金融机构资产质量安全边际充实',
+        category: '风控信贷',
+        publish_time: '信贷资产质量',
+        summary: '地方政府特殊再融资债券发行置换隐性债务，有效缓释大行与长三角/成渝城商行的地方信贷风险暴露；主要上市银行不良贷款率均控制在 1.35% 以内，拨备覆盖率整体充裕。',
+        impact: '消除银行股资产端“坏账黑天鹅”过度悲观预期。',
+        source: '信贷质量',
+        is_seed: 1
+      },
+      {
+        hash: 'seed-t0-liquidity',
+        title: '场内货币 ETF 满足资金日内极速周转，注意银证转账提现时间窗口',
+        category: '流动性工具',
+        publish_time: '流动性常识',
+        summary: '银华日利（511880）、华宝添益（511990）等支持 T+0 回转交易，卖出后资金在证券账户实时可用；但转出至银行卡受银行清算时段约束，非交易日与夜间无法转出。',
+        impact: '提示投资者合理规划周末与夜间备用流动性。',
+        source: '交易机制',
+        is_seed: 1
+      }
+    ];
+    for (const seed of SEED_NEWS) {
+      db.run(`
+        INSERT OR IGNORE INTO bank_news (hash, title, category, publish_time, summary, impact, source, is_seed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [seed.hash, seed.title, seed.category, seed.publish_time, seed.summary, seed.impact, seed.source, seed.is_seed]);
+    }
+
     console.log('数据库表结构初始化/验证完成');
   });
 }

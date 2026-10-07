@@ -126,7 +126,7 @@ app.use(userIsolationMiddleware);
 // 0. 健康检查接口 (Health Route)
 // ==========================================
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.6.008' });
+  res.json({ status: 'ok', version: '1.6.100' });
 });
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -766,6 +766,45 @@ const holdingsPrefetch = createHoldingsPrefetch({ dbHelper, marketHelper, market
 setInterval(() => holdingsPrefetch.refreshIfDue(), 60 * 1000).unref?.();
 setTimeout(() => holdingsPrefetch.refreshIfDue(), 10_000);
 console.log('[holdings-prefetch] 盘前持仓构成刷新已启动（纽约时间 08:45）');
+
+// ==========================================
+// 银行宏观资讯时钟调度器 (Macro News Financial Clock Scheduler)
+// 依据金融时钟：盘前 09:00、盘中 30分钟、盘后 17:00-21:30 30分钟、夜间休眠、周末低频
+// ==========================================
+function scheduleBankNewsCheck() {
+  try {
+    const beijingParts = marketTime.getTimeZoneParts(new Date(), marketTime.BEIJING_TIME_ZONE);
+    const hour = Number(beijingParts.hour);
+    const minute = Number(beijingParts.minute);
+    const isTrading = marketTime.isMarketTradingDay('domestic', new Date());
+
+    if (isTrading) {
+      if (hour === 9 && minute === 0) {
+        // 盘前 09:00 定点巡检
+        void bankStocks.syncBankMacroNews?.();
+      } else if (hour >= 9 && hour < 15 && (minute === 0 || minute === 30)) {
+        // 盘中交易时段每 30 分钟巡检一次
+        void bankStocks.syncBankMacroNews?.();
+      } else if (hour >= 17 && hour <= 21 && (minute === 0 || minute === 30)) {
+        // 盘后核心公告披露期每 30 分钟巡检一次
+        void bankStocks.syncBankMacroNews?.();
+      }
+    } else {
+      // 周末及法定休市日：仅在 10:30 与 18:30 各巡检一次
+      if ((hour === 10 || hour === 18) && minute === 30) {
+        void bankStocks.syncBankMacroNews?.();
+      }
+    }
+  } catch (err) {
+    console.warn('[bank-news-scheduler] error:', err.message);
+  }
+}
+
+setInterval(scheduleBankNewsCheck, 60 * 1000).unref?.();
+setTimeout(() => {
+  void bankStocks.syncBankMacroNews?.();
+}, 15_000);
+console.log('[bank-news] 宏观政策与资讯时钟调度器已挂载（按金融时钟状态机增量巡检）');
 
 // 名称搜索（用于前端添加自选时的实时下拉）
 app.get('/api/market/search', async (req, res) => {

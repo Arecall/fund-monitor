@@ -14,6 +14,7 @@
 const express = require('express');
 const axios = require('axios');
 const iconv = require('iconv-lite');
+const crypto = require('crypto');
 const dbHelper = require('./db.cjs');
 const marketHelper = require('./market.cjs');
 const { decrypt } = require('./crypto.cjs');
@@ -1098,50 +1099,245 @@ router.get('/list', async (req, res) => {
   }
 });
 
+// 宏观资讯动态定时同步锁与冷却控制
+let syncNewsPromise = null;
+let lastSyncNewsTs = 0;
+
 /**
- * 3. 宏观与银行业重要资讯及政策动向
+ * 抓取、清洗与同步银行宏观政策资讯
+ * 具备双重来源容灾、金融专业白名单过滤、黑名单垃圾信息拦截与指纹去重入库
+ */
+async function syncBankMacroNews() {
+  const now = Date.now();
+  if (syncNewsPromise) return syncNewsPromise;
+  if (now - lastSyncNewsTs < 30 * 1000) return; // 30秒防抖冷却
+
+  syncNewsPromise = (async () => {
+    try {
+      lastSyncNewsTs = Date.now();
+
+      // 专业金融词汇白名单（必须命中其一，避免非金融无关信息）
+      const whitelist = [
+        '银行', '央行', '降准', '降息', 'LPR', 'MLF', '逆回购', '存款准备金率', '存款利率',
+        '分红', '股息', '分派', '红利税', '息差', '净息差', 'NIM', '化债', '地方债',
+        '特殊再融资', '隐性债务', '不良贷款', '不良率', '不良资产', '拨备覆盖率', '资产质量',
+        '汇金', '证金', '社保基金', '险资', '资本充足率', '核心一级资本', '二级资本债', '永续债',
+        '信贷', '社融', '货币政策', '金融监管总局', '银保监会'
+      ];
+
+      // 垃圾信息黑名单（命中任意一项直接丢弃，过滤支行琐事与网点营销）
+      const blacklist = [
+        '支行', '网点', '营业厅', '理财产品', '信用卡活动', '防诈', '反诈', '招聘',
+        '火灾', '失火', '实习生', '乒乓', '体育', '明星', '娱乐圈', '公安机关'
+      ];
+
+      const candidates = [];
+
+      // 来源 1：新浪 7x24 全球财经快讯 (时效性高)
+      try {
+        const r1 = await axios.get('https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=60&zhibo_id=152', {
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 5000,
+        });
+        const list1 = r1.data?.result?.data?.feed?.list || [];
+        for (const item of list1) {
+          const raw = (item.rich_text || '').replace(/<[^>]+>/g, '').trim();
+          if (!raw || raw.length < 10) continue;
+          const m = raw.match(/^【(.*?)】(.*)$/);
+          const title = m ? m[1] : raw.slice(0, 50);
+          const summary = m ? m[2].trim() : raw;
+          const timeStr = item.create_time ? item.create_time.slice(11, 16) : '今日';
+          candidates.push({ title, summary, time: timeStr, source: '新浪7x24快讯' });
+        }
+      } catch (err) {
+        console.warn('[bank-news] 抓取新浪7x24快讯失败:', err.message);
+      }
+
+      // 来源 2：新浪财经证券/银行要闻滚动流 (深度较强)
+      try {
+        const r2 = await axios.get('https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&num=35&page=1', {
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' },
+          timeout: 5000,
+        });
+        const list2 = r2.data?.result?.data || [];
+        for (const item of list2) {
+          const title = (item.title || '').replace(/<[^>]+>/g, '').trim();
+          const summary = (item.summary || item.title || '').replace(/<[^>]+>/g, '').trim();
+          if (!title || title.length < 8) continue;
+          const d = item.ctime ? new Date(item.ctime * 1000) : null;
+          const timeStr = d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '今日';
+          candidates.push({ title, summary, time: timeStr, source: item.media_name || '新浪财经' });
+        }
+      } catch (err) {
+        console.warn('[bank-news] 抓取滚动要闻失败:', err.message);
+      }
+
+      let insertedCount = 0;
+      for (const item of candidates) {
+        const fullText = item.title + ' ' + item.summary;
+        if (blacklist.some(b => fullText.includes(b))) continue;
+        if (!whitelist.some(w => fullText.includes(w))) continue;
+
+        const cleanTitle = item.title.trim();
+        const hash = crypto.createHash('sha256').update(cleanTitle).digest('hex').slice(0, 24);
+
+        // 金融宏观分类与客观影响研判推演
+        let category = '稳健观察';
+        let impact = '关注对银行业务链条与估值中枢的综合影响。';
+        if (/央行|货币政策|降准|降息|LPR|MLF|逆回购|信贷|社融|金融监管/.test(fullText)) {
+          category = '政策宏观';
+          impact = '宏观流动性与政策指引，影响长线配置定价中枢。';
+        } else if (/存款利率|息差|净息差|NIM|净利润|营收/.test(fullText)) {
+          category = '息差与盈利';
+          impact = '负债端与资产端边际定价，直接影响银行净息差与盈利韧性。';
+        } else if (/化债|地方债|隐性债务|不良贷款|不良率|拨备|资产质量/.test(fullText)) {
+          category = '风控信贷';
+          impact = '缓释信贷资产信用风险，稳固资产负债表安全边际。';
+        } else if (/分红|股息|汇金|资本充足率|二级资本债|增持|回购/.test(fullText)) {
+          category = '资本与分红';
+          impact = '直接强化现金回报与核心资本实力，支撑高股息估值。';
+        }
+
+        try {
+          const r = await dbHelper.run(
+            `INSERT OR IGNORE INTO bank_news (hash, title, category, publish_time, summary, impact, source, is_seed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+            [hash, cleanTitle, category, item.time, item.summary.slice(0, 140), impact, item.source]
+          );
+          if (r?.changes > 0) insertedCount++;
+        } catch (_) {}
+      }
+
+      // 滚动淘汰冷数据：保留 4 条基石种子，动态资讯仅保留最新 16 条，表上限 20 条零膨胀
+      await dbHelper.run(`
+        DELETE FROM bank_news
+        WHERE is_seed = 0
+          AND id NOT IN (
+            SELECT id FROM bank_news WHERE is_seed = 0 ORDER BY id DESC LIMIT 16
+          )
+      `);
+
+      if (insertedCount > 0) {
+        console.log(`[bank-news] 成功同步入库 ${insertedCount} 条银行宏观动态资讯`);
+      }
+    } catch (e) {
+      console.error('[bank-news] 同步资讯异常:', e.message);
+    } finally {
+      syncNewsPromise = null;
+    }
+  })();
+
+  return syncNewsPromise;
+}
+
+/**
+ * 金融知识图谱映射引擎：将宏观资讯动态映射到银行理财标的与资产分类
+ * 实现“由事及券”精准穿透
+ */
+function deriveNewsAssetMapping(item) {
+  const fullText = (item.title || '') + ' ' + (item.summary || '') + ' ' + (item.category || '');
+
+  if (/流动性工具|货币\s*ETF|银华日利|华宝添益|建信添益|银证转账|T\+0|活钱/i.test(fullText)) {
+    return {
+      relatedTier: 't0_cash',
+      relatedTierName: 'T+0 场内活钱理财',
+      relatedCodes: ['511880', '511990', '511660'],
+      beneficiaryDesc: '利好场内闲置资金极速套利与日内流动性增值',
+      suggestedAction: '直达银华日利与华宝添益'
+    };
+  }
+  if (/化债|地方债|隐性债务|不良贷款|不良率|拨备|资产质量|长三角|成渝/i.test(fullText)) {
+    return {
+      relatedTier: 'regional',
+      relatedTierName: '区域高成长城农商行',
+      relatedCodes: ['601838', '600919', '600926', '601128'],
+      beneficiaryDesc: '缓释地方城投信用风险，增厚信贷拨备安全垫',
+      suggestedAction: '直达成都银行与江苏银行'
+    };
+  }
+  if (/存款挂牌利率|存款利率|息差|净息差|NIM|零售银行|负债成本/i.test(fullText)) {
+    return {
+      relatedTier: 'commercial',
+      relatedTierName: '优质股份行 · 零售龙头',
+      relatedCodes: ['600036', '601166', '000001', '601998'],
+      beneficiaryDesc: '负债端定期存款降息缓解息差收窄，利好零售壁垒深厚龙头',
+      suggestedAction: '直达招商银行与兴业银行'
+    };
+  }
+  if (/港股通|红利税|AH折价|折价率|H股/i.test(fullText)) {
+    return {
+      relatedTier: 'hk',
+      relatedTierName: '港股高息折价品种',
+      relatedCodes: ['00939', '01398', '03328', '03968'],
+      beneficiaryDesc: 'AH实时折价较深，税后实得股息依然具备高吸引力',
+      suggestedAction: '直达建设银行H与工行H'
+    };
+  }
+  if (/长钱长投|险资|社保|养老金|高股息|国有大行|红利\s*ETF|银行\s*ETF|压舱石|央行|中央金融工作会议/i.test(fullText)) {
+    return {
+      relatedTier: 'national',
+      relatedTierName: '国有六大行 · 行业ETF',
+      relatedCodes: ['601398', '601939', '601288', '512800', '512890'],
+      beneficiaryDesc: '长期耐心资本增配高股息权益底仓，夯实估值中枢',
+      suggestedAction: '直达工商银行与红利ETF'
+    };
+  }
+  return {
+    relatedTier: 'all',
+    relatedTierName: '全板块稳健配置',
+    relatedCodes: ['601398', '600036'],
+    beneficiaryDesc: '宏观金融环境动态，关注全行业资产负债端综合传导',
+    suggestedAction: '综合查看全市场银行资产配置'
+  };
+}
+
+/**
+ * 3. 宏观与银行业重要资讯及政策动向 (支持动态定时巡检与持久化读取)
  * GET /api/bank-stocks/macro-news
  */
-router.get('/macro-news', async (_req, res) => {
+router.get('/macro-news', async (req, res) => {
   try {
-    const news = [
-      {
-        id: 'news-1',
-        title: '央行持续优化流动性结构，支持长钱长投增配高股息权益资产',
-        category: '政策宏观',
-        time: '宏观政策导向',
-        summary: '中央金融工作会议及监管政策明确支持险资、社保、养老金提高权益投资上限，高股息、低估值、稳健现金流的国有大行成为中长期配置压舱石。',
-        impact: '夯实高股息大行与红利 ETF 估值中枢。'
-      },
-      {
-        id: 'news-2',
-        title: '商业银行净息差企稳筑底，负债端定期存款挂牌利率多轮调降对冲资产端压力',
-        category: '息差与盈利',
-        time: '2024 中报跟踪',
-        summary: '随着各大行持续下调存款挂牌利率，负债成本改善为应对存量房贷与对公收益下行提供有效缓冲，净息差（NIM）收窄速度已明显边际放缓。',
-        impact: '银行业盈利韧性提升，保障现金分红持续性。'
-      },
-      {
-        id: 'news-3',
-        title: '一揽子化债方案深入推进，金融机构资产质量安全边际充实',
-        category: '风控信贷',
-        time: '信贷资产质量',
-        summary: '地方政府特殊再融资债券发行置换隐性债务，有效缓释大行与长三角/成渝城商行的地方信贷风险暴露；主要上市银行不良贷款率均控制在 1.35% 以内，拨备覆盖率整体充裕。',
-        impact: '消除银行股资产端“坏账黑天鹅”过度悲观预期。'
-      },
-      {
-        id: 'news-4',
-        title: '场内货币 ETF 满足资金日内极速周转，注意银证转账提现时间窗口',
-        category: '流动性工具',
-        time: '流动性常识',
-        summary: '银华日利（511880）、华宝添益（511990）等支持 T+0 回转交易，卖出后资金在证券账户实时可用；但转出至银行卡受银行清算时段约束，非交易日与夜间无法转出。',
-        impact: '提示投资者合理规划周末与夜间备用流动性。'
-      }
-    ];
+    const isRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    if (isRefresh) {
+      await syncBankMacroNews();
+    }
+
+    // 优先读取本地数据库中存储的最新资讯
+    // 排序逻辑：动态资讯按生成倒序排列在最前，4 条研选基石条目 (is_seed = 1) 稳固在后
+    let rows = await dbHelper.all(
+      `SELECT id, hash, title, category, publish_time as time, summary, impact, source, is_seed
+       FROM bank_news
+       ORDER BY CASE WHEN is_seed = 1 THEN 1 ELSE 0 END ASC, id DESC
+       LIMIT 8`
+    );
+
+    // 防御：若数据表为空，触发一次同步并读取
+    if (!rows || rows.length === 0) {
+      await syncBankMacroNews();
+      rows = await dbHelper.all(
+        `SELECT id, hash, title, category, publish_time as time, summary, impact, source, is_seed
+         FROM bank_news
+         ORDER BY CASE WHEN is_seed = 1 THEN 1 ELSE 0 END ASC, id DESC
+         LIMIT 8`
+      );
+    }
+
+    const enrichedData = (rows || []).map(row => {
+      const mapping = deriveNewsAssetMapping(row);
+      return {
+        ...row,
+        relatedTier: mapping.relatedTier,
+        relatedTierName: mapping.relatedTierName,
+        relatedCodes: mapping.relatedCodes,
+        beneficiaryDesc: mapping.beneficiaryDesc,
+        suggestedAction: mapping.suggestedAction,
+      };
+    });
 
     res.json({
       success: true,
-      data: news
+      data: enrichedData,
+      lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour12: false })
     });
   } catch (err) {
     res.status(500).json({ error: '获取宏观资讯失败: ' + err.message });
@@ -1198,12 +1394,24 @@ router.post('/ai-diagnose', async (req, res) => {
       console.warn('[bank-stocks] 读取 AI 配置异常:', e.message);
     }
 
+    // 检索当前最新银行业宏观政策要闻上下文 (Dynamic Macro RAG Context)
+    let recentNews = [];
+    let macroContextStr = '';
+    try {
+      recentNews = await dbHelper.all(
+        `SELECT category, title, impact, summary FROM bank_news ORDER BY is_seed ASC, id DESC LIMIT 3`
+      );
+      if (recentNews && recentNews.length > 0) {
+        macroContextStr = recentNews.map((n, i) => `${i + 1}. [${n.category}] ${n.title} (客观影响: ${n.impact})`).join('\n');
+      }
+    } catch (_) {}
+
     // 调用已配置的大模型
     if (aiConfig) {
       try {
         const promptSystem = `你是一名拥有 20 年银行与固定收益投资经验的资深金融分析师。
 请遵循多维严谨评估规范，坚持客观、事实、逻辑、正确、严谨的原则，严禁盲目迎合用户或做出保本保收益的虚假承诺。
-请针对给定的银行/红利资产，从以下三个核心维度进行客观剖析：
+请针对给定的银行/红利资产，结合当前宏观政策动态，从以下三个核心维度进行客观剖析：
 1. 【分红确定性与股息安全垫】：分析股息率（区分名义股息与税后实得股息）、分红历史持续年限与分红率；
 2. 【信贷资产质量与抗风险底线】：分析不良贷款率、拨备覆盖厚度及宏观利率环境对净息差的影响；
 3. 【交易机制与流动性风险提示】：结合交易规则（T+1/T+0、除权除息、红利税、银证转账时间窗口）给出理性配置观点。
@@ -1224,7 +1432,10 @@ router.post('/ai-diagnose', async (req, res) => {
 - 交易与税负：${target.tradeMechanism || '二级市场'}，${target.taxNote || ''}
 ${target.discountRate ? `- 相对 A 股折价率：${target.discountRate}%` : ''}
 
-请给出该标的的专业客观体检诊断：`;
+【当前全市场最新银行业宏观背景与政策传导】：
+${macroContextStr || '央行引导长钱长投增配高股息资产，存款挂牌利率调降对冲净息差压力，地方化债深入推进缓释信用风险。'}
+
+请结合上述最新宏观利率与政策背景，给出该标的的专业客观体检诊断：`;
 
         const aiResult = await callModelDirectly(aiConfig, promptSystem, promptUser);
         if (aiResult && aiResult.text) {
@@ -1251,7 +1462,7 @@ ${target.discountRate ? `- 相对 A 股折价率：${target.discountRate}%` : ''
     }
 
     // 未配置大模型或失败时的降级方案
-    const ruleDiagnosis = generateQuantitativeDiagnosis(target);
+    const ruleDiagnosis = generateQuantitativeDiagnosis(target, recentNews);
     return res.json({
       success: true,
       model: 'Quantitative-Financial-Rule-Engine',
@@ -1325,31 +1536,48 @@ async function callModelDirectly(cfg, systemPrompt, userPrompt) {
 }
 
 /**
- * 确定性量化金融诊断生成器（客观金融模型降级）
+ * 确定性量化金融诊断生成器（客观金融模型降级，结合最新宏观政策要闻）
  */
-function generateQuantitativeDiagnosis(item) {
+function generateQuantitativeDiagnosis(item, recentNews = []) {
+  let macroNote = '';
+  if (Array.isArray(recentNews) && recentNews.length > 0) {
+    const matched = recentNews.find(n => {
+      const full = (n.title || '') + ' ' + (n.summary || '');
+      if (item.tier === 't0_cash' && /流动性|货币|T\+0/i.test(full)) return true;
+      if (item.tier === 'hk' && /港股|折价|红利税/i.test(full)) return true;
+      if ((item.tier === 'national' || item.tier === 'etf') && /长钱|高股息|大行|国有/i.test(full)) return true;
+      if (item.tier === 'commercial' && /息差|存款|零售/i.test(full)) return true;
+      if (item.tier === 'regional' && /化债|不良|拨备/i.test(full)) return true;
+      return false;
+    }) || recentNews[0];
+    if (matched) {
+      macroNote = `\n【宏观政策传导】受近期政策主线驱动（${matched.title}），${matched.impact}`;
+    }
+  }
+
   if (item.tier === 't0_cash') {
-    return `【流动性与运作机制】${item.name} (${item.code}) 属于场内货币基金，年化收益率基准约 ${item.dividendYield}%。该标的核心特性是 T+0 回转交易，当日卖出后资金在证券账户即刻可用。但请注意：提现至银行卡需受银证转账时段 (9:00~16:00) 约束，非交易时段无法转出；${item.fundMechanism || ''}。`;
+    return `【流动性与运作机制】${item.name} (${item.code}) 属于场内货币基金，年化收益率基准约 ${item.dividendYield}%。该标的核心特性是 T+0 回转交易，当日卖出后资金在证券账户即刻可用。但请注意：提现至银行卡需受银证转账时段 (9:00~16:00) 约束，非交易时段无法转出；${item.fundMechanism || ''}。${macroNote}`;
   }
 
   if (item.tier === 'etf') {
-    return `【指数化分散评估】${item.name} (${item.code}) 跟踪指数，股息率参考基准为 ${item.dividendYield}%。其核心价值在于规避单一银行信贷暴雷的非系统性风险，免除股票交易印花税；但二级市场仍受大盘贝塔波动影响，实行 T+1 交易交收，建议作为中长线稳健分红底仓配置。`;
+    return `【指数化分散评估】${item.name} (${item.code}) 跟踪指数，股息率参考基准为 ${item.dividendYield}%。其核心价值在于规避单一银行信贷暴雷的非系统性风险，免除股票交易印花税；但二级市场仍受大盘贝塔波动影响，实行 T+1 交易交收，建议作为中长线稳健分红底仓配置。${macroNote}`;
   }
 
   if (item.tier === 'hk') {
-    return `【AH 折价与红利税审视】${item.name} (${item.code}) 相对 A 股具有实时折价（约 ${item.discountRate || 30}%），名义股息率达 ${item.dividendYield}%。但必须严密注意税负：内地个人投资者通过港股通买入，分红需由中登代扣 20% 个人红利税，实际到手股息率为 ${item.afterTaxDividendYield}%，且须承担汇率变动风险。`;
+    return `【AH 折价与红利税审视】${item.name} (${item.code}) 相对 A 股具有实时折价（约 ${item.discountRate || 30}%），名义股息率达 ${item.dividendYield}%。但必须严密注意税负：内地个人投资者通过港股通买入，分红需由中登代扣 20% 个人红利税，实际到手股息率为 ${item.afterTaxDividendYield}%，且须承担汇率变动风险。${macroNote}`;
   }
 
   // A 股银行
   const pbStr = item.pb ? `市净率 PB 仅 ${item.pb}（处于深度破净区间）` : '估值安全边际充沛';
   const nplStr = item.nplRatio ? `最新不良贷款率控制在 ${item.nplRatio}%，拨备覆盖率达 ${item.provisionCoverage}% (${item.reportPeriod})` : '信贷资产整体健康';
 
-  return `【分红与估值体检】${item.name} (${item.code}) 静态股息率约为 ${item.dividendYield}%，${pbStr}，分红具备较厚安全垫。\n【资产质量底线】财报显示其 ${nplStr}，拨备安全垫充裕。\n【交易与税收规则】A 股实行 T+1 交收与除权除息规则，个人持股满 1 年免征红利税，未满 1 年减持分红需按 10%~20% 补缴个税，建议以 1 年以上周期长线持有。`;
+  return `【分红与估值体检】${item.name} (${item.code}) 静态股息率约为 ${item.dividendYield}%，${pbStr}，分红具备较厚安全垫。\n【资产质量底线】财报显示其 ${nplStr}，拨备安全垫充裕。\n【交易与税收规则】A 股实行 T+1 交收与除权除息规则，个人持股满 1 年免征红利税，未满 1 年减持分红需按 10%~20% 补缴个税，建议以 1 年以上周期长线持有。${macroNote}`;
 }
 
 module.exports = {
   router,
   ASSETS_CATALOG,
   fetchAllBankQuotes,
-  fetchHkdCnyRate
+  fetchHkdCnyRate,
+  syncBankMacroNews,
 };

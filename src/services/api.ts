@@ -1382,12 +1382,19 @@ export interface BankOverview {
 }
 
 export interface BankMacroNews {
-  id: string;
+  id: string | number;
   title: string;
   category: string;
   time: string;
   summary: string;
   impact: string;
+  source?: string;
+  is_seed?: number;
+  relatedTier?: string;
+  relatedTierName?: string;
+  relatedCodes?: string[];
+  beneficiaryDesc?: string;
+  suggestedAction?: string;
 }
 
 export interface BankAiDiagnoseResult {
@@ -1419,8 +1426,8 @@ export async function fetchBankStocksList(
   return request(`/api/bank-stocks/list?tier=${encodeURIComponent(tier)}&sortBy=${encodeURIComponent(sortBy)}&sortOrder=${encodeURIComponent(sortOrder)}`);
 }
 
-export async function fetchBankMacroNews(): Promise<{ success: boolean; data: BankMacroNews[] }> {
-  return request('/api/bank-stocks/macro-news');
+export async function fetchBankMacroNews(refresh = false): Promise<{ success: boolean; data: BankMacroNews[]; lastUpdated?: string }> {
+  return request(`/api/bank-stocks/macro-news${refresh ? '?refresh=1' : ''}`);
 }
 
 export async function diagnoseBankStock(params: {
