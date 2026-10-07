@@ -1,6 +1,7 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { buildMonotoneSplinePath } from '../utils/chartData';
 
 export interface GoldPoint {
   t: number;     // Unix ms
@@ -109,34 +110,6 @@ function forwardFillGoldPoints(
   }
 
   return result;
-}
-
-/**
- * 为连续的数据点段构建平滑贝塞尔样条路径（Monotone / Catmull-Rom Spline）
- * 消除高频锯齿与折角突变，使金价走势呈现如丝般顺滑的专业贵金属终端视觉
- */
-function buildSmoothSplinePath(pts: { x: number; y: number }[]): string {
-  if (pts.length === 0) return '';
-  if (pts.length === 1) return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-  if (pts.length === 2) {
-    return `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)} L ${pts[1].x.toFixed(2)} ${pts[1].y.toFixed(2)}`;
-  }
-
-  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i === 0 ? 0 : i - 1];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[i + 2 >= pts.length ? pts.length - 1 : i + 2];
-
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-
-    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
-  }
-  return d;
 }
 
 export function GoldChart({ points, prevClose, currency, unit, emptyHint, height = 230, range: rangeProp }: GoldChartProps) {
@@ -283,52 +256,25 @@ export function GoldChart({ points, prevClose, currency, unit, emptyHint, height
     return out;
   }, [windowStart, windowSpan, range]);
 
-  // 跨数据缺口时打断折线 — 避免在长时间无新 tick 时画一条假水平线+垂直跳变
-  // 阈值：分时 > 30 min（轮询周期 60s），周/月已做前值平线填充，仅在发生 > 10 天的无数据异常断档时才打断
-  const gapThresholdMs = range === 'intraday' ? 30 * 60 * 1000 : 10 * 24 * 60 * 60 * 1000;
-
-  // ─── 平滑连续样条折线 (Smooth Spline Line Path) ───
+  // ─── 平滑连续单调三次样条折线 (Smooth Monotone Cubic Spline) ───
+  // 采用 Fritsch-Carlson 调和平均样条算法，保持金融时序曲线 100% 连贯平滑，彻底消除虚假折线断裂与毛刺
   const linePath = useMemo(() => {
     if (effectivePoints.length === 0) return '';
-    const segments: { x: number; y: number }[][] = [];
-    let curSeg: { x: number; y: number }[] = [{ x: xPos(0), y: yPos(effectivePoints[0].v) }];
-    for (let i = 1; i < effectivePoints.length; i++) {
-      if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
-        segments.push(curSeg);
-        curSeg = [{ x: xPos(i), y: yPos(effectivePoints[i].v) }];
-      } else {
-        curSeg.push({ x: xPos(i), y: yPos(effectivePoints[i].v) });
-      }
-    }
-    segments.push(curSeg);
-    return segments.map(seg => buildSmoothSplinePath(seg)).join(' ');
-  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs]);
+    const pts = effectivePoints.map((p, i) => ({ x: xPos(i), y: yPos(p.v) }));
+    return buildMonotoneSplinePath(pts);
+  }, [effectivePoints, minV, maxV, windowStart, windowSpan]);
 
   // ─── 轻雾晨曦羽化面积路径 (Feathered Area Path) ───
   const areaPath = useMemo(() => {
-    if (effectivePoints.length === 0) return '';
-    const baselineY = padding.top + innerH;
-    const segments: { x: number; y: number }[][] = [];
-    let curSeg: { x: number; y: number }[] = [{ x: xPos(0), y: yPos(effectivePoints[0].v) }];
-    for (let i = 1; i < effectivePoints.length; i++) {
-      if (effectivePoints[i].t - effectivePoints[i - 1].t > gapThresholdMs) {
-        segments.push(curSeg);
-        curSeg = [{ x: xPos(i), y: yPos(effectivePoints[i].v) }];
-      } else {
-        curSeg.push({ x: xPos(i), y: yPos(effectivePoints[i].v) });
-      }
-    }
-    segments.push(curSeg);
-    return segments
-      .map(seg => {
-        if (seg.length === 0) return '';
-        const spline = buildSmoothSplinePath(seg);
-        const lastPt = seg[seg.length - 1];
-        const firstPt = seg[0];
-        return `${spline} L ${lastPt.x.toFixed(2)} ${baselineY.toFixed(2)} L ${firstPt.x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
-      })
-      .join(' ');
-  }, [effectivePoints, minV, maxV, windowStart, windowSpan, gapThresholdMs, padding.top, innerH]);
+    if (effectivePoints.length < 2) return '';
+    const baselineY = (padding.top + innerH).toFixed(2);
+    const pts = effectivePoints.map((p, i) => ({ x: xPos(i), y: yPos(p.v) }));
+    const lineD = buildMonotoneSplinePath(pts);
+    if (!lineD) return '';
+    const firstX = pts[0].x.toFixed(2);
+    const lastX = pts[pts.length - 1].x.toFixed(2);
+    return `${lineD} L ${lastX} ${baselineY} L ${firstX} ${baselineY} Z`;
+  }, [effectivePoints, minV, maxV, windowStart, windowSpan, padding.top, innerH]);
 
   // Y 轴刻度：四等分再取"nice" step（5 的倍数优先；窄区间退到 0.5），并严格夹在 [minV, maxV] 内。
   const yTicks = useMemo(() => {

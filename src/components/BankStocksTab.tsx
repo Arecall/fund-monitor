@@ -33,6 +33,8 @@ import {
   Clock,
   ChevronLeft,
   X,
+  List,
+  LayoutGrid,
 } from 'lucide-react';
 import {
   fetchBankStocksOverview,
@@ -444,6 +446,112 @@ function DiagnoseDetailContent({
   );
 }
 
+interface BankStockCompactRowProps {
+  stock: BankStockItem;
+  sortBy: string;
+  isAdded: boolean;
+  onOpenDrawer: (stock: BankStockItem) => void;
+  onOpenDetail?: (
+    code: string,
+    market: 'domestic' | 'hk' | 'us' | 'other',
+    kind?: 'fund' | 'stock',
+    initialData?: any
+  ) => void;
+  onAddToWatchlist: (stock: BankStockItem) => void;
+}
+
+function BankStockCompactRow({
+  stock,
+  sortBy,
+  isAdded: _isAdded,
+  onOpenDrawer,
+  onOpenDetail: _onOpenDetail,
+  onAddToWatchlist: _onAddToWatchlist,
+}: BankStockCompactRowProps) {
+  const isUp = stock.changePct > 0;
+  const isDown = stock.changePct < 0;
+  const isHk = stock.tier === 'hk';
+  const isT0 = stock.tier === 't0_cash';
+  const isEtf = stock.tier === 'etf';
+  const isLowPrice = isT0 || isEtf || (stock.price > 0 && stock.price < 5.0);
+
+  const changeBg = isUp
+    ? 'bg-[var(--color-up-bg)] text-[var(--color-up)]'
+    : isDown
+      ? 'bg-[var(--color-down-bg)] text-[var(--color-down)]'
+      : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
+
+  return (
+    <div
+      onClick={() => onOpenDrawer(stock)}
+      className="flex items-center justify-between px-3.5 py-2.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors cursor-pointer select-none active:bg-slate-100/70"
+    >
+      {/* 标的名称与代码市场 (左侧 42% 宽度) */}
+      <div className="flex flex-col min-w-0 flex-1 pr-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-semibold text-sm text-slate-900 dark:text-slate-100 truncate tracking-tight">
+            {stock.name}
+          </span>
+          <Tag
+            color={isT0 ? 'gold' : isHk ? 'magenta' : 'blue'}
+            className="text-[9px] rounded-md m-0 px-1 py-0 leading-tight shrink-0 font-sans"
+          >
+            {stock.tierName.slice(0, 3)}
+          </Tag>
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-mono">
+          <span>{stock.code}</span>
+          <span className="text-slate-300 dark:text-slate-600">·</span>
+          <span>{isHk ? '20%税' : '免税'}</span>
+          {stock.dividendFrequency && (
+            <>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="text-emerald-600 dark:text-emerald-400 font-medium">{stock.dividendFrequency}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* 红利与估值核心指标 (中间 30% 宽度，根据当前排序动态高亮) */}
+      <div className="flex flex-col items-end pr-3 shrink-0 min-w-[85px]">
+        <div className="flex items-baseline gap-1 font-mono">
+          <span className="text-[10px] text-slate-400 font-normal">股息</span>
+          <span className={`text-sm font-bold tabular-nums ${
+            sortBy.toLowerCase().includes('dividend') ? 'text-emerald-600 dark:text-emerald-400 font-extrabold' : 'text-slate-800 dark:text-slate-200'
+          }`}>
+            {isHk ? stock.afterTaxDividendYield.toFixed(2) : stock.dividendYield.toFixed(2)}%
+          </span>
+        </div>
+        <div className="text-[11px] font-mono text-slate-400 tabular-nums mt-0.5">
+          {isT0 ? (
+            <span className="text-amber-600 dark:text-amber-400 font-medium">T+0活钱</span>
+          ) : stock.pb ? (
+            <span className={stock.pb < 1.0 ? 'text-blue-600 dark:text-blue-400 font-medium' : ''}>
+              PB {stock.pb}倍
+            </span>
+          ) : (
+            `稳健度 ${stock.stabilityScore}`
+          )}
+        </div>
+      </div>
+
+      {/* 现价与今日涨跌药丸 (右侧 28% 宽度) */}
+      <div className="flex flex-col items-end shrink-0 min-w-[72px]">
+        <span className="font-mono font-bold text-sm text-slate-900 dark:text-slate-100 tabular-nums">
+          {stock.price > 0 ? (
+            `${isHk ? 'HK$' : '¥'}${stock.price.toFixed(isLowPrice ? 3 : 2)}`
+          ) : '--'}
+        </span>
+        <div
+          className={`w-[68px] h-[22px] mt-0.5 rounded-lg font-mono font-bold text-[11px] flex items-center justify-center tabular-nums shadow-2xs ${changeBg}`}
+        >
+          {isUp ? '+' : ''}{stock.changePct.toFixed(2)}%
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   const prefersReducedMotion = useReducedMotion();
   // 移动端视口检测 (768px 断点)
@@ -453,6 +561,27 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
     }
     return false;
   });
+
+  // 双模视图切换状态 (移动端默认 list 高密列表，桌面端默认 card 丰富卡片)
+  type ViewMode = 'list' | 'card';
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('bank_view_mode');
+      if (saved === 'list' || saved === 'card') return saved;
+      return window.innerWidth < 768 ? 'list' : 'card';
+    }
+    return 'card';
+  });
+
+  const handleToggleViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('bank_view_mode', mode);
+    } catch {}
+  };
+
+  // 标的详情抽屉状态 (移动端点击高密行呼出)
+  const [drawerStock, setDrawerStock] = useState<BankStockItem | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -484,6 +613,7 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
   // 接入 Android 系统物理返回 / 边缘侧滑手势感知
   useModalHistory(diagnoseModalOpen, () => setDiagnoseModalOpen(false), { id: 'bank-diagnose-modal' });
   useModalHistory(rulesDrawerOpen, () => setRulesDrawerOpen(false), { id: 'bank-rules-drawer' });
+  useModalHistory(Boolean(drawerStock), () => setDrawerStock(null), { id: 'bank-stock-drawer' });
 
   // 快捷表头排序切换器
   const handleToggleSort = useCallback((key: string) => {
@@ -774,32 +904,64 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
             />
           </div>
 
-          {/* 快捷表头排序胶囊组 */}
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 shrink-0">
-            <span className="text-xs text-slate-400 shrink-0 hidden md:inline">排序:</span>
-            {SORT_OPTIONS.map(opt => {
-              const isActive = sortBy === opt.key;
-              return (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => handleToggleSort(opt.key)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-all flex items-center gap-0.5 cursor-pointer ${
-                    isActive
-                      ? 'bg-slate-900 text-white dark:bg-emerald-600 dark:text-white shadow-2xs font-semibold'
-                      : 'bg-slate-100/80 text-slate-600 dark:bg-slate-800 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
-                  }`}
-                >
-                  <span className="sm:hidden">{opt.shortLabel || opt.label}</span>
-                  <span className="hidden sm:inline">{opt.label}</span>
-                  {isActive && (
-                    <span className="font-mono text-[10px] ml-0.5">
-                      {sortOrder === 'desc' ? '↓' : '↑'}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          {/* 快捷表头排序胶囊组 + 列表/卡片双模切换开关 */}
+          <div className="flex items-center justify-between sm:justify-end gap-2 overflow-x-auto no-scrollbar py-0.5 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-xs text-slate-400 shrink-0 hidden md:inline">排序:</span>
+              {SORT_OPTIONS.map(opt => {
+                const isActive = sortBy === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => handleToggleSort(opt.key)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-all flex items-center gap-0.5 cursor-pointer ${
+                      isActive
+                        ? 'bg-slate-900 text-white dark:bg-emerald-600 dark:text-white shadow-2xs font-semibold'
+                        : 'bg-slate-100/80 text-slate-600 dark:bg-slate-800 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-700/80'
+                    }`}
+                  >
+                    <span className="sm:hidden">{opt.shortLabel || opt.label}</span>
+                    <span className="hidden sm:inline">{opt.label}</span>
+                    {isActive && (
+                      <span className="font-mono text-[10px] ml-0.5">
+                        {sortOrder === 'desc' ? '↓' : '↑'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 双模视图切换开关：列表 / 卡片 */}
+            <div className="flex items-center p-0.5 bg-slate-100 dark:bg-slate-800/80 rounded-lg border border-slate-200/60 dark:border-slate-700/60 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleToggleViewMode('list')}
+                className={`p-1 rounded-md transition-all cursor-pointer ${
+                  viewMode === 'list'
+                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                }`}
+                title="高密列表视图 (首屏看更多)"
+                aria-label="切换至高密列表视图"
+              >
+                <List size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleViewMode('card')}
+                className={`p-1 rounded-md transition-all cursor-pointer ${
+                  viewMode === 'card'
+                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                }`}
+                title="丰富卡片视图 (深度研评)"
+                aria-label="切换至丰富卡片视图"
+              >
+                <LayoutGrid size={14} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -830,7 +992,23 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
         <div className="py-16 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-center shadow-sm">
           <Empty description="未找到符合条件的标的" />
         </div>
+      ) : viewMode === 'list' ? (
+        /* 高密金融列表视图 (首屏 7~8 只标的，极速横向比价) */
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl overflow-hidden shadow-2xs divide-y divide-slate-100 dark:divide-slate-800/80">
+          {filteredStocks.map(stock => (
+            <BankStockCompactRow
+              key={stock.symbol}
+              stock={stock}
+              sortBy={sortBy}
+              isAdded={!!addedMap[stock.code]}
+              onOpenDrawer={(s) => setDrawerStock(s)}
+              onOpenDetail={onOpenDetail}
+              onAddToWatchlist={handleAddToWatchlist}
+            />
+          ))}
+        </div>
       ) : (
+        /* 丰富卡片视图 (深度研评卡片) */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredStocks.map(stock => {
             const isAdded = !!addedMap[stock.code];
@@ -1487,6 +1665,233 @@ export function BankStocksTab({ onOpenDetail }: BankStocksTabProps) {
             </div>
           ))}
         </div>
+      </Drawer>
+
+      {/* 9. 标的深度研报与体检抽屉 (大厂自适应高密 Bottom Sheet，告别死白空洞) */}
+      <Drawer
+        open={Boolean(drawerStock)}
+        onClose={() => setDrawerStock(null)}
+        placement={isMobile ? 'bottom' : 'right'}
+        height={isMobile ? 'auto' : undefined}
+        width={isMobile ? undefined : 480}
+        closeIcon={false}
+        styles={{
+          wrapper: {
+            maxHeight: isMobile ? '88vh' : undefined,
+          },
+          content: {
+            maxHeight: isMobile ? '88vh' : undefined,
+            borderTopLeftRadius: isMobile ? 24 : 0,
+            borderTopRightRadius: isMobile ? 24 : 0,
+            overflow: 'hidden',
+          },
+          body: {
+            padding: '16px',
+            paddingBottom: 'calc(20px + env(safe-area-inset-bottom, 0px))',
+            overflowY: 'auto',
+          },
+          header: {
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--hairline-border, #e2e8f0)',
+          },
+        }}
+        title={
+          drawerStock ? (
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-bold text-base text-slate-900 dark:text-white truncate">
+                  {drawerStock.name}
+                </span>
+                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 shrink-0">
+                  {drawerStock.code}
+                </span>
+                <Tag color={drawerStock.tier === 't0_cash' ? 'gold' : drawerStock.tier === 'hk' ? 'magenta' : 'blue'} className="text-[10px] m-0 shrink-0">
+                  {drawerStock.tierName}
+                </Tag>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrawerStock(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg cursor-pointer shrink-0"
+                aria-label="关闭"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : null
+        }
+      >
+        {drawerStock && (
+          <div className="space-y-4 select-none text-slate-800 dark:text-slate-100">
+            {isMobile && (
+              <div className="w-10 h-1 bg-slate-200 dark:bg-slate-700 rounded-full mx-auto -mt-2 mb-3 shrink-0" />
+            )}
+
+            {/* 现价与涨跌大看板 */}
+            <div className="flex items-baseline justify-between p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800">
+              <div>
+                <span className="text-[11px] text-slate-400">最新收盘/盘中现价</span>
+                <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white mt-0.5 tabular-nums">
+                  {drawerStock.tier === 'hk' ? 'HK$' : '¥'}{drawerStock.price.toFixed(drawerStock.tier === 't0_cash' || drawerStock.tier === 'etf' ? 3 : 2)}
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] text-slate-400">今日涨跌幅</span>
+                <div
+                  className={`text-base font-mono font-bold mt-0.5 tabular-nums ${
+                    drawerStock.changePct > 0 ? 'text-[var(--color-up)]' : drawerStock.changePct < 0 ? 'text-[var(--color-down)]' : 'text-slate-400'
+                  }`}
+                >
+                  {drawerStock.changePct > 0 ? '+' : ''}{drawerStock.changePct.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+
+            {/* 核心指标 3 列矩阵 */}
+            <div className="grid grid-cols-3 gap-2 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 text-center">
+              <div>
+                <span className="text-[10px] text-slate-400">静态股息率</span>
+                <div className="font-mono font-extrabold text-base text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  {drawerStock.dividendYield.toFixed(2)}%
+                </div>
+                <span className="text-[9px] text-slate-400">{drawerStock.tier === 'hk' ? `税后 ${drawerStock.afterTaxDividendYield.toFixed(2)}%` : '持股>1年免税'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400">市净率 PB</span>
+                <div className="font-mono font-extrabold text-base text-blue-600 dark:text-blue-400 mt-0.5">
+                  {drawerStock.pb ? `${drawerStock.pb}倍` : '—'}
+                </div>
+                <span className="text-[9px] text-slate-400">{drawerStock.pb && drawerStock.pb < 1 ? '深度破净折价' : '合理估值'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400">{drawerStock.tier === 't0_cash' ? '年化收益率' : '不良贷款率'}</span>
+                <div className="font-mono font-extrabold text-base text-slate-800 dark:text-slate-100 mt-0.5">
+                  {drawerStock.nplRatio ? `${drawerStock.nplRatio}%` : (drawerStock.tier === 't0_cash' ? `${drawerStock.dividendYield.toFixed(2)}%` : '—')}
+                </div>
+                <span className="text-[9px] text-slate-400">{drawerStock.provisionCoverage ? `拨备 ${drawerStock.provisionCoverage}%` : (drawerStock.stabilityScore ? `稳健度 ${drawerStock.stabilityScore}` : '安全边际')}</span>
+              </div>
+            </div>
+
+            {/* 深度投研亮点评述 */}
+            <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-200/70 dark:border-slate-800 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              <span className="font-bold text-slate-900 dark:text-white mr-1">💡 研选逻辑：</span>
+              {drawerStock.advantage || '长期稳健分红，具备较厚估值安全边际。'}
+            </div>
+
+            {/* 题材与标签 */}
+            {drawerStock.tags && drawerStock.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {drawerStock.tags.map(tag => (
+                  <span key={tag} className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 font-medium border border-slate-200/60 dark:border-slate-700/60">
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* 场外联接基金快速申购卡片 */}
+            {drawerStock.feederCodes && drawerStock.feederCodes.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>关联场外公募基金</span>
+                  </span>
+                  <span className="text-[10px] text-indigo-600/80 dark:text-indigo-400">可在证券账户外直接申购</span>
+                </div>
+                <div className="space-y-1.5">
+                  {drawerStock.feederCodes.map((fCode) => {
+                    const valuation = drawerStock.feederValuations?.find(v => v.code === fCode);
+                    const isValUp = (valuation?.gszzlNum ?? 0) > 0;
+                    const isValDown = (valuation?.gszzlNum ?? 0) < 0;
+                    return (
+                      <div
+                        key={fCode}
+                        onClick={() => {
+                          setDrawerStock(null);
+                          onOpenDetail?.(fCode, 'domestic', 'fund', {
+                            name: valuation?.name || `${fCode}联接基金`,
+                            dwjz: valuation?.dwjz || valuation?.gsz || '1.0000',
+                            gsz: valuation?.gsz || valuation?.dwjz || '1.0000',
+                            gszzl: valuation?.gszzl?.replace('%', '') || '0.00',
+                            market: 'domestic',
+                          });
+                        }}
+                        className="p-2.5 rounded-xl bg-white dark:bg-slate-900/90 border border-indigo-100 dark:border-indigo-900/60 hover:border-indigo-400 flex items-center justify-between cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-xs">{fCode}</span>
+                          <span className="text-[11px] text-slate-700 dark:text-slate-300 truncate max-w-[150px]">{valuation?.name || '联接基金'}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {valuation && (
+                            <span className={`font-mono text-xs font-semibold ${isValUp ? 'text-[var(--color-up)]' : isValDown ? 'text-[var(--color-down)]' : 'text-slate-400'}`}>
+                              {valuation.gszzl}
+                            </span>
+                          )}
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300 text-[10px] flex items-center gap-0.5">
+                            分时 <ArrowUpRight className="w-2.5 h-2.5" />
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* 操作底栏 */}
+            <div className="grid grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setDrawerStock(null);
+                  onOpenDetail?.(
+                    drawerStock.code,
+                    drawerStock.market,
+                    drawerStock.isFund ? 'fund' : 'stock',
+                    {
+                      name: drawerStock.name,
+                      dwjz: String(drawerStock.price),
+                      gsz: String(drawerStock.price),
+                      gszzl: String(drawerStock.changePct),
+                      market: drawerStock.market,
+                    }
+                  );
+                }}
+                className="py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 font-semibold text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <LineChart className="w-3.5 h-3.5 text-blue-500" />
+                分时K线
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDrawerStock(null);
+                  handleOpenDiagnose(drawerStock);
+                }}
+                className="py-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-950/30 font-semibold text-xs text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100/50 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                AI体检
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleAddToWatchlist(drawerStock)}
+                className={`py-2.5 rounded-xl font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
+                  addedMap[drawerStock.code]
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 border border-emerald-200 dark:border-emerald-800'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                }`}
+              >
+                {addedMap[drawerStock.code] ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                {addedMap[drawerStock.code] ? '已在自选' : '+加自选'}
+              </button>
+            </div>
+          </div>
+        )}
       </Drawer>
     </div>
   );

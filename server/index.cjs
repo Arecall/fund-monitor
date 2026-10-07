@@ -587,8 +587,9 @@ app.get('/api/market/gold', async (_req, res) => {
 
 // 金价历史请求并发回补锁与下采样工具
 const goldHistoryBackfillInflight = new Map();
+const goldBackfillCooldown = new Map();
 
-function downsampleGoldPoints(points, targetCount = 150) {
+function downsampleGoldPoints(points, targetCount = 240) {
   if (!Array.isArray(points) || points.length <= targetCount) return points;
   const result = [points[0]];
   const step = (points.length - 1) / (targetCount - 1);
@@ -628,13 +629,26 @@ app.get('/api/market/gold/:key/history', async (req, res) => {
       [key, targetPeriod, cutoff]
     );
 
-    // 冷启动与静止平线自动回补判断：
+    // 冷启动与连续性回补智能判定：
     //  - 宏观走势 (1W/1M): 若日K锚点不足（1W需要至少5个交易日，1M需要至少15个），自动拉取权威日K回补
-    //  - 分时 (intraday): 若有效点数少于 15，或所有点价格完全一致（休市死线），自动拉取全天真实分钟走势回补
-    const minPointsNeeded = range === 'intraday' ? 15 : (range === '1W' ? 5 : 15);
+    //  - 分时 (intraday): 若有效点数少于 180，或连续数据点之间存在 > 15 分钟的断档空隙，或所有点价格完全一致（休市死线），自动拉取全天真实分钟走势回补
+    let hasIntradayGap = false;
+    if (range === 'intraday' && rows && rows.length >= 2) {
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i].t - rows[i - 1].t > 15 * 60 * 1000) {
+          hasIntradayGap = true;
+          break;
+        }
+      }
+    }
+    const minPointsNeeded = range === 'intraday' ? 180 : (range === '1W' ? 5 : 15);
     const isFlatDeadLine = range === 'intraday' && rows && rows.length >= 2 && rows.every(r => r.v === rows[0].v);
-    if (!rows || rows.length < minPointsNeeded || isFlatDeadLine) {
-      const backfillKey = `${key}:${range}`;
+    const backfillKey = `${key}:${range}`;
+    const lastBackfillTs = goldBackfillCooldown.get(backfillKey) || 0;
+    const canBackfill = now - lastBackfillTs > 60_000;
+
+    if ((!rows || rows.length < minPointsNeeded || hasIntradayGap || isFlatDeadLine) && canBackfill) {
+      goldBackfillCooldown.set(backfillKey, now);
       let backfillPromise = goldHistoryBackfillInflight.get(backfillKey);
       if (!backfillPromise) {
         backfillPromise = (async () => {
@@ -686,8 +700,8 @@ app.get('/api/market/gold/:key/history', async (req, res) => {
     }
 
     const rawPoints = (rows || []).map(r => ({ t: r.t, v: r.v }));
-    // 日K线本身已经每天1点，不强行按150下采样截断，原样返回；分时图则按150下采样保证轻量
-    const points = isDaily ? rawPoints : downsampleGoldPoints(rawPoints, 150);
+    // 日K线本身已经每天1点，不强行截断，原样返回；分时图则按 240 点精细下采样保证轻量与平滑连贯
+    const points = isDaily ? rawPoints : downsampleGoldPoints(rawPoints, 240);
 
     res.json({
       key,

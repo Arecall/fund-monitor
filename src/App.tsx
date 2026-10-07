@@ -62,6 +62,7 @@ import { detectFundMarket, isAnyMarketOpen, isMarketOpen, type FundMarket } from
 import { useModalHistory } from './utils/modalHistory';
 import { Sparkline } from './components/Sparkline';
 import { QuantLogo } from './components/QuantLogo';
+import { MobileBottomTabBar } from './components/MobileBottomTabBar';
 
 // 架构优化：非首屏 Tab 及配置弹窗组件采用 React.lazy() 异步懒加载，缩减首屏 Bundle 体积
 const EmailConfigPanel = React.lazy(() => import('./components/EmailConfigPanel').then(m => ({ default: m.EmailConfigPanel })));
@@ -424,7 +425,7 @@ const WatchlistCard = React.memo(function WatchlistCard({
           : ''
       }`}
     >
-      {/* 楼层 1 (主轴，24px)：标的名称与市场微标 ｜ 右侧：72px 涨跌幅等宽大药丸 */}
+      {/* 楼层 1 (主视觉轴，24px)：标的名称与市场微标 ｜ 右侧：最新现价大字 (对齐标的基线) */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate leading-snug tracking-tight">
@@ -444,28 +445,62 @@ const WatchlistCard = React.memo(function WatchlistCard({
           </Tag>
         </div>
 
-        {/* 核心涨跌幅大药丸 (水上水下着色，72px 等宽，右侧绝对对齐) */}
-        <div className={`w-[72px] h-[26px] shrink-0 flex items-center justify-center rounded-lg font-mono font-bold text-xs tabular-nums shadow-2xs ${changeBg}`}>
-          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
+        {/* 右侧：最新现价 (与标的名称基线对齐，大厂经典第一视觉抓手) */}
+        <div className="shrink-0 text-right">
+          <span className="font-mono font-bold text-[15px] text-slate-800 dark:text-slate-100 tabular-nums leading-none">
+            {(() => {
+              const val = parseFloat(fund.gsz);
+              return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
+            })()}
+          </span>
         </div>
       </div>
 
-      {/* 楼层 2 (辅轴，26px)：代码与时间 ｜ 中间：迷你 Sparkline 走势 ｜ 右侧：最新估值现价与持仓微状态 */}
-      <div className="flex items-center justify-between gap-2 mt-1.5">
-        {/* 左区：代码 + 估算时间 / 实时代理标的 */}
-        <div className="min-w-0 flex flex-col justify-center">
-          <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono tabular-nums leading-none">
+      {/* 楼层 2 (辅助走势轴，26px)：代码与时间 + 持仓入口 ｜ 中间：迷你 Sparkline ｜ 右侧：涨跌幅大药丸 */}
+      <div className="flex items-center justify-between gap-2 mt-2">
+        {/* 左区：代码 + 估算时间 + 持仓徽标 (资产属性归位到元数据行，完全释放右侧空间) */}
+        <div className="min-w-0 flex items-center gap-1.5 sm:gap-2 flex-1 overflow-hidden">
+          <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono tabular-nums leading-none shrink-0">
             <span>{fund.fundcode}</span>
             <span className="text-slate-300 dark:text-slate-600">·</span>
             <span>{fund.gztime ? (fund.gztime.split(' ')[1] || fund.gztime).slice(0, 5) : '--'}</span>
           </div>
+
           {fund.proxyTicker && (
-            <div className="mt-1">
-              <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-sans font-medium" title={fund.quoteSourceName || `代理标的 ${fund.proxyTicker}`}>
-                {fund.proxyTicker} · 实时
-              </span>
-            </div>
+            <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-sans font-medium shrink-0" title={fund.quoteSourceName || `代理标的 ${fund.proxyTicker}`}>
+              {fund.proxyTicker}
+            </span>
           )}
+
+          {/* 持仓微胶囊：左移后从容排布，且与右侧操作完全解耦 */}
+          <div className="shrink-0" onClick={e => e.stopPropagation()}>
+            {pos ? (
+              <button
+                type="button"
+                onClick={() => onEditPosition(code)}
+                className="group relative inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100/80 dark:bg-white/[0.05] border border-slate-200/60 dark:border-white/5 hover:border-blue-500/30 text-[10px] font-mono leading-none tracking-tight text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all active:scale-95 cursor-pointer before:absolute before:-inset-2 before:content-['']"
+                title="修改持仓"
+              >
+                <span>持¥{(holdingValue / 10000).toFixed(1)}w</span>
+                <span className="opacity-40">·</span>
+                <span className={todayProfit > 0 ? 'text-[var(--color-up)] font-bold' : todayProfit < 0 ? 'text-[var(--color-down)] font-bold' : ''}>
+                  {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(1)}
+                </span>
+                <Pencil size={8} className="opacity-0 group-hover:opacity-70 transition-opacity ml-0.5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onEditPosition(code)}
+                className="relative inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-slate-100/70 hover:bg-blue-50 dark:bg-white/[0.04] dark:hover:bg-blue-950/40 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-300 border border-slate-200/60 dark:border-white/10 hover:border-blue-200 transition-all text-[10px] active:scale-95 cursor-pointer leading-none before:absolute before:-inset-2.5 before:content-['']"
+                title="记录持仓"
+                aria-label={`为 ${fund.name} 记录持仓`}
+              >
+                <Plus size={10} className="stroke-[2.5]" />
+                <span className="font-medium">持仓</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* 中区：迷你 Sparkline 分时走势线 (固定 72x22px，去多余外框，平衡居中) */}
@@ -487,40 +522,9 @@ const WatchlistCard = React.memo(function WatchlistCard({
           />
         </div>
 
-        {/* 右区：最新净值/现价 (与上方药丸右侧严格对齐) + 持仓微状态 */}
-        <div className="shrink-0 text-right min-w-[72px]" onClick={e => e.stopPropagation()}>
-          <div className="font-mono font-bold text-sm text-slate-800 dark:text-slate-100 tabular-nums leading-none">
-            {(() => {
-              const val = parseFloat(fund.gsz);
-              return isNaN(val) ? '--' : val.toFixed(selfTab === 'stock' ? 2 : 4);
-            })()}
-          </div>
-
-          {/* 持仓状态：有持仓显示金额与盈亏；无持仓极克制微弱加号，零占位 */}
-          <div className="mt-1 flex items-center justify-end">
-            {pos ? (
-              <button
-                type="button"
-                onClick={() => onEditPosition(code)}
-                className="text-[10px] font-mono leading-none tracking-tight text-slate-400 dark:text-slate-500 hover:text-blue-600 transition-colors"
-              >
-                持¥{(holdingValue / 10000).toFixed(1)}w ·
-                <span className={todayProfit > 0 ? 'text-[var(--color-up)]' : todayProfit < 0 ? 'text-[var(--color-down)]' : ''}>
-                  {todayProfit > 0 ? '+' : ''}{todayProfit.toFixed(1)}
-                </span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => onEditPosition(code)}
-                className="group flex items-center gap-0.5 text-[10px] text-slate-300 dark:text-slate-600 hover:text-blue-500 transition-colors py-0.5"
-                title="记录持仓"
-              >
-                <Plus size={9} className="opacity-70 group-hover:opacity-100" />
-                <span className="text-[9px]">持仓</span>
-              </button>
-            )}
-          </div>
+        {/* 右区：核心涨跌幅大药丸 (等宽 72px，高度 26px，右侧绝对对齐) */}
+        <div className={`w-[72px] h-[26px] shrink-0 flex items-center justify-center rounded-lg font-mono font-bold text-xs tabular-nums shadow-2xs ${changeBg}`}>
+          {isUp ? '+' : ''}{changeVal.toFixed(2)}%
         </div>
       </div>
     </motion.div>
@@ -812,6 +816,7 @@ function App() {
   const [watchlistPage, setWatchlistPage] = useState(1);
   const [watchlistPageSize, setWatchlistPageSize] = useState(10);
   const isDesktopWatchlist = useMediaQuery('(min-width: 768px)');
+  const isDesktop = useMediaQuery('(min-width: 640px)');
   const [mainTab, setMainTab] = useState<'portfolio' | 'gold' | 'ai-stock-pick' | 'bank-stocks'>(() => {
     // 刷新停留在哪个 tab — 从 localStorage 恢复
     try {
@@ -846,10 +851,10 @@ function App() {
   const [buyShares, setBuyShares] = useState('');
   const [buyCost, setBuyCost] = useState('');
   const [sellShares, setSellShares] = useState('');
+  const [sellPrice, setSellPrice] = useState('');
   const [editShares, setEditShares] = useState('');
   const [editCost, setEditCost] = useState('');
-  const [editAmount, setEditAmount] = useState('');     // 总投入金额（"按金额"模式）
-  const [editMode, setEditMode] = useState<'shares' | 'amount'>('shares');  // 输入模式
+  const [editAmount, setEditAmount] = useState('');     // 总投入金额（双向联动）
 
   /* ---------- Preferences ---------- */
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -2074,32 +2079,47 @@ function App() {
     const pos = positionsRef.current[code];
     const fund = fundsDataRef.current[code];
     const curPrice = fund ? (parseFloat(fund.gsz) || parseFloat(fund.dwjz) || 0) : 0;
+    const isStockAsset = (!/^\d{6}$/.test(code)) || (fund && (fund as any).kind === 'stock');
+    const dec = isStockAsset ? 2 : 4;
 
     const s = pos && pos.shares > 0 ? pos.shares : 0;
     const c = pos && pos.cost > 0 ? pos.cost : 0;
 
     setEditShares(s > 0 ? s.toString() : '');
-    setEditCost(c > 0 ? c.toString() : (curPrice > 0 ? curPrice.toFixed(4) : ''));
+    setEditCost(c > 0 ? c.toFixed(dec) : (curPrice > 0 ? curPrice.toFixed(dec) : ''));
     setEditAmount(s > 0 && c > 0 ? (s * c).toFixed(2) : '');
-    setEditMode('shares');
 
     // 默认行为：如果已有持仓，默认进入【补仓】模式；如果无持仓，默认进入【建仓/重置】模式
     if (s > 0) {
       setPosActionTab('buy');
       setBuyShares('');
-      setBuyCost(curPrice > 0 ? curPrice.toFixed(4) : (c > 0 ? c.toFixed(4) : ''));
+      setBuyCost(curPrice > 0 ? curPrice.toFixed(dec) : (c > 0 ? c.toFixed(dec) : ''));
       setSellShares('');
+      setSellPrice(curPrice > 0 ? curPrice.toFixed(dec) : (c > 0 ? c.toFixed(dec) : ''));
     } else {
       setPosActionTab('set');
       setBuyShares('');
-      setBuyCost(curPrice > 0 ? curPrice.toFixed(4) : '');
+      setBuyCost(curPrice > 0 ? curPrice.toFixed(dec) : '');
       setSellShares('');
+      setSellPrice(curPrice > 0 ? curPrice.toFixed(dec) : '');
     }
   }, []);
 
   const handleActionSavePosition = async () => {
     if (!editingCode) return;
     const currentPos = positions[editingCode] || { shares: 0, cost: 0, fund_code: editingCode };
+    const editingFund = fundsData[editingCode];
+    const editingItem = watchlistItems.find(w => w.fund_code === editingCode);
+    const isStockAsset = editingItem?.kind === 'stock' || (!editingItem && !/^\d{6}$/.test(editingCode));
+    const assetMarket = editingItem?.market || editingFund?.market;
+    const isUsAsset = assetMarket === 'us' || (!assetMarket && /^[A-Za-z]{1,5}$/.test(editingCode));
+    const isHkAsset = assetMarket === 'hk' || (!assetMarket && /^\d{4,5}$/.test(editingCode));
+    const assetUnit = isStockAsset ? '股' : '份';
+    const currencySymbol = isUsAsset ? '$' : isHkAsset ? 'HK$' : '¥';
+    const priceDecimals = isStockAsset ? 2 : 4;
+    const curMarketPrice = editingFund
+      ? (parseFloat(editingFund.gsz) || parseFloat(editingFund.dwjz) || 0)
+      : 0;
 
     let finalShares = currentPos.shares;
     let finalCost = currentPos.cost;
@@ -2108,7 +2128,7 @@ function App() {
       const sBuy = parseFloat(buyShares);
       const cBuy = parseFloat(buyCost);
       if (isNaN(sBuy) || sBuy <= 0 || isNaN(cBuy) || cBuy <= 0) {
-        showToast('请输入有效的补仓买入份数与单价（均需 > 0）');
+        showToast(`请输入有效的补仓买入数量与单价（均需 > 0）`);
         return;
       }
       const totalOldCost = currentPos.shares * currentPos.cost;
@@ -2117,12 +2137,13 @@ function App() {
       finalCost = (totalOldCost + totalBuyCost) / finalShares;
     } else if (posActionTab === 'sell') {
       const sSell = parseFloat(sellShares);
+      const pSell = parseFloat(sellPrice) || curMarketPrice || currentPos.cost;
       if (isNaN(sSell) || sSell <= 0) {
-        showToast('请输入有效的卖出份数（必须 > 0）');
+        showToast(`请输入有效的卖出数量（必须 > 0 ${assetUnit}）`);
         return;
       }
       if (sSell > currentPos.shares + 0.0001) {
-        showToast(`卖出份数超出持有总额 (${currentPos.shares.toFixed(2)} 份)`);
+        showToast(`卖出数量超出当前持仓 (${currentPos.shares.toFixed(2)} ${assetUnit})`);
         return;
       }
       finalShares = currentPos.shares - sSell;
@@ -2134,7 +2155,8 @@ function App() {
           delete next[editingCode];
           return next;
         });
-        showToast('已全仓卖出清空');
+        const realizedProfit = sSell * (pSell - currentPos.cost);
+        showToast(`已全仓卖出清空：本次实现盈亏 ${realizedProfit >= 0 ? '+' : ''}${currencySymbol}${realizedProfit.toFixed(2)}`);
         setEditingCode(null);
         return;
       }
@@ -2145,7 +2167,7 @@ function App() {
       const sSet = parseFloat(editShares);
       const cSet = parseFloat(editCost);
       if (isNaN(sSet) || sSet <= 0 || isNaN(cSet) || cSet <= 0) {
-        showToast('请输入有效的总份数与单价（均需 > 0）');
+        showToast(`请输入有效的总持有数量与成本单价（均需 > 0）`);
         return;
       }
       finalShares = sSet;
@@ -2158,8 +2180,8 @@ function App() {
         ...prev,
         [editingCode]: { fund_code: editingCode, shares: finalShares, cost: finalCost, updated_at: new Date().toISOString() }
       }));
-      const actionDesc = posActionTab === 'buy' ? '补仓成功' : posActionTab === 'sell' ? '减仓成功' : '持仓更新';
-      showToast(`${actionDesc}：持仓变为 ${finalShares.toFixed(2)} 份 @ 均价 ¥${finalCost.toFixed(4)}`);
+      const actionDesc = posActionTab === 'buy' ? '加仓补仓成功' : posActionTab === 'sell' ? '减仓卖出成功' : '持仓已更新';
+      showToast(`${actionDesc}：持仓变为 ${finalShares.toFixed(2)} ${assetUnit} @ 成本均价 ${currencySymbol}${finalCost.toFixed(priceDecimals)}`);
     } catch (e: any) {
       showToast('保存持仓失败：' + (e?.message || '请检查后端'));
     }
@@ -2380,7 +2402,7 @@ function App() {
      ─────────────────────────────────────────────────────────────────── */
 
   return (
-    <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
+    <div className="min-h-screen bg-[#f5f5f7] dark:bg-black text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 pb-18 md:pb-0">
 
       {/* Toast — spring slide-in top-center (z-50 高于 Modal 与 Navbar，阴影与深度对比增强) */}
       <AnimatePresence>
@@ -2401,18 +2423,18 @@ function App() {
         )}
       </AnimatePresence>
 
-      {/* Top navigation — Frosted Glass material (大厂工效标准微岛，全视口自适应) */}
-      <nav className="apple-navbar sticky top-0 z-40 px-2 py-1.5 md:px-6 md:py-3.5 flex items-center justify-between gap-1.5 md:gap-4">
-        <div className="flex items-center gap-1.5 md:gap-6 min-w-0">
-          <h1 className="text-base md:text-lg font-bold tracking-tight apple-display-heading flex items-center gap-2 whitespace-nowrap shrink-0">
+      {/* Top navigation — Frosted Glass material (大厂工效标准微岛，移动端极简通透) */}
+      <nav className="apple-navbar sticky top-0 z-40 px-3 py-2 md:px-6 md:py-3.5 flex items-center justify-between gap-2 md:gap-4">
+        <div className="flex items-center gap-2 md:gap-6 min-w-0">
+          <h1 className="text-sm sm:text-base md:text-lg font-bold tracking-tight apple-display-heading flex items-center gap-2 whitespace-nowrap shrink-0">
             <QuantLogo size={28} className="w-7 h-7 shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] active:scale-95 transition-transform duration-150 shrink-0" />
-            <span className="hidden md:inline bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 dark:from-white dark:via-slate-100 dark:to-slate-300 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 dark:from-white dark:via-slate-100 dark:to-slate-300 bg-clip-text text-transparent">
               全球量化基金平台
             </span>
           </h1>
 
-          {/* 主 tab: 升级至大厂标准工效尺寸 (高度提升、字号13px/14px、图标14px、多视口自适应Padding) */}
-          <div className="relative inline-flex items-center bg-slate-100/70 dark:bg-white/5 border border-[var(--hairline-border)] rounded-full p-0.5 md:p-1 shadow-2xs shrink-0">
+          {/* 桌面端主 tab (仅桌面端展示，移动端由底部吸底 TabBar 承载) */}
+          <div className="relative hidden md:inline-flex items-center bg-slate-100/70 dark:bg-white/5 border border-[var(--hairline-border)] rounded-full p-1 shadow-2xs shrink-0">
             {([
               { key: 'portfolio',     label: '自选',         shortLabel: '自选', icon: BookmarkCheck },
               { key: 'gold',          label: '金价',         shortLabel: '金价', icon: Coins },
@@ -3380,316 +3402,590 @@ function App() {
             onDismiss={() => setEditingCode(null)}
             ariaLabel="编辑持仓"
             closeOnScrimClick={false}
+            placement="responsive"
           >
-            <motion.div
-              initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92, y: 12, filter: 'blur(8px)' }}
-              animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
-              exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 8, filter: 'blur(4px)' }}
-              transition={SPRING.sheet}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-2xl rounded-[28px] max-w-sm w-full p-6 border border-[var(--hairline-border)] shadow-2xl relative overflow-hidden space-y-4"
-            >
-              {/* Top highlight */}
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-white/10" />
+            {(() => {
+              const editingFund = fundsData[editingCode];
+              const editingItem = watchlistItems.find(w => w.fund_code === editingCode);
+              const isStockAsset = editingItem?.kind === 'stock' || (!editingItem && !/^\d{6}$/.test(editingCode || ''));
+              const assetMarket = editingItem?.market || editingFund?.market;
+              const isUsAsset = assetMarket === 'us' || (!assetMarket && /^[A-Za-z]{1,5}$/.test(editingCode || ''));
+              const isHkAsset = assetMarket === 'hk' || (!assetMarket && /^\d{4,5}$/.test(editingCode || ''));
 
-              {/* 标题栏 — 解决过密与长文本溢出 */}
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="apple-eyebrow text-slate-400 text-[10px] mb-0.5 flex items-center gap-1">
-                    <span aria-hidden>💼</span> 持仓管理
+              const assetUnit = isStockAsset ? '股' : '份';
+              const currencySymbol = isUsAsset ? '$' : isHkAsset ? 'HK$' : '¥';
+              const priceDecimals = isStockAsset ? 2 : 4;
+              const curMarketPrice = editingFund
+                ? (parseFloat(editingFund.gsz) || parseFloat(editingFund.dwjz) || 0)
+                : 0;
+
+              const curPos = positions[editingCode];
+              const curShares = curPos && curPos.shares > 0 ? curPos.shares : 0;
+              const curCost = curPos && curPos.cost > 0 ? curPos.cost : 0;
+              const curHoldingValue = curShares * curMarketPrice;
+              const curProfit = curShares > 0 && curCost > 0 && curMarketPrice > 0 ? curShares * (curMarketPrice - curCost) : 0;
+              const curProfitPct = curCost > 0 && curMarketPrice > 0 ? ((curMarketPrice - curCost) / curCost) * 100 : 0;
+              const isProfitUp = curProfit > 0;
+              const isProfitDown = curProfit < 0;
+
+              return (
+                <motion.div
+                  drag={!isDesktop ? 'y' : false}
+                  dragConstraints={{ top: 0 }}
+                  dragElastic={0.18}
+                  onDragEnd={(_e, info) => {
+                    if (!isDesktop && (info.offset.y > 80 || info.velocity.y > 300)) {
+                      setEditingCode(null);
+                    }
+                  }}
+                  initial={
+                    prefersReducedMotion
+                      ? { opacity: 0 }
+                      : isDesktop
+                        ? { opacity: 0, scale: 0.94, y: 12, filter: 'blur(8px)' }
+                        : { y: '100%' }
+                  }
+                  animate={
+                    isDesktop
+                      ? { opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }
+                      : { y: 0 }
+                  }
+                  exit={
+                    prefersReducedMotion
+                      ? { opacity: 0 }
+                      : isDesktop
+                        ? { opacity: 0, scale: 0.95, y: 8, filter: 'blur(4px)' }
+                        : { y: '100%' }
+                  }
+                  transition={isDesktop ? SPRING.sheet : { type: 'spring', damping: 28, stiffness: 320, bounce: 0 }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-2xl rounded-t-[28px] sm:rounded-[28px] max-w-md w-full border-t sm:border border-[var(--hairline-border)] shadow-2xl relative overflow-hidden flex flex-col max-h-[90dvh] sm:max-h-none"
+                >
+                  {/* 移动端手势拖拽指示条 (Handle Bar) */}
+                  <div className="sm:hidden w-full pt-3 pb-1 flex justify-center touch-none cursor-grab active:cursor-grabbing shrink-0">
+                    <div className="w-10 h-1.5 bg-slate-300 dark:bg-white/20 rounded-full" />
                   </div>
-                  <h3 className="apple-display-heading text-sm font-bold text-slate-900 dark:text-slate-50 truncate" title={fundsData[editingCode]?.name || editingCode}>
-                    {fundsData[editingCode]?.name || editingCode}
-                  </h3>
-                </div>
-                {positions[editingCode] && positions[editingCode].shares > 0 && (
-                  <div className="text-right shrink-0 bg-slate-50 dark:bg-white/5 border border-[var(--hairline-border)] px-2.5 py-1 rounded-xl">
-                    <div className="text-[9px] text-slate-400 font-mono">现有持仓</div>
-                    <div className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200 tabular-nums">
-                      {positions[editingCode].shares.toFixed(2)}<span className="text-[9px] font-normal text-slate-400">份</span>
+
+                  {/* Top highlight */}
+                  <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-white/10" />
+
+                  {/* 内部滚动与安全区容器 */}
+                  <div className="p-5 sm:p-6 overflow-y-auto overscroll-contain space-y-3.5 pb-safe pb-6 sm:pb-6">
+                    {/* 标题栏 — 资产类型、名称、代码与关闭 */}
+                    <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="apple-eyebrow text-slate-400 text-[10px] mb-0.5 flex items-center gap-1.5">
+                        <span aria-hidden>💼</span>
+                        <span>持仓管理</span>
+                        <span className="opacity-40">·</span>
+                        <span>{isStockAsset ? (isUsAsset ? '美股' : isHkAsset ? '港股' : 'A股') : '场外基金'}</span>
+                      </div>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="apple-display-heading text-sm sm:text-base font-bold text-slate-900 dark:text-slate-50 truncate" title={editingFund?.name || editingCode}>
+                          {editingFund?.name || editingCode}
+                        </h3>
+                        <span className="font-mono text-[10px] text-slate-400 shrink-0 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/5 border border-[var(--hairline-border)]">
+                          {editingCode}
+                        </span>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditingCode(null)}
+                      className="p-1 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+                      aria-label="关闭弹窗"
+                    >
+                      <X size={16} />
+                    </button>
                   </div>
-                )}
-              </div>
 
-              {/* 3 种持仓操作模式分段控制器：补仓 | 卖出 | 修正 */}
-              <div className="flex p-0.5 bg-slate-100/70 dark:bg-white/5 rounded-full text-[11px]">
-                {([
-                  { key: 'buy', label: '➕ 补仓买入' },
-                  { key: 'sell', label: '➖ 减仓卖出' },
-                  { key: 'set', label: '✏️ 直接修正' },
-                ] as const).map(opt => (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => setPosActionTab(opt.key)}
-                    className={`flex-1 py-1.5 rounded-full font-semibold transition-all ${
-                      posActionTab === opt.key
-                        ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+                  {/* 1. 当前持仓概况与市值微岛 (Position Snapshot) */}
+                  <div className="rounded-2xl bg-slate-50/80 dark:bg-white/[0.03] border border-[var(--hairline-border)] p-3">
+                    {curShares > 0 ? (
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-[10px] text-slate-400">当前市价 / 持仓均价</span>
+                          <div className="flex items-baseline gap-1 font-mono font-bold mt-0.5">
+                            <span className="text-slate-800 dark:text-slate-100 tabular-nums">
+                              {currencySymbol}{curMarketPrice > 0 ? curMarketPrice.toFixed(priceDecimals) : '—'}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-normal tabular-nums">
+                              / {currencySymbol}{curCost.toFixed(priceDecimals)}
+                            </span>
+                          </div>
+                        </div>
 
-              <div className="space-y-3.5">
-                {/* 1. 补仓 / 加仓 */}
-                {posActionTab === 'buy' && (
-                  <>
-                    <div>
-                      <label className="apple-eyebrow block mb-1">本次买入/补仓份数 (份)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="例如: 500"
-                        value={buyShares}
-                        onChange={(e) => setBuyShares(e.target.value)}
-                        className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="apple-eyebrow block mb-1">买入成交单价 (元/份)</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        placeholder="成交单价"
-                        value={buyCost}
-                        onChange={(e) => setBuyCost(e.target.value)}
-                        className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
-                      />
-                    </div>
+                        <div className="flex flex-col text-right min-w-0">
+                          <span className="text-[10px] text-slate-400">当前持有</span>
+                          <span className="font-mono font-bold text-slate-800 dark:text-slate-100 mt-0.5 tabular-nums">
+                            {curShares.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">{assetUnit}</span>
+                          </span>
+                        </div>
 
-                    {/* 补仓后成本加权预估面板 */}
-                    <div className="bg-blue-50/60 dark:bg-blue-950/20 border border-blue-100/80 dark:border-blue-900/30 rounded-2xl p-3 text-[11px] space-y-1.5">
-                      <div className="text-slate-500 flex justify-between">
-                        <span>当前持仓：</span>
-                        <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                          {positions[editingCode]?.shares.toFixed(2) || '0'} 份 @ ¥{positions[editingCode]?.cost.toFixed(4) || '0'}
-                        </span>
-                      </div>
-                      <div className="text-blue-600 dark:text-blue-400 font-semibold flex justify-between pt-1.5 border-t border-blue-100/60 dark:border-blue-900/40">
-                        <span>补仓后新持仓：</span>
-                        <span className="font-mono tabular-nums">
-                          {(() => {
-                            const curS = positions[editingCode]?.shares || 0;
-                            const curC = positions[editingCode]?.cost || 0;
-                            const bS = parseFloat(buyShares);
-                            const bC = parseFloat(buyCost);
-                            if (isNaN(bS) || bS <= 0) {
-                              return '请输入补仓份数';
-                            }
-                            const validBc = isNaN(bC) || bC <= 0 ? curC : bC;
-                            const nextS = curS + bS;
-                            const nextC = (curS * curC + bS * validBc) / nextS;
-                            return `${nextS.toFixed(2)} 份 @ 新加权成本 ¥${nextC.toFixed(4)}`;
-                          })()}
-                        </span>
-                      </div>
-                    </div>
-                  </>
-                )}
+                        <div className="flex flex-col min-w-0 pt-1.5 border-t border-slate-200/50 dark:border-white/5">
+                          <span className="text-[10px] text-slate-400">持股市值</span>
+                          <span className="font-mono font-bold text-slate-800 dark:text-slate-100 mt-0.5 tabular-nums">
+                            {currencySymbol}{curHoldingValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
 
-                {/* 2. 减仓 / 卖出 */}
-                {posActionTab === 'sell' && (
-                  <>
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="apple-eyebrow">本次卖出减仓份数 (份)</label>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          最多可卖 {positions[editingCode]?.shares.toFixed(2) || '0'} 份
-                        </span>
-                      </div>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max={positions[editingCode]?.shares || 0}
-                        placeholder="卖出份数"
-                        value={sellShares}
-                        onChange={(e) => setSellShares(e.target.value)}
-                        className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
-                      />
-                      {/* 快捷比例选框 */}
-                      <div className="flex gap-1.5 mt-2">
-                        {[
-                          { label: '25%', ratio: 0.25 },
-                          { label: '50%', ratio: 0.5 },
-                          { label: '75%', ratio: 0.75 },
-                          { label: '全仓卖出', ratio: 1 },
-                        ].map(btn => (
-                          <button
-                            key={btn.label}
-                            type="button"
-                            onClick={() => {
-                              const maxS = positions[editingCode]?.shares || 0;
-                              setSellShares((maxS * btn.ratio).toFixed(2));
+                        <div className="flex flex-col text-right min-w-0 pt-1.5 border-t border-slate-200/50 dark:border-white/5">
+                          <span className="text-[10px] text-slate-400">浮动盈亏</span>
+                          <span
+                            className="font-mono font-bold mt-0.5 tabular-nums"
+                            style={{
+                              color: isProfitUp ? 'var(--color-up)' : isProfitDown ? 'var(--color-down)' : 'var(--color-flat)'
                             }}
-                            className="flex-1 py-1 text-[10px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/15 rounded-lg text-slate-600 dark:text-slate-300 transition-colors"
                           >
-                            {btn.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 减仓预估面板 */}
-                    <div className="bg-amber-50/60 dark:bg-amber-950/20 border border-amber-100/80 dark:border-amber-900/30 rounded-2xl p-3 text-[11px] space-y-1.5">
-                      <div className="text-slate-500 flex justify-between">
-                        <span>卖出后剩余持仓：</span>
-                        <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                          {(() => {
-                            const curS = positions[editingCode]?.shares || 0;
-                            const sS = parseFloat(sellShares) || 0;
-                            const left = Math.max(0, curS - sS);
-                            return `${left.toFixed(2)} 份 (成本维持 ¥${(positions[editingCode]?.cost || 0).toFixed(4)})`;
-                          })()}
-                        </span>
-                      </div>
-                      <div className="text-amber-700 dark:text-amber-400 font-semibold flex justify-between pt-1.5 border-t border-amber-100/60 dark:border-amber-900/40">
-                        <span>预估回笼资金：</span>
-                        <span className="font-mono tabular-nums">
-                          {(() => {
-                            const sS = parseFloat(sellShares) || 0;
-                            const curP = fundsData[editingCode]
-                              ? (parseFloat(fundsData[editingCode].gsz) || parseFloat(fundsData[editingCode].dwjz) || 0)
-                              : (positions[editingCode]?.cost || 0);
-                            return `¥ ${(sS * curP).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                          })()}
-                        </span>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* 3. 直接修正设置 */}
-                {posActionTab === 'set' && (
-                  <>
-                    {/* 输入模式切换：按份数 / 按金额 */}
-                    <div className="flex p-0.5 bg-slate-100/50 dark:bg-white/5 rounded-full mb-3 text-[10px]">
-                      {([
-                        { key: 'shares', label: '按份数设定' },
-                        { key: 'amount', label: '按总金额设定' },
-                      ] as const).map(opt => (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          onClick={() => setEditMode(opt.key)}
-                          className={`flex-1 py-1 rounded-full font-semibold transition-colors ${
-                            editMode === opt.key
-                              ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-sm'
-                              : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {editMode === 'shares' ? (
-                      <>
-                        <div>
-                          <label className="apple-eyebrow block mb-1">总持有份额 (份)</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            placeholder="如: 1000"
-                            value={editShares}
-                            onChange={(e) => setEditShares(e.target.value)}
-                            className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
-                          />
+                            {isProfitUp ? '+' : ''}{currencySymbol}{Math.abs(curProfit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isProfitUp ? '+' : ''}{curProfitPct.toFixed(2)}%)
+                          </span>
                         </div>
-                        <div>
-                          <label className="apple-eyebrow block mb-1">持仓均价成本 (元/份)</label>
-                          <input
-                            type="number"
-                            step="0.0001"
-                            min="0"
-                            placeholder="如: 2.1350"
-                            value={editCost}
-                            onChange={(e) => setEditCost(e.target.value)}
-                            className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
-                          />
-                        </div>
-                      </>
+                      </div>
                     ) : (
+                      <div className="flex items-center justify-between text-xs py-0.5">
+                        <span className="text-slate-400 text-[11px]">当前未建仓 · 待设定初始持仓</span>
+                        <div className="flex items-center gap-1 font-mono text-xs">
+                          <span className="text-slate-400 text-[10px]">最新市价</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-100 tabular-nums">
+                            {currencySymbol}{curMarketPrice > 0 ? curMarketPrice.toFixed(priceDecimals) : '—'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. 主操作模式分段控制器 (单层整洁) */}
+                  <div className="flex p-0.5 bg-slate-100 dark:bg-white/5 rounded-full text-xs">
+                    {([
+                      { key: 'buy', label: '➕ 补仓加仓', disabled: false },
+                      { key: 'sell', label: '➖ 减仓卖出', disabled: curShares <= 0 },
+                      { key: 'set', label: '✏️ 直接修正', disabled: false },
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        disabled={opt.disabled}
+                        onClick={() => setPosActionTab(opt.key)}
+                        className={`flex-1 py-1.5 rounded-full font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                          posActionTab === opt.key
+                            ? 'bg-white dark:bg-[#2c2c2e] text-slate-900 dark:text-slate-50 shadow-xs'
+                            : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 3. 操作表单与即时推演看板 */}
+                  <div className="space-y-3">
+                    {/* Mode A: 补仓买入 */}
+                    {posActionTab === 'buy' && (
                       <>
                         <div>
-                          <label className="apple-eyebrow block mb-1">总投入金额 (元)</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            placeholder="如: 10000"
-                            value={editAmount}
-                            onChange={(e) => {
-                              setEditAmount(e.target.value);
-                              const a = parseFloat(e.target.value);
-                              const c = parseFloat(editCost);
-                              if (!isNaN(a) && !isNaN(c) && c > 0 && a >= 0) setEditShares((a / c).toFixed(2));
-                            }}
-                            className="apple-input w-full px-3.5 py-2 text-xs font-mono font-semibold placeholder-slate-400"
-                          />
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              本次买入数量 ({assetUnit})
+                            </label>
+                          </div>
+                          <div className="relative flex items-center">
+                            <input
+                              type="number"
+                              step={isStockAsset ? '1' : '0.01'}
+                              min="0"
+                              placeholder={isStockAsset ? '例如: 100' : '例如: 1000'}
+                              value={buyShares}
+                              onChange={(e) => setBuyShares(e.target.value)}
+                              className="apple-input w-full pr-10 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                            <span className="absolute right-3 text-xs text-slate-400 font-medium pointer-events-none">
+                              {assetUnit}
+                            </span>
+                          </div>
                         </div>
+
                         <div>
-                          <label className="apple-eyebrow block mb-1">成本单价 (元/份)</label>
-                          <input
-                            type="number"
-                            step="0.0001"
-                            min="0"
-                            placeholder="单价"
-                            value={editCost}
-                            onChange={(e) => {
-                              setEditCost(e.target.value);
-                              const c = parseFloat(e.target.value);
-                              const a = parseFloat(editAmount);
-                              if (!isNaN(c) && !isNaN(a) && c > 0 && a >= 0) setEditShares((a / c).toFixed(2));
-                            }}
-                            className="apple-input w-full px-3.5 py-2 text-xs font-mono placeholder-slate-400"
-                          />
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              买入成交单价 ({currencySymbol}/{assetUnit})
+                            </label>
+                            {curMarketPrice > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setBuyCost(curMarketPrice.toFixed(priceDecimals))}
+                                className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer font-medium"
+                              >
+                                ⚡ 带入现价 {currencySymbol}{curMarketPrice.toFixed(priceDecimals)}
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative flex items-center">
+                            <span className="absolute left-3 text-xs text-slate-400 font-mono font-medium pointer-events-none">
+                              {currencySymbol}
+                            </span>
+                            <input
+                              type="number"
+                              step={isStockAsset ? '0.01' : '0.0001'}
+                              min="0"
+                              placeholder="成交单价"
+                              value={buyCost}
+                              onChange={(e) => setBuyCost(e.target.value)}
+                              className="apple-input w-full pl-8 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                          </div>
+                        </div>
+
+                        {/* 补仓后成本加权预估面板 */}
+                        <div className="bg-blue-50/70 dark:bg-blue-950/20 border border-blue-100/80 dark:border-blue-900/30 rounded-2xl p-3 text-xs space-y-1.5">
+                          <div className="text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                            <span>预计需投入资金：</span>
+                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {(() => {
+                                const bS = parseFloat(buyShares) || 0;
+                                const bC = parseFloat(buyCost) || 0;
+                                return `${currencySymbol}${(bS * bC).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                              })()}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-1.5 border-t border-blue-100/60 dark:border-blue-900/40 text-blue-600 dark:text-blue-400 font-semibold">
+                            <span>加仓后持仓与成本：</span>
+                            <span className="font-mono tabular-nums text-right">
+                              {(() => {
+                                const bS = parseFloat(buyShares);
+                                const bC = parseFloat(buyCost);
+                                if (isNaN(bS) || bS <= 0 || isNaN(bC) || bC <= 0) {
+                                  return <span className="font-normal text-[11px] text-slate-400">输入数量与单价后试算</span>;
+                                }
+                                const nextS = curShares + bS;
+                                const nextC = (curShares * curCost + bS * bC) / nextS;
+                                const costDiff = curCost > 0 ? nextC - curCost : 0;
+                                return (
+                                  <>
+                                    <div>{nextS.toFixed(2)} {assetUnit} @ {currencySymbol}{nextC.toFixed(priceDecimals)}</div>
+                                    {curCost > 0 && (
+                                      <div className="text-[10px] font-normal text-slate-400">
+                                        成本{costDiff > 0 ? `抬升 +${currencySymbol}${costDiff.toFixed(priceDecimals)}` : costDiff < 0 ? `摊薄 -${currencySymbol}${Math.abs(costDiff).toFixed(priceDecimals)}` : '持平'}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </span>
+                          </div>
                         </div>
                       </>
                     )}
-                  </>
-                )}
-              </div>
 
-              <div className="flex items-center justify-between gap-2 text-xs pt-1 border-t border-slate-100 dark:border-white/5">
-                {positions[editingCode] ? (
-                  <button
-                    type="button"
-                    onClick={handleClearPosition}
-                    className="px-2.5 py-1.5 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 font-semibold flex items-center gap-1 text-[11px] rounded-full transition-colors cursor-pointer"
-                  >
-                    <Trash2 size={12} />
-                    清空持仓
-                  </button>
-                ) : (
-                  <span />
-                )}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditingCode(null)}
-                    className="px-4 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors cursor-pointer"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleActionSavePosition}
-                    className="px-4 py-1.5 text-xs font-semibold rounded-full bg-[#0066cc] hover:bg-[#0055b3] dark:bg-[#2997ff] dark:hover:bg-[#47a4ff] text-white shadow-sm transition-all cursor-pointer"
-                  >
-                    {posActionTab === 'buy' ? '确认补仓' : posActionTab === 'sell' ? '确认卖出' : '保存设置'}
-                  </button>
-                </div>
-              </div>
-            </motion.div>          </ModalShell>
+                    {/* Mode B: 减仓卖出 */}
+                    {posActionTab === 'sell' && (
+                      <>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              本次卖出数量 ({assetUnit})
+                            </label>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              最多可卖 {curShares.toFixed(2)} {assetUnit}
+                            </span>
+                          </div>
+                          <div className="relative flex items-center">
+                            <input
+                              type="number"
+                              step={isStockAsset ? '1' : '0.01'}
+                              min="0"
+                              max={curShares}
+                              placeholder="卖出数量"
+                              value={sellShares}
+                              onChange={(e) => setSellShares(e.target.value)}
+                              className="apple-input w-full pr-10 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                            <span className="absolute right-3 text-xs text-slate-400 font-medium pointer-events-none">
+                              {assetUnit}
+                            </span>
+                          </div>
+
+                          {/* 快捷比例选框 */}
+                          <div className="flex gap-1.5 mt-2">
+                            {[
+                              { label: '25%', ratio: 0.25 },
+                              { label: '50%', ratio: 0.5 },
+                              { label: '75%', ratio: 0.75 },
+                              { label: '全部清仓', ratio: 1 },
+                            ].map(btn => (
+                              <button
+                                key={btn.label}
+                                type="button"
+                                onClick={() => {
+                                  setSellShares((curShares * btn.ratio).toFixed(isStockAsset ? 0 : 2));
+                                }}
+                                className="flex-1 py-1 text-[10px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 rounded-lg text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
+                              >
+                                {btn.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              卖出成交单价 ({currencySymbol}/{assetUnit})
+                            </label>
+                            {curMarketPrice > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setSellPrice(curMarketPrice.toFixed(priceDecimals))}
+                                className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer font-medium"
+                              >
+                                ⚡ 带入现价 {currencySymbol}{curMarketPrice.toFixed(priceDecimals)}
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative flex items-center">
+                            <span className="absolute left-3 text-xs text-slate-400 font-mono font-medium pointer-events-none">
+                              {currencySymbol}
+                            </span>
+                            <input
+                              type="number"
+                              step={isStockAsset ? '0.01' : '0.0001'}
+                              min="0"
+                              placeholder="成交单价"
+                              value={sellPrice}
+                              onChange={(e) => setSellPrice(e.target.value)}
+                              className="apple-input w-full pl-8 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                          </div>
+                        </div>
+
+                        {/* 减仓预估面板（增加实现盈亏核心金融指标） */}
+                        <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-100/80 dark:border-amber-900/30 rounded-2xl p-3 text-xs space-y-1.5">
+                          <div className="text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                            <span>卖出后剩余持仓：</span>
+                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {(() => {
+                                const sS = parseFloat(sellShares) || 0;
+                                const left = Math.max(0, curShares - sS);
+                                return `${left.toFixed(2)} ${assetUnit} (成本维持 ${currencySymbol}${curCost.toFixed(priceDecimals)})`;
+                              })()}
+                            </span>
+                          </div>
+
+                          <div className="text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                            <span>预估回笼现金流：</span>
+                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {(() => {
+                                const sS = parseFloat(sellShares) || 0;
+                                const sP = parseFloat(sellPrice) || curMarketPrice || curCost;
+                                return `${currencySymbol}${(sS * sP).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                              })()}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-1.5 border-t border-amber-100/60 dark:border-amber-900/40 font-semibold">
+                            <span className="text-amber-800 dark:text-amber-300">本次实现净盈亏：</span>
+                            <span className="font-mono tabular-nums text-right">
+                              {(() => {
+                                const sS = parseFloat(sellShares) || 0;
+                                const sP = parseFloat(sellPrice) || curMarketPrice || curCost;
+                                if (sS <= 0 || curCost <= 0) {
+                                  return <span className="font-normal text-[11px] text-slate-400">输入卖出数量后试算</span>;
+                                }
+                                const realizedAmt = sS * (sP - curCost);
+                                const realizedPct = curCost > 0 ? ((sP - curCost) / curCost) * 100 : 0;
+                                const isUp = realizedAmt > 0;
+                                const isDown = realizedAmt < 0;
+                                return (
+                                  <span
+                                    style={{
+                                      color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)'
+                                    }}
+                                  >
+                                    {isUp ? '+' : ''}{currencySymbol}{Math.abs(realizedAmt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isUp ? '+' : ''}{realizedPct.toFixed(2)}%)
+                                  </span>
+                                );
+                              })()}
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Mode C: 直接修正设置 */}
+                    {posActionTab === 'set' && (
+                      <>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              总持有数量 ({assetUnit})
+                            </label>
+                          </div>
+                          <div className="relative flex items-center">
+                            <input
+                              type="number"
+                              step={isStockAsset ? '1' : '0.01'}
+                              min="0"
+                              placeholder={isStockAsset ? '例如: 1000' : '例如: 5000'}
+                              value={editShares}
+                              onChange={(e) => {
+                                setEditShares(e.target.value);
+                                const s = parseFloat(e.target.value);
+                                const c = parseFloat(editCost);
+                                if (!isNaN(s) && !isNaN(c) && s >= 0 && c >= 0) setEditAmount((s * c).toFixed(2));
+                              }}
+                              className="apple-input w-full pr-10 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                            <span className="absolute right-3 text-xs text-slate-400 font-medium pointer-events-none">
+                              {assetUnit}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              持仓均价成本 ({currencySymbol}/{assetUnit})
+                            </label>
+                            {curMarketPrice > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditCost(curMarketPrice.toFixed(priceDecimals));
+                                  const s = parseFloat(editShares);
+                                  if (!isNaN(s) && s >= 0) setEditAmount((s * curMarketPrice).toFixed(2));
+                                }}
+                                className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5 cursor-pointer font-medium"
+                              >
+                                ⚡ 带入现价 {currencySymbol}{curMarketPrice.toFixed(priceDecimals)}
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative flex items-center">
+                            <span className="absolute left-3 text-xs text-slate-400 font-mono font-medium pointer-events-none">
+                              {currencySymbol}
+                            </span>
+                            <input
+                              type="number"
+                              step={isStockAsset ? '0.01' : '0.0001'}
+                              min="0"
+                              placeholder="持仓均价"
+                              value={editCost}
+                              onChange={(e) => {
+                                setEditCost(e.target.value);
+                                const c = parseFloat(e.target.value);
+                                const s = parseFloat(editShares);
+                                if (!isNaN(s) && !isNaN(c) && s >= 0 && c >= 0) setEditAmount((s * c).toFixed(2));
+                              }}
+                              className="apple-input w-full pl-8 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                              总投入本金 ({currencySymbol}) · 双向联动
+                            </label>
+                          </div>
+                          <div className="relative flex items-center">
+                            <span className="absolute left-3 text-xs text-slate-400 font-mono font-medium pointer-events-none">
+                              {currencySymbol}
+                            </span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="总成本金额"
+                              value={editAmount}
+                              onChange={(e) => {
+                                setEditAmount(e.target.value);
+                                const a = parseFloat(e.target.value);
+                                const c = parseFloat(editCost);
+                                if (!isNaN(a) && !isNaN(c) && c > 0 && a >= 0) {
+                                  setEditShares((a / c).toFixed(isStockAsset ? 0 : 2));
+                                }
+                              }}
+                              className="apple-input w-full pl-8 py-2 text-xs font-mono font-semibold placeholder-slate-400"
+                            />
+                          </div>
+                        </div>
+
+                        {/* 修正预估浮盈面板 */}
+                        <div className="rounded-2xl p-3 text-xs bg-slate-50/80 dark:bg-white/[0.03] border border-[var(--hairline-border)] space-y-1.5">
+                          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
+                            <span>更新后持股市值：</span>
+                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {(() => {
+                                const s = parseFloat(editShares) || 0;
+                                return `${currencySymbol}${(s * curMarketPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                              })()}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
+                            <span>预估浮动盈亏：</span>
+                            <span className="font-mono font-bold tabular-nums">
+                              {(() => {
+                                const s = parseFloat(editShares) || 0;
+                                const c = parseFloat(editCost) || 0;
+                                if (s <= 0 || c <= 0 || curMarketPrice <= 0) return '—';
+                                const profit = s * (curMarketPrice - c);
+                                const pct = ((curMarketPrice - c) / c) * 100;
+                                const isUp = profit > 0;
+                                const isDown = profit < 0;
+                                return (
+                                  <span
+                                    style={{
+                                      color: isUp ? 'var(--color-up)' : isDown ? 'var(--color-down)' : 'var(--color-flat)'
+                                    }}
+                                  >
+                                    {isUp ? '+' : ''}{currencySymbol}{Math.abs(profit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isUp ? '+' : ''}{pct.toFixed(2)}%)
+                                  </span>
+                                );
+                              })()}
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 4. 底栏操作按钮 */}
+                  <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-slate-100 dark:border-white/5">
+                    {curPos && curPos.shares > 0 ? (
+                      <button
+                        type="button"
+                        onClick={handleClearPosition}
+                        className="px-2.5 py-1.5 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 font-semibold flex items-center gap-1 text-[11px] rounded-full transition-colors cursor-pointer"
+                      >
+                        <Trash2 size={12} />
+                        清空持仓
+                      </button>
+                    ) : (
+                      <span />
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingCode(null)}
+                        className="px-4 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleActionSavePosition}
+                        className="px-4 py-1.5 text-xs font-semibold rounded-full bg-[#0066cc] hover:bg-[#0055b3] dark:bg-[#2997ff] dark:hover:bg-[#47a4ff] text-white shadow-sm transition-all cursor-pointer"
+                      >
+                        {posActionTab === 'buy' ? '确认加仓' : posActionTab === 'sell' ? '确认卖出' : '保存设置'}
+                      </button>
+                    </div>
+                  </div>
+                  </div>
+                </motion.div>
+              );
+            })()}
+          </ModalShell>
         )}
       </AnimatePresence>
 
@@ -4173,6 +4469,17 @@ function App() {
           watchlistCodes={watchlistCodesSet}
         />
       </React.Suspense>
+
+      {/* ─────────────────────────────────────────────────────────────
+         Mobile Bottom TabBar (移动端专属 L1 核心一级底栏导航)
+         ───────────────────────────────────────────────────────────── */}
+      <MobileBottomTabBar
+        activeTab={mainTab}
+        onTabChange={(key) => {
+          setMainTab(key);
+          try { localStorage.setItem('fund_main_tab', key); } catch {}
+        }}
+      />
     </div>
   );
 }
@@ -4186,12 +4493,14 @@ function ModalShell({
   children,
   onDismiss,
   ariaLabel,
-  closeOnScrimClick = true
+  closeOnScrimClick = true,
+  placement = 'center',
 }: {
   children: React.ReactNode;
   onDismiss: () => void;
   ariaLabel: string;
   closeOnScrimClick?: boolean;
+  placement?: 'center' | 'bottom-sheet' | 'responsive';
 }) {
   const prefersReducedMotion = useReducedMotion();
 
@@ -4206,6 +4515,13 @@ function ModalShell({
       document.body.style.overflow = '';
     };
   }, [onDismiss, closeOnScrimClick]);
+
+  const placementClass =
+    placement === 'responsive'
+      ? 'items-end sm:items-center justify-center p-0 sm:p-4'
+      : placement === 'bottom-sheet'
+      ? 'items-end justify-center p-0'
+      : 'items-center justify-center p-4';
 
   return (
     <motion.div
@@ -4222,10 +4538,10 @@ function ModalShell({
       onClick={(e) => {
         if (closeOnScrimClick && e.target === e.currentTarget) onDismiss();
       }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40"
+      className={`fixed inset-0 z-50 flex ${placementClass} bg-slate-950/45`}
       style={{
-        backdropFilter: prefersReducedMotion ? undefined : 'blur(20px) saturate(180%)',
-        WebkitBackdropFilter: prefersReducedMotion ? undefined : 'blur(20px) saturate(180%)',
+        backdropFilter: prefersReducedMotion ? undefined : 'blur(16px) saturate(180%)',
+        WebkitBackdropFilter: prefersReducedMotion ? undefined : 'blur(16px) saturate(180%)',
       }}
     >
       {children}
