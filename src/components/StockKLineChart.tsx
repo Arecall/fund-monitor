@@ -4,7 +4,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { Spin, Tooltip } from 'antd';
 import { BarChart3, ZoomIn, ZoomOut, RotateCcw, Maximize2, ChevronLeft } from 'lucide-react';
 import type { StockKLinePoint, StockKLinePeriod } from '../services/api';
-import { useModalHistory } from '../utils/modalHistory';
+import { useDualTrackFullscreen } from '../utils/fullscreen';
 
 export interface StockKLineChartProps {
   code: string;
@@ -103,19 +103,23 @@ export function StockKLineChart(props: StockKLineChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [hoverPrice, setHoverPrice] = useState<number | null>(null);
 
-  // 全屏大图查看状态机
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // 双轨渐进增强全屏调度器 (Android 原生全屏 + iOS 虚拟横屏)
+  const {
+    isFullscreen,
+    requestFullscreen: handleEnterFullscreen,
+    exitFullscreen: handleExitFullscreen,
+  } = useDualTrackFullscreen({ modalId: 'stock-kline-fullscreen-modal' });
   const prefersReducedMotion = useReducedMotion();
 
   // 智能横屏感知（兼容系统竖屏锁定）
-  const [needsVirtualLandscape, setNeedsVirtualLandscape] = useState(() => {
+  const [isPortraitViewport, setIsPortraitViewport] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window);
   });
 
   useEffect(() => {
     const handleCheck = () => {
-      setNeedsVirtualLandscape(
+      setIsPortraitViewport(
         window.innerWidth < window.innerHeight && (window.innerWidth < 1024 || 'ontouchstart' in window)
       );
     };
@@ -127,7 +131,9 @@ export function StockKLineChart(props: StockKLineChartProps) {
     };
   }, []);
 
-  useModalHistory(isFullscreen, () => setIsFullscreen(false), { id: 'stock-kline-fullscreen-modal' });
+  // 核心判定：只要当前视口处于物理竖屏（宽度 < 高度），为了确保始终呈现【横屏看盘 (Landscape)】，
+  // 必须启动 90° 旋转与跨轴安全区映射；只有当屏幕物理旋转为横屏（宽度 >= 高度）时才无需旋转原生铺满。
+  const needsVirtualLandscape = isPortraitViewport;
 
   // Zoom & Pan Range: [startIdx, endIdx) in allBars
   const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
@@ -582,7 +588,7 @@ export function StockKLineChart(props: StockKLineChartProps) {
               {/* 一键全屏大图查看按钮 (尺寸与分时图统一: w-6 h-6 sm:w-7 sm:h-7) */}
               <button
                 type="button"
-                onClick={() => setIsFullscreen(true)}
+                onClick={handleEnterFullscreen}
                 title="全屏查看K线大图"
                 aria-label="全屏查看K线大图"
                 className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-slate-100/80 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200/60 dark:border-white/10 rounded-full transition-all shrink-0 cursor-pointer"
@@ -1104,8 +1110,8 @@ export function StockKLineChart(props: StockKLineChartProps) {
               <div className="flex items-center gap-2 min-w-0">
                 <button
                   type="button"
-                  onClick={() => setIsFullscreen(false)}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/10 hover:bg-white/20 active:bg-white/30 text-white transition-all cursor-pointer shrink-0 select-none"
+                  onClick={handleExitFullscreen}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/10 hover:bg-white/20 active:bg-white/30 text-white transition-all cursor-pointer shrink-0 select-none touch-manipulation"
                   aria-label="退出全屏"
                 >
                   <ChevronLeft size={14} />

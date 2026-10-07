@@ -3291,7 +3291,7 @@ function App() {
                     </div>
                   )}
 
-                  {visibleList.length > 10 && (
+                  {visibleList.length > 10 ? (
                     <div className="flex items-center justify-center border-t border-[var(--hairline-border)] px-4 py-3">
                       <Pagination
                         current={watchlistPage}
@@ -3315,6 +3315,20 @@ function App() {
                         }}
                         showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 条`}
                       />
+                    </div>
+                  ) : (
+                    /* 底部已加载全部与金融数据合规提示条 (对标蚂蚁财富/雪球/富途牛牛) */
+                    <div className="py-6 sm:py-8 px-4 flex flex-col items-center justify-center gap-1.5 text-center select-none border-t border-[var(--hairline-border)] bg-slate-50/20 dark:bg-white/[0.01]">
+                      <div className="flex items-center gap-2.5 text-slate-400 dark:text-slate-500 text-[11px]">
+                        <span className="w-8 sm:w-12 h-px bg-slate-200 dark:bg-white/10" />
+                        <span className="font-medium tracking-wide">
+                          已加载全部 {visibleList.length} 只自选{selfTab === 'stock' ? '股票' : '基金'}
+                        </span>
+                        <span className="w-8 sm:w-12 h-px bg-slate-200 dark:bg-white/10" />
+                      </div>
+                      <p className="text-[10px] text-slate-400/80 dark:text-slate-500/80 font-mono">
+                        实时行情与估值数据仅供参考 · 实际净值以基金公司/交易所官方披露为准
+                      </p>
                     </div>
                   )}
                 </>
