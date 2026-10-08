@@ -207,6 +207,15 @@ function initTables() {
       WHERE kind IS NULL OR kind = '';
     `);
 
+    // 自愈修复历史脏数据：解除“未获取到基准却锁定了交易日”的幽灵冻结记录
+    db.run(`
+      UPDATE alerts
+      SET last_trading_day = NULL,
+          high_water_price = NULL,
+          low_water_price = NULL
+      WHERE reference_price IS NULL OR reference_price <= 0
+    `);
+
     // 5. 提醒发送历史（审计 + UI 展示）
     db.run(`
       CREATE TABLE IF NOT EXISTS alert_history (
